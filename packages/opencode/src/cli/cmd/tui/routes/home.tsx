@@ -14,6 +14,8 @@ import { usePromptRef } from "../context/prompt"
 import { Installation } from "@/installation"
 import { useKV } from "../context/kv"
 import { useCommandDialog } from "../component/dialog-command"
+import { useKeyboard } from "@opentui/solid"
+import { useExit } from "../context/exit"
 
 // TODO: what is the best way to do this?
 let once = false
@@ -90,6 +92,16 @@ export function Home() {
   const directory = useDirectory()
 
   const keybind = useKeybind()
+  const exit = useExit()
+
+  useKeyboard((evt) => {
+    if (!keybind.match("app_exit", evt)) return
+    if (promptRef.current?.focused) return
+    if (promptRef.current?.current.input) return
+    exit()
+    evt.preventDefault()
+    evt.stopPropagation()
+  })
 
   return (
     <>
@@ -105,6 +117,9 @@ export function Home() {
             ref={(r) => {
               prompt = r
               promptRef.set(r)
+              setTimeout(() => {
+                promptRef.current?.focus()
+              }, 0)
             }}
             hint={Hint}
           />

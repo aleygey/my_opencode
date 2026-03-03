@@ -9,6 +9,7 @@ import {
   on,
   Show,
   Switch,
+  untrack,
   useContext,
 } from "solid-js"
 import { Dynamic } from "solid-js/web"
@@ -77,9 +78,11 @@ import { Global } from "@/global"
 import { PermissionPrompt } from "./permission"
 import { QuestionPrompt } from "./question"
 import { DialogExportOptions } from "../../ui/dialog-export-options"
+import { DialogPrompt } from "../../ui/dialog-prompt"
 import { formatTranscript } from "../../util/transcript"
 import { UI } from "@/cli/ui.ts"
 import { useTuiConfig } from "../../context/tui-config"
+import { WorkflowView } from "./workflow-view"
 
 addDefaultParsers(parsers.parsers)
 
@@ -148,6 +151,8 @@ export function Session() {
   const dimensions = useTerminalDimensions()
   const [sidebar, setSidebar] = kv.signal<"auto" | "hide">("sidebar", "auto")
   const [sidebarOpen, setSidebarOpen] = createSignal(false)
+  const [workflowPanel, setWorkflowPanel] = kv.signal<"auto" | "hide">("workflow_panel", "auto")
+  const [workflowOpen, setWorkflowOpen] = createSignal(false)
   const [conceal, setConceal] = createSignal(true)
   const [showThinking, setShowThinking] = kv.signal("thinking_visibility", true)
   const [timestamps, setTimestamps] = kv.signal<"hide" | "show">("timestamps", "hide")
@@ -160,6 +165,18 @@ export function Session() {
   const [showGenericToolOutput, setShowGenericToolOutput] = kv.signal("generic_tool_output_visibility", false)
 
   const wide = createMemo(() => dimensions().width > 120)
+  const workflowWide = createMemo(() => dimensions().width > 150)
+  const workflowWidth = createMemo(() => {
+    if (dimensions().width > 220) return 116
+    if (dimensions().width > 190) return 104
+    if (dimensions().width > 160) return 92
+    return 82
+  })
+  const workflowVisible = createMemo(() => {
+    if (workflowOpen()) return true
+    if (workflowPanel() === "auto" && workflowWide()) return true
+    return false
+  })
   const sidebarVisible = createMemo(() => {
     if (session()?.parentID) return false
     if (sidebarOpen()) return true
@@ -167,7 +184,9 @@ export function Session() {
     return false
   })
   const showTimestamps = createMemo(() => timestamps() === "show")
-  const contentWidth = createMemo(() => dimensions().width - (sidebarVisible() ? 42 : 0) - 4)
+  const contentWidth = createMemo(() => {
+    return dimensions().width - (sidebarVisible() ? 42 : 0) - (workflowVisible() ? workflowWidth() : 0) - 4
+  })
 
   const scrollAcceleration = createMemo(() => {
     const tui = tuiConfig
@@ -254,11 +273,36 @@ export function Session() {
   })
 
   useKeyboard((evt) => {
-    if (!session()?.parentID) return
-    if (keybind.match("app_exit", evt)) {
+    if (!keybind.match("app_exit", evt)) return
+    if (session()?.parentID) {
       exit()
+      evt.preventDefault()
+      evt.stopPropagation()
+      return
     }
+    if (dialog.stack.length > 0) return
+    const ref = promptRef.current
+    if (!ref || ref.focused) return
+    if (ref.current.input !== "") return
+    exit()
+    evt.preventDefault()
+    evt.stopPropagation()
   })
+
+  createEffect(
+    on(
+      [() => route.sessionID, workflowVisible, () => permissions().length, () => questions().length],
+      () => {
+        setTimeout(() => {
+          if (session()?.parentID) return
+          if (permissions().length > 0 || questions().length > 0) return
+          if (dialog.stack.length > 0) return
+          untrack(() => promptRef.current?.focus())
+        }, 0)
+      },
+      { defer: true },
+    ),
+  )
 
   // Helper: Find next visible message boundary in direction
   const findNextVisibleMessage = (direction: "next" | "prev"): string | null => {
@@ -314,6 +358,47 @@ export function Session() {
   }
 
   const local = useLocal()
+
+  async function interruptSession() {
+    const status = sync.data.session_status?.[route.sessionID]
+    if (status?.type === "idle") return
+    await sdk.client.session.abort({ sessionID: route.sessionID }).catch(() => {})
+  }
+
+  async function appendPrompt(seed?: string, title?: string) {
+    const value = await DialogPrompt.show(dialog, title ?? "Append prompt", {
+      value: seed,
+      placeholder: "Add instructions to continue",
+    })
+    const text = value?.trim()
+    if (!text) return
+    const current = promptRef.current?.current
+    const next = {
+      input: `${current?.input ? `${current.input}\n` : ""}${text}`,
+      parts: current?.parts ?? [],
+    }
+    promptRef.current?.set(next)
+    promptRef.current?.focus()
+  }
+
+  function revisePlan() {
+    if (local.agent.list().some((item) => item.name === "plan")) {
+      local.agent.set("plan")
+    }
+    return appendPrompt(
+      "Please revise the current plan with the latest execution results. Highlight what changed, what is blocked, and the next safest step.",
+      "Revise plan",
+    )
+  }
+
+  function focusPrompt() {
+    if (session()?.parentID) return
+    if (permissions().length > 0 || questions().length > 0) return
+    if (dialog.stack.length > 0) return
+    setTimeout(() => {
+      promptRef.current?.focus()
+    }, 0)
+  }
 
   function moveFirstChild() {
     if (children().length === 1) return
@@ -560,6 +645,58 @@ export function Session() {
           setSidebar(() => (isVisible ? "hide" : "auto"))
           setSidebarOpen(!isVisible)
         })
+        dialog.clear()
+      },
+    },
+    {
+      title: workflowVisible() ? "Hide workflow panel" : "Show workflow panel",
+      value: "session.workflow.toggle",
+      category: "Session",
+      slash: {
+        name: "workflow",
+      },
+      onSelect: (dialog) => {
+        batch(() => {
+          const visible = workflowVisible()
+          setWorkflowPanel(() => (visible ? "hide" : "auto"))
+          setWorkflowOpen(!visible)
+        })
+        dialog.clear()
+      },
+    },
+    {
+      title: "Pause session execution",
+      value: "session.workflow.pause",
+      category: "Session",
+      slash: {
+        name: "pause",
+      },
+      onSelect: async (dialog) => {
+        await interruptSession()
+        dialog.clear()
+      },
+    },
+    {
+      title: "Append follow-up prompt",
+      value: "session.workflow.append",
+      category: "Session",
+      slash: {
+        name: "append",
+      },
+      onSelect: async (dialog) => {
+        await appendPrompt()
+        dialog.clear()
+      },
+    },
+    {
+      title: "Revise current plan",
+      value: "session.workflow.revise_plan",
+      category: "Session",
+      slash: {
+        name: "revise-plan",
+      },
+      onSelect: async (dialog) => {
+        await revisePlan()
         dialog.clear()
       },
     },
@@ -1027,6 +1164,24 @@ export function Session() {
       }}
     >
       <box flexDirection="row">
+        <Show when={workflowVisible()}>
+          <WorkflowView
+            width={workflowWidth()}
+            sessionID={route.sessionID}
+            onFocusInput={() => {
+              focusPrompt()
+            }}
+            onPause={() => {
+              interruptSession().catch(() => {})
+            }}
+            onAppend={() => {
+              appendPrompt().catch(() => {})
+            }}
+            onRevise={() => {
+              revisePlan().catch(() => {})
+            }}
+          />
+        </Show>
         <box flexGrow={1} paddingBottom={1} paddingTop={1} paddingLeft={2} paddingRight={2} gap={1}>
           <Show when={session()}>
             <Show when={showHeader() && (!sidebarVisible() || !wide())}>
@@ -1034,6 +1189,7 @@ export function Session() {
             </Show>
             <scrollbox
               ref={(r) => (scroll = r)}
+              focusable={false}
               viewportOptions={{
                 paddingRight: showScrollbar() ? 1 : 0,
               }}

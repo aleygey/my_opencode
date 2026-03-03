@@ -40,6 +40,7 @@ import { writeHeapSnapshot } from "v8"
 import { PromptRefProvider, usePromptRef } from "./context/prompt"
 import { TuiConfigProvider } from "./context/tui-config"
 import { TuiConfig } from "@/config/tui"
+import { WorkflowProvider } from "./context/workflow"
 
 async function getTerminalBackgroundColor(): Promise<"dark" | "light"> {
   // can't set raw mode if not a TTY
@@ -159,7 +160,9 @@ export function tui(input: {
                                         <FrecencyProvider>
                                           <PromptHistoryProvider>
                                             <PromptRefProvider>
-                                              <App />
+                                              <WorkflowProvider>
+                                                <App />
+                                              </WorkflowProvider>
                                             </PromptRefProvider>
                                           </PromptHistoryProvider>
                                         </FrecencyProvider>

@@ -82,6 +82,7 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
       >
         <scrollbox
           flexGrow={1}
+          focusable={false}
           verticalScrollbarOptions={{
             trackOptions: {
               backgroundColor: theme.background,
