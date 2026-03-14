@@ -22,6 +22,10 @@ a.out
 target
 .scripts
 .direnv/
+.venv-docling/
+.rag/
+__pycache__/
+*.pyc
 
 # Local dev files
 opencode-dev

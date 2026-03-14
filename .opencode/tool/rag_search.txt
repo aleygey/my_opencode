@@ -1,0 +1,17 @@
+Search local RAG vector index and return ranked evidence snippets for the current query.
+
+Use this tool when:
+- the user asks about project docs, internal wiki, SOP, or known indexed materials
+- you need grounded context before answering
+
+Behavior:
+- reads local qdrant index under .rag/vector/qdrant
+- may rewrite long queries into multiple focused retrieval queries before searching
+- shares the same session/cluster state used by `rag_context`
+- supports progressive disclosure via mode:
+  - `state`: retrieval state only, no evidence body
+  - `delta`: only new evidence within current query cluster (default)
+  - `brief`: short evidence list for current hits
+  - `expand`: richer per-hit details for follow-up drilling
+- default output is compact and should not dump full raw retrieval payload
+- do not use `expand` in normal QA unless the user explicitly asks to inspect evidence details
