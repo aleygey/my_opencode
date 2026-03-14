@@ -1,0 +1,28 @@
+{
+  "platform": "ssc377",
+  "description": "SSC377 embedded platform baseline manifest",
+  "sdk_roots": ["$SSC377_SDK_ROOT", "./sdk/ssc377", "./third_party/ssc377-sdk"],
+  "toolchains": [
+    {
+      "name": "gcc-arm-none-eabi",
+      "bin": "arm-none-eabi-gcc"
+    },
+    {
+      "name": "cmake",
+      "bin": "cmake"
+    },
+    {
+      "name": "ninja",
+      "bin": "ninja"
+    }
+  ],
+  "debug": {
+    "serial_device": "/dev/ttyUSB0",
+    "baud": 115200,
+    "ser2net": {
+      "host": "127.0.0.1",
+      "rw_port": 3333,
+      "monitor_port": 3334
+    }
+  }
+}

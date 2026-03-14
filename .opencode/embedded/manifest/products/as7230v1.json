@@ -1,0 +1,28 @@
+{
+  "product": "as7230v1",
+  "platform": "ssc377",
+  "description": "AS7230 v1 product baseline manifest",
+  "sdk_roots": ["./sdk/ssc377"],
+  "source_roots": ["./src", "./firmware", "./boards/as7230v1"],
+  "build": {
+    "default_profile": "debug",
+    "profiles": {
+      "debug": {
+        "cwd": ".",
+        "command": "cmake -S . -B build/as7230v1-debug -DPRODUCT=as7230v1 -DPLATFORM=ssc377 -DCMAKE_BUILD_TYPE=Debug && cmake --build build/as7230v1-debug -j8"
+      },
+      "release": {
+        "cwd": ".",
+        "command": "cmake -S . -B build/as7230v1-release -DPRODUCT=as7230v1 -DPLATFORM=ssc377 -DCMAKE_BUILD_TYPE=Release && cmake --build build/as7230v1-release -j8"
+      }
+    }
+  },
+  "flash": {
+    "script": ".opencode/embedded/scripts/flash-as7230v1.sh",
+    "default_firmware": "build/as7230v1-debug/firmware.bin",
+    "default_port": "/dev/ttyUSB0",
+    "env": {
+      "FLASH_DRY_RUN": "1"
+    }
+  }
+}
