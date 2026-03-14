@@ -1,0 +1,107 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  // Default execution agent for daily development loop.
+  "default_agent": "embedded-orchestrator",
+
+  // Local skills directory. Keep your platform/product skills here.
+  "skills": {
+    "paths": [".opencode/skills"],
+  },
+
+  // Local MCP servers (adapted for your current layout).
+  "mcp": {
+    "embedded-debug": {
+      "type": "local",
+      "enabled": true,
+      "command": ["bun", ".opencode/mcp/embedded-debug.ts"],
+    },
+    "embedded-sdk": {
+      "type": "local",
+      "enabled": true,
+      "command": ["bun", ".opencode/mcp/embedded-sdk.ts"],
+    },
+    "embedded-build": {
+      "type": "local",
+      "enabled": true,
+      "command": ["bun", ".opencode/mcp/embedded-build.ts"],
+    },
+    "embedded-flash": {
+      "type": "local",
+      "enabled": true,
+      "command": ["bun", ".opencode/mcp/embedded-flash.ts"],
+    },
+  },
+
+  "agent": {
+    "embedded-plan": {
+      "description": "Read-only planning and architecture analysis for embedded tasks",
+      "mode": "primary",
+      "prompt": "{file:.opencode/agents/embedded-plan.md}",
+      "temperature": 0.1,
+      "permission": {
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "skill": "allow",
+        "edit": "deny",
+        "bash": "deny",
+        "webfetch": "deny",
+        "task": {
+          "*": "deny",
+          "embedded-buildflash": "allow",
+          "embedded-debug": "allow",
+        },
+      },
+    },
+    "embedded-orchestrator": {
+      "description": "Main embedded development agent for code-build-flash-debug loops",
+      "mode": "primary",
+      "prompt": "{file:.opencode/agents/embedded-orchestrator.md}",
+      "temperature": 0.2,
+      "permission": {
+        "skill": "allow",
+        "task": {
+          "*": "deny",
+          "embedded-buildflash": "allow",
+          "embedded-debug": "allow",
+        },
+      },
+    },
+    "embedded-buildflash": {
+      "description": "Compile and flash specialist",
+      "mode": "subagent",
+      "hidden": true,
+      "prompt": "{file:.opencode/agents/embedded-buildflash.md}",
+      "temperature": 0.1,
+      "permission": {
+        "skill": "allow",
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "bash": "ask",
+        "embedded-build_*": "allow",
+        "embedded-flash_*": "allow",
+      },
+    },
+    "embedded-debug": {
+      "description": "Serial/runtime debug specialist",
+      "mode": "subagent",
+      "hidden": true,
+      "prompt": "{file:.opencode/agents/embedded-debug.md}",
+      "temperature": 0.1,
+      "permission": {
+        "skill": "allow",
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "bash": "ask",
+        "embedded-debug_*": "allow",
+        "embedded-sdk_*": "allow",
+      },
+    },
+  },
+}

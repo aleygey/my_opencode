@@ -5,7 +5,51 @@
       "options": {},
     },
   },
-  "mcp": {},
+  "mcp": {
+    "embedded_debug": {
+      "type": "local",
+      "command": ["bun", "run", ".opencode/mcp/embedded-debug.ts"],
+      "enabled": true,
+      "environment": {
+        "SER2NET_HOST": "127.0.0.1",
+        "SER2NET_RW_PORT": "3333",
+        "SER2NET_MON_PORT": "3334",
+        "SERIAL_LOCK_FILE": ".opencode/embedded/runtime/serial-write-lock.json",
+      },
+    },
+    "embedded_sdk": {
+      "type": "local",
+      "command": ["bun", "run", ".opencode/mcp/embedded-sdk.ts"],
+      "enabled": true,
+      "environment": {
+        "EMBEDDED_MANIFEST_ROOT": ".opencode/embedded/manifest",
+        "SDK_SEARCH_ROOTS": "$SSC377_SDK_ROOT:./sdk:./third_party:/opt",
+      },
+    },
+    "embedded_build": {
+      "type": "local",
+      "command": ["bun", "run", ".opencode/mcp/embedded-build.ts"],
+      "enabled": true,
+      "environment": {
+        "BUILD_CMD_DEFAULT": "cmake --build build -j8",
+      },
+    },
+    "embedded_flash": {
+      "type": "local",
+      "command": ["bun", "run", ".opencode/mcp/embedded-flash.ts"],
+      "enabled": true,
+    },
+  },
+  "skills": {
+    "paths": [".opencode/skills"],
+  },
+  "permission": {
+    "skill": {
+      "embedded-*": "allow",
+      "platform-*": "allow",
+      "product-*": "allow",
+    },
+  },
   "tools": {
     "github-triage": false,
     "github-pr-search": false,
