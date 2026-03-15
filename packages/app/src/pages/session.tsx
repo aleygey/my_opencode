@@ -49,6 +49,12 @@ import { SessionSidePanel } from "@/pages/session/session-side-panel"
 import { TerminalPanel } from "@/pages/session/terminal-panel"
 import { useSessionCommands } from "@/pages/session/use-session-commands"
 import { useSessionHashScroll } from "@/pages/session/use-session-hash-scroll"
+import {
+  createWorkflowRuntime,
+  WorkflowContextBar,
+  WorkflowRuntimePanel,
+  WorkflowSessionStrip,
+} from "@/pages/session/workflow-panel"
 import { Identifier } from "@/utils/id"
 import { extractPromptFromParts } from "@/utils/prompt"
 import { same } from "@/utils/same"
@@ -313,6 +319,7 @@ export default function Page() {
   const terminal = useTerminal()
   const [searchParams, setSearchParams] = useSearchParams<{ prompt?: string }>()
   const { params, sessionKey, tabs, view } = useSessionLayout()
+  const workflowRuntime = createWorkflowRuntime()
 
   createEffect(() => {
     if (!untrack(() => prompt.ready())) return
@@ -415,8 +422,15 @@ export default function Page() {
 
   const info = createMemo(() => (params.id ? sync.session.get(params.id) : undefined))
   const diffs = createMemo(() => (params.id ? (sync.data.session_diff[params.id] ?? []) : []))
+  const workflowSnapshot = createMemo(() => workflowRuntime.snapshot())
+  const workflowRootSelected = createMemo(() => workflowRuntime.rootSelected())
+  const resolvedDiffs = createMemo(() => (workflowRootSelected() ? workflowRuntime.rootDiffs() : diffs()))
   const reviewCount = createMemo(() => Math.max(info()?.summary?.files ?? 0, diffs().length))
+  const resolvedReviewCount = createMemo(() =>
+    workflowRootSelected() ? workflowRuntime.rootDiffs().length : reviewCount(),
+  )
   const hasReview = createMemo(() => reviewCount() > 0)
+  const resolvedHasReview = createMemo(() => (workflowRootSelected() ? workflowRuntime.rootDiffs().length > 0 : hasReview()))
   const reviewTab = createMemo(() => isDesktop())
   const tabState = createSessionTabs({
     tabs,
@@ -484,6 +498,60 @@ export default function Page() {
     ),
   )
 
+  const selectWorkflowSession = (sessionID: string) => {
+    const snapshot = workflowSnapshot()
+    if (!snapshot) return
+    const slug = params.dir ?? base64Encode(sdk.directory)
+
+    if (sessionID === snapshot.workflow.session_id) {
+      local.agent.set("orchestrator")
+      navigate(`/${slug}/session/${sessionID}`)
+      return
+    }
+
+    const node = snapshot.nodes.find((item) => item.session_id === sessionID)
+    if (!node) return
+    local.agent.set(node.agent)
+    if (node.model?.providerID && node.model?.modelID) {
+      local.model.set(
+        {
+          providerID: node.model.providerID,
+          modelID: node.model.modelID,
+        },
+        { recent: true },
+      )
+    }
+    if (node.model?.variant) local.model.variant.set(node.model.variant)
+    navigate(`/${slug}/session/${sessionID}`)
+  }
+
+  createEffect(() => {
+    const snapshot = workflowSnapshot()
+    const sessionID = params.id
+    if (!snapshot || !sessionID) return
+
+    if (sessionID === snapshot.workflow.session_id) {
+      local.agent.set("orchestrator")
+      return
+    }
+
+    const node = snapshot.nodes.find((item) => item.session_id === sessionID)
+    if (!node) return
+    if (local.agent.current()?.name !== node.agent) local.agent.set(node.agent)
+    if (node.model?.providerID && node.model?.modelID) {
+      const current = local.model.current()
+      if (current?.provider.id !== node.model.providerID || current.id !== node.model.modelID) {
+        local.model.set({
+          providerID: node.model.providerID,
+          modelID: node.model.modelID,
+        })
+      }
+    }
+    if (node.model?.variant && local.model.variant.selected() !== node.model.variant) {
+      local.model.variant.set(node.model.variant)
+    }
+  })
+
   createEffect(
     on(
       () => ({ dir: params.dir, id: params.id }),
@@ -546,7 +614,10 @@ export default function Page() {
   }, desktopReviewOpen())
 
   const turnDiffs = createMemo(() => lastUserMessage()?.summary?.diffs ?? [])
-  const reviewDiffs = createMemo(() => (store.changes === "session" ? diffs() : turnDiffs()))
+  const reviewDiffs = createMemo(() => {
+    if (workflowRootSelected()) return resolvedDiffs()
+    return store.changes === "session" ? resolvedDiffs() : turnDiffs()
+  })
 
   const newSessionWorktree = createMemo(() => {
     if (store.newSessionWorktree === "create") return "create"
@@ -618,6 +689,9 @@ export default function Page() {
     if (!hasReview()) return true
     return sync.data.session_diff[id] !== undefined
   })
+  const resolvedDiffsReady = createMemo(() =>
+    workflowRootSelected() ? workflowRuntime.rootDiffsReady() : diffsReady(),
+  )
   const reviewEmptyKey = createMemo(() => {
     const project = sync.project
     if (project && !project.vcs) return "session.review.noVcs"
@@ -920,8 +994,22 @@ export default function Page() {
   const changesOptionsList = [...changesOptions]
 
   const changesTitle = () => {
-    if (!hasReview()) {
+    if (!resolvedHasReview()) {
       return null
+    }
+
+    if (workflowRootSelected()) {
+      return (
+        <div class="flex items-center gap-2">
+          <span class="text-14-medium text-text-strong">Workflow review</span>
+          <span class="rounded-full border border-border-weak-base px-2 py-0.5 text-[10px] font-medium text-text-weak">
+            aggregated diff
+          </span>
+          <span class="rounded-full border border-border-weak-base px-2 py-0.5 text-[10px] font-medium text-text-weak">
+            {`${resolvedReviewCount()} files`}
+          </span>
+        </div>
+      )
     }
 
     return (
@@ -946,9 +1034,13 @@ export default function Page() {
   )
 
   const reviewEmpty = (input: { loadingClass: string; emptyClass: string }) => {
+    if (workflowRootSelected() && !resolvedDiffsReady()) {
+      return <div class={input.loadingClass}>{language.t("session.review.loadingChanges")}</div>
+    }
+
     if (store.changes === "turn") return emptyTurn()
 
-    if (hasReview() && !diffsReady()) {
+    if (resolvedHasReview() && !resolvedDiffsReady()) {
       return <div class={input.loadingClass}>{language.t("session.review.loadingChanges")}</div>
     }
 
@@ -988,9 +1080,10 @@ export default function Page() {
       <SessionReviewTab
         title={changesTitle()}
         empty={reviewEmpty(input)}
+        flat={workflowRootSelected()}
         diffs={reviewDiffs}
         view={view}
-        diffStyle={input.diffStyle}
+        diffStyle={workflowRootSelected() ? "split" : input.diffStyle}
         onDiffStyleChange={input.onDiffStyleChange}
         onScrollRef={(el) => setTree("reviewScroll", el)}
         focusedFile={tree.activeDiff}
@@ -1689,54 +1782,145 @@ export default function Page() {
             width: sessionPanelWidth(),
           }}
         >
+          <Show when={params.id && workflowSnapshot()}>
+            <WorkflowSessionStrip
+              snapshot={workflowSnapshot()!}
+              currentSessionID={params.id}
+              onSelectSession={selectWorkflowSession}
+            />
+          </Show>
+          <Show when={params.id && workflowSnapshot()}>
+            <WorkflowContextBar snapshot={workflowSnapshot()!} currentSessionID={params.id} />
+          </Show>
           <div class="flex-1 min-h-0 overflow-hidden">
             <Switch>
               <Match when={params.id}>
-                <Show when={lastUserMessage()}>
-                  <MessageTimeline
-                    mobileChanges={mobileChanges()}
-                    mobileFallback={reviewContent({
-                      diffStyle: "unified",
-                      classes: {
-                        root: "pb-8",
-                        header: "px-4",
-                        container: "px-4",
-                      },
-                      loadingClass: "px-4 py-4 text-text-weak",
-                      emptyClass: "h-full pb-64 -mt-4 flex flex-col items-center justify-center text-center gap-6",
-                    })}
-                    actions={actions}
-                    scroll={ui.scroll}
-                    onResumeScroll={resumeScroll}
-                    setScrollRef={setScrollRef}
-                    onScheduleScrollState={scheduleScrollState}
-                    onAutoScrollHandleScroll={autoScroll.handleScroll}
-                    onMarkScrollGesture={markScrollGesture}
-                    hasScrollGesture={hasScrollGesture}
-                    onUserScroll={markUserScroll}
-                    onTurnBackfillScroll={historyWindow.onScrollerScroll}
-                    onAutoScrollInteraction={autoScroll.handleInteraction}
-                    centered={centered()}
-                    setContentRef={(el) => {
-                      content = el
-                      autoScroll.contentRef(el)
+                <Switch>
+                  <Match when={workflowRootSelected() && workflowSnapshot()}>
+                    <div class="flex h-full min-h-0 flex-col">
+                      <div class="min-h-0 basis-[34%] border-b border-border-weak-base">
+                        <Show when={lastUserMessage()}>
+                          <MessageTimeline
+                            mobileChanges={mobileChanges()}
+                            mobileFallback={reviewContent({
+                              diffStyle: "unified",
+                              classes: {
+                                root: "pb-8",
+                                header: "px-4",
+                                container: "px-4",
+                              },
+                              loadingClass: "px-4 py-4 text-text-weak",
+                              emptyClass: "h-full pb-64 -mt-4 flex flex-col items-center justify-center text-center gap-6",
+                            })}
+                            actions={actions}
+                            scroll={ui.scroll}
+                            onResumeScroll={resumeScroll}
+                            setScrollRef={setScrollRef}
+                            onScheduleScrollState={scheduleScrollState}
+                            onAutoScrollHandleScroll={autoScroll.handleScroll}
+                            onMarkScrollGesture={markScrollGesture}
+                            hasScrollGesture={hasScrollGesture}
+                            onUserScroll={markUserScroll}
+                            onTurnBackfillScroll={historyWindow.onScrollerScroll}
+                            onAutoScrollInteraction={autoScroll.handleInteraction}
+                            centered={false}
+                            setContentRef={(el) => {
+                              content = el
+                              autoScroll.contentRef(el)
 
-                      const root = scroller
-                      if (root) scheduleScrollState(root)
-                    }}
-                    turnStart={historyWindow.turnStart()}
-                    historyMore={historyMore()}
-                    historyLoading={historyLoading()}
-                    onLoadEarlier={() => {
-                      void historyWindow.loadAndReveal()
-                    }}
-                    renderedUserMessages={historyWindow.renderedUserMessages()}
-                    anchor={anchor}
-                  />
-                </Show>
+                              const root = scroller
+                              if (root) scheduleScrollState(root)
+                            }}
+                            turnStart={historyWindow.turnStart()}
+                            historyMore={historyMore()}
+                            historyLoading={historyLoading()}
+                            onLoadEarlier={() => {
+                              void historyWindow.loadAndReveal()
+                            }}
+                            renderedUserMessages={historyWindow.renderedUserMessages()}
+                            anchor={anchor}
+                          />
+                        </Show>
+                      </div>
+                      <div class="min-h-0 flex-1">
+                        <WorkflowRuntimePanel
+                          snapshot={workflowSnapshot()!}
+                          currentSessionID={params.id}
+                          onSelectSession={selectWorkflowSession}
+                        />
+                      </div>
+                    </div>
+                  </Match>
+                  <Match when={true}>
+                    <Show when={lastUserMessage()}>
+                      <MessageTimeline
+                        mobileChanges={mobileChanges()}
+                        mobileFallback={reviewContent({
+                          diffStyle: "unified",
+                          classes: {
+                            root: "pb-8",
+                            header: "px-4",
+                            container: "px-4",
+                          },
+                          loadingClass: "px-4 py-4 text-text-weak",
+                          emptyClass: "h-full pb-64 -mt-4 flex flex-col items-center justify-center text-center gap-6",
+                        })}
+                        actions={actions}
+                        scroll={ui.scroll}
+                        onResumeScroll={resumeScroll}
+                        setScrollRef={setScrollRef}
+                        onScheduleScrollState={scheduleScrollState}
+                        onAutoScrollHandleScroll={autoScroll.handleScroll}
+                        onMarkScrollGesture={markScrollGesture}
+                        hasScrollGesture={hasScrollGesture}
+                        onUserScroll={markUserScroll}
+                        onTurnBackfillScroll={historyWindow.onScrollerScroll}
+                        onAutoScrollInteraction={autoScroll.handleInteraction}
+                        centered={centered()}
+                        setContentRef={(el) => {
+                          content = el
+                          autoScroll.contentRef(el)
+
+                          const root = scroller
+                          if (root) scheduleScrollState(root)
+                        }}
+                        turnStart={historyWindow.turnStart()}
+                        historyMore={historyMore()}
+                        historyLoading={historyLoading()}
+                        onLoadEarlier={() => {
+                          void historyWindow.loadAndReveal()
+                        }}
+                        renderedUserMessages={historyWindow.renderedUserMessages()}
+                        anchor={anchor}
+                      />
+                    </Show>
+                  </Match>
+                </Switch>
               </Match>
               <Match when={true}>
-                <NewSessionView worktree={newSessionWorktree()} />
+                <div class="flex h-full flex-col">
+                  <Show when={local.agent.current()?.name?.toLowerCase().includes("orchestrator")}>
+                    <div class="border-b border-border-weak-base bg-background-panel px-5 py-4">
+                      <div class="flex items-center gap-2">
+                        <span class="rounded-full border border-sky-500/25 bg-sky-500/8 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-sky-700 dark:text-sky-300">
+                          root orchestrator session
+                        </span>
+                        <span class="rounded-full border border-border-weak-base px-2 py-0.5 text-[10px] font-medium text-text-weak">
+                          planning mode
+                        </span>
+                      </div>
+                      <div class="mt-2 text-13-medium text-text-strong">
+                        The workflow is created only after your first query is planned and confirmed.
+                      </div>
+                      <div class="mt-1 text-12-regular text-text-weak">
+                        Start with the requirement, let the orchestrator iterate on the plan, then confirm execution to create node sessions.
+                      </div>
+                    </div>
+                  </Show>
+                  <div class="min-h-0 flex-1">
+                    <NewSessionView worktree={newSessionWorktree()} />
+                  </div>
+                </div>
               </Match>
             </Switch>
           </div>
@@ -1813,6 +1997,10 @@ export default function Page() {
           focusReviewDiff={focusReviewDiff}
           reviewSnap={ui.reviewSnap}
           size={size}
+          diffs={resolvedDiffs}
+          hasReview={resolvedHasReview}
+          reviewCount={resolvedReviewCount}
+          diffsReady={resolvedDiffsReady}
         />
       </div>
 

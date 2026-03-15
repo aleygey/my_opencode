@@ -69,6 +69,29 @@
     background-color: var(--surface-base-active);
   }
 
+  [data-component="accordion"][data-flat] {
+    display: grid;
+    gap: 14px;
+  }
+
+  [data-component="accordion"][data-flat] [data-slot="accordion-header"] {
+    position: sticky;
+    top: 40px;
+    z-index: 8;
+  }
+
+  [data-component="accordion"][data-flat] [data-slot="accordion-item"] {
+    border: 1px solid var(--border-weak-base);
+    border-radius: 12px;
+    overflow: hidden;
+    background: var(--background-base);
+  }
+
+  [data-component="accordion"][data-flat] [data-slot="accordion-trigger"] {
+    background: var(--background-stronger);
+    pointer-events: none;
+  }
+
   [data-slot="accordion-item"] {
     [data-slot="accordion-content"] {
       display: none;
@@ -174,6 +197,10 @@
 
   [data-slot="accordion-item"][data-expanded] [data-slot="session-review-diff-chevron"] {
     transform: rotate(0deg);
+  }
+
+  [data-component="accordion"][data-flat] [data-slot="session-review-diff-chevron"] {
+    display: none;
   }
 
   [data-slot="session-review-change-group"] {

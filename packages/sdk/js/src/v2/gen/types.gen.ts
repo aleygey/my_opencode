@@ -716,6 +716,158 @@ export type EventTodoUpdated = {
   }
 }
 
+export type Workflow = {
+  id: string
+  session_id: string
+  title: string
+  status: "pending" | "running" | "paused" | "interrupted" | "completed" | "failed" | "cancelled"
+  current_node_id?: string
+  selected_node_id?: string
+  version: number
+  config?: {
+    [key: string]: unknown
+  }
+  summary?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+    updated: number
+    paused?: number
+    completed?: number
+  }
+}
+
+export type EventWorkflowCreated = {
+  type: "workflow.created"
+  properties: {
+    info: Workflow
+  }
+}
+
+export type EventWorkflowUpdated = {
+  type: "workflow.updated"
+  properties: {
+    info: Workflow
+  }
+}
+
+export type WorkflowNode = {
+  id: string
+  workflow_id: string
+  session_id?: string
+  title: string
+  agent: string
+  model?: {
+    providerID?: string
+    modelID?: string
+    variant?: string
+  }
+  config?: {
+    [key: string]: unknown
+  }
+  status: "pending" | "ready" | "running" | "waiting" | "paused" | "interrupted" | "completed" | "failed" | "cancelled"
+  result_status: "unknown" | "success" | "fail" | "partial"
+  fail_reason?: string
+  action_count: number
+  attempt: number
+  max_attempts: number
+  max_actions: number
+  version: number
+  state_json?: {
+    [key: string]: unknown
+  }
+  result_json?: {
+    [key: string]: unknown
+  }
+  position: number
+  time: {
+    created: number
+    updated: number
+    started?: number
+    completed?: number
+  }
+}
+
+export type EventWorkflowNodeCreated = {
+  type: "workflow.node.created"
+  properties: {
+    info: WorkflowNode
+  }
+}
+
+export type EventWorkflowNodeUpdated = {
+  type: "workflow.node.updated"
+  properties: {
+    info: WorkflowNode
+  }
+}
+
+export type WorkflowEdge = {
+  id: string
+  workflow_id: string
+  from_node_id: string
+  to_node_id: string
+  label?: string
+  config?: {
+    [key: string]: unknown
+  }
+  time_created: number
+}
+
+export type EventWorkflowEdgeCreated = {
+  type: "workflow.edge.created"
+  properties: {
+    info: WorkflowEdge
+  }
+}
+
+export type WorkflowCheckpoint = {
+  id: string
+  workflow_id: string
+  node_id: string
+  label: string
+  status: "pending" | "passed" | "failed" | "skipped"
+  config?: {
+    [key: string]: unknown
+  }
+  result_json?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+    updated: number
+  }
+}
+
+export type EventWorkflowCheckpointUpdated = {
+  type: "workflow.checkpoint.updated"
+  properties: {
+    info: WorkflowCheckpoint
+  }
+}
+
+export type WorkflowEvent = {
+  id: number
+  workflow_id: string
+  node_id?: string
+  session_id?: string
+  target_node_id?: string
+  kind: string
+  source: string
+  payload: {
+    [key: string]: unknown
+  }
+  time_created: number
+}
+
+export type EventWorkflowEventCreated = {
+  type: "workflow.event.created"
+  properties: {
+    info: WorkflowEvent
+  }
+}
+
 export type EventTuiPromptAppend = {
   type: "tui.prompt.append"
   properties: {
@@ -982,6 +1134,13 @@ export type Event =
   | EventSessionCompacted
   | EventFileWatcherUpdated
   | EventTodoUpdated
+  | EventWorkflowCreated
+  | EventWorkflowUpdated
+  | EventWorkflowNodeCreated
+  | EventWorkflowNodeUpdated
+  | EventWorkflowEdgeCreated
+  | EventWorkflowCheckpointUpdated
+  | EventWorkflowEventCreated
   | EventTuiPromptAppend
   | EventTuiCommandExecute
   | EventTuiToastShow
@@ -1761,6 +1920,24 @@ export type SubtaskPartInput = {
     modelID: string
   }
   command?: string
+}
+
+export type WorkflowSnapshot = {
+  workflow: Workflow
+  nodes: Array<WorkflowNode>
+  edges: Array<WorkflowEdge>
+  checkpoints: Array<WorkflowCheckpoint>
+  events: Array<WorkflowEvent>
+  cursor: number
+}
+
+export type WorkflowReadResult = {
+  workflow?: Workflow
+  nodes: Array<WorkflowNode>
+  edges: Array<WorkflowEdge>
+  checkpoints: Array<WorkflowCheckpoint>
+  events: Array<WorkflowEvent>
+  cursor: number
 }
 
 export type ProviderAuthMethod = {
@@ -3718,6 +3895,504 @@ export type PermissionRespondResponses = {
 }
 
 export type PermissionRespondResponse = PermissionRespondResponses[keyof PermissionRespondResponses]
+
+export type WorkflowSessionData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/workflow/session/{sessionID}"
+}
+
+export type WorkflowSessionErrors = {
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type WorkflowSessionError = WorkflowSessionErrors[keyof WorkflowSessionErrors]
+
+export type WorkflowSessionResponses = {
+  /**
+   * Workflow snapshot
+   */
+  200: WorkflowSnapshot
+}
+
+export type WorkflowSessionResponse = WorkflowSessionResponses[keyof WorkflowSessionResponses]
+
+export type WorkflowGetData = {
+  body?: never
+  path: {
+    workflowID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/workflow/{workflowID}"
+}
+
+export type WorkflowGetErrors = {
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type WorkflowGetError = WorkflowGetErrors[keyof WorkflowGetErrors]
+
+export type WorkflowGetResponses = {
+  /**
+   * Workflow snapshot
+   */
+  200: WorkflowSnapshot
+}
+
+export type WorkflowGetResponse = WorkflowGetResponses[keyof WorkflowGetResponses]
+
+export type WorkflowReadData = {
+  body?: never
+  path: {
+    workflowID: string
+  }
+  query?: {
+    directory?: string
+    cursor?: number
+  }
+  url: "/workflow/{workflowID}/read"
+}
+
+export type WorkflowReadErrors = {
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type WorkflowReadError = WorkflowReadErrors[keyof WorkflowReadErrors]
+
+export type WorkflowReadResponses = {
+  /**
+   * Workflow changes since cursor
+   */
+  200: WorkflowReadResult
+}
+
+export type WorkflowReadResponse = WorkflowReadResponses[keyof WorkflowReadResponses]
+
+export type WorkflowDiffData = {
+  body?: never
+  path: {
+    workflowID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/workflow/{workflowID}/diff"
+}
+
+export type WorkflowDiffErrors = {
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type WorkflowDiffError = WorkflowDiffErrors[keyof WorkflowDiffErrors]
+
+export type WorkflowDiffResponses = {
+  /**
+   * Aggregated workflow file diff
+   */
+  200: Array<FileDiff>
+}
+
+export type WorkflowDiffResponse = WorkflowDiffResponses[keyof WorkflowDiffResponses]
+
+export type WorkflowCreateData = {
+  body?: {
+    session_id: string
+    title: string
+    config?: {
+      [key: string]: unknown
+    }
+    summary?: {
+      [key: string]: unknown
+    }
+    nodes?: Array<{
+      id?: string
+      session_id?: string
+      title: string
+      agent: string
+      model?: {
+        providerID?: string
+        modelID?: string
+        variant?: string
+      }
+      config?: {
+        [key: string]: unknown
+      }
+      status?:
+        | "pending"
+        | "ready"
+        | "running"
+        | "waiting"
+        | "paused"
+        | "interrupted"
+        | "completed"
+        | "failed"
+        | "cancelled"
+      result_status?: "unknown" | "success" | "fail" | "partial"
+      fail_reason?: string
+      action_count?: number
+      attempt?: number
+      max_attempts?: number
+      max_actions?: number
+      state_json?: {
+        [key: string]: unknown
+      }
+      result_json?: {
+        [key: string]: unknown
+      }
+      position?: number
+    }>
+    edges?: Array<{
+      id?: string
+      from_node_id: string
+      to_node_id: string
+      label?: string
+      config?: {
+        [key: string]: unknown
+      }
+    }>
+    checkpoints?: Array<{
+      id?: string
+      node_id: string
+      label: string
+      status?: "pending" | "passed" | "failed" | "skipped"
+      config?: {
+        [key: string]: unknown
+      }
+      result_json?: {
+        [key: string]: unknown
+      }
+    }>
+  }
+  path?: never
+  query?: {
+    directory?: string
+  }
+  url: "/workflow"
+}
+
+export type WorkflowCreateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type WorkflowCreateError = WorkflowCreateErrors[keyof WorkflowCreateErrors]
+
+export type WorkflowCreateResponses = {
+  /**
+   * Created workflow
+   */
+  200: Workflow
+}
+
+export type WorkflowCreateResponse = WorkflowCreateResponses[keyof WorkflowCreateResponses]
+
+export type WorkflowNodeCreateData = {
+  body?: {
+    session_id?: string
+    title: string
+    agent: string
+    model?: {
+      providerID?: string
+      modelID?: string
+      variant?: string
+    }
+    config?: {
+      [key: string]: unknown
+    }
+    status?:
+      | "pending"
+      | "ready"
+      | "running"
+      | "waiting"
+      | "paused"
+      | "interrupted"
+      | "completed"
+      | "failed"
+      | "cancelled"
+    result_status?: "unknown" | "success" | "fail" | "partial"
+    max_attempts?: number
+    max_actions?: number
+    position?: number
+  }
+  path: {
+    workflowID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/workflow/{workflowID}/node"
+}
+
+export type WorkflowNodeCreateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type WorkflowNodeCreateError = WorkflowNodeCreateErrors[keyof WorkflowNodeCreateErrors]
+
+export type WorkflowNodeCreateResponses = {
+  /**
+   * Created workflow node
+   */
+  200: WorkflowNode
+}
+
+export type WorkflowNodeCreateResponse = WorkflowNodeCreateResponses[keyof WorkflowNodeCreateResponses]
+
+export type WorkflowEdgeCreateData = {
+  body?: {
+    from_node_id: string
+    to_node_id: string
+    label?: string
+    config?: {
+      [key: string]: unknown
+    }
+  }
+  path: {
+    workflowID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/workflow/{workflowID}/edge"
+}
+
+export type WorkflowEdgeCreateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type WorkflowEdgeCreateError = WorkflowEdgeCreateErrors[keyof WorkflowEdgeCreateErrors]
+
+export type WorkflowEdgeCreateResponses = {
+  /**
+   * Created workflow edge
+   */
+  200: WorkflowEdge
+}
+
+export type WorkflowEdgeCreateResponse = WorkflowEdgeCreateResponses[keyof WorkflowEdgeCreateResponses]
+
+export type WorkflowCheckpointCreateData = {
+  body?: {
+    node_id: string
+    label: string
+    status?: "pending" | "passed" | "failed" | "skipped"
+    config?: {
+      [key: string]: unknown
+    }
+    result_json?: {
+      [key: string]: unknown
+    }
+  }
+  path: {
+    workflowID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/workflow/{workflowID}/checkpoint"
+}
+
+export type WorkflowCheckpointCreateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type WorkflowCheckpointCreateError = WorkflowCheckpointCreateErrors[keyof WorkflowCheckpointCreateErrors]
+
+export type WorkflowCheckpointCreateResponses = {
+  /**
+   * Created workflow checkpoint
+   */
+  200: WorkflowCheckpoint
+}
+
+export type WorkflowCheckpointCreateResponse =
+  WorkflowCheckpointCreateResponses[keyof WorkflowCheckpointCreateResponses]
+
+export type WorkflowControlData = {
+  body?: {
+    nodeID: string
+    source: string
+    command: "continue" | "pause" | "resume" | "interrupt" | "retry" | "cancel" | "inject_context"
+    payload?: {
+      [key: string]: unknown
+    }
+  }
+  path: {
+    workflowID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/workflow/{workflowID}/control"
+}
+
+export type WorkflowControlErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type WorkflowControlError = WorkflowControlErrors[keyof WorkflowControlErrors]
+
+export type WorkflowControlResponses = {
+  /**
+   * Control accepted
+   */
+  200: boolean
+}
+
+export type WorkflowControlResponse = WorkflowControlResponses[keyof WorkflowControlResponses]
+
+export type WorkflowNodeUpdateData = {
+  body?: {
+    source: string
+    patch: {
+      status?:
+        | "pending"
+        | "ready"
+        | "running"
+        | "waiting"
+        | "paused"
+        | "interrupted"
+        | "completed"
+        | "failed"
+        | "cancelled"
+      result_status?: "unknown" | "success" | "fail" | "partial"
+      fail_reason?: string | null
+      session_id?: string | null
+      model?: {
+        providerID?: string
+        modelID?: string
+        variant?: string
+      } | null
+      config?: {
+        mode?: "replace" | "merge"
+        value?: {
+          [key: string]: unknown
+        }
+      }
+      state_json?: {
+        mode?: "replace" | "merge"
+        value?: {
+          [key: string]: unknown
+        }
+      }
+      result_json?: {
+        mode?: "replace" | "merge"
+        value?: {
+          [key: string]: unknown
+        }
+      }
+      attempt_delta?: number
+      action_count?: number
+      max_attempts?: number
+      max_actions?: number
+      title?: string
+    }
+    action_delta?: number
+    event?: {
+      kind: string
+      target_node_id?: string
+      payload?: {
+        [key: string]: unknown
+      }
+    }
+  }
+  path: {
+    nodeID: string
+  }
+  query?: {
+    directory?: string
+  }
+  url: "/workflow/node/{nodeID}"
+}
+
+export type WorkflowNodeUpdateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type WorkflowNodeUpdateError = WorkflowNodeUpdateErrors[keyof WorkflowNodeUpdateErrors]
+
+export type WorkflowNodeUpdateResponses = {
+  /**
+   * Updated workflow node
+   */
+  200: WorkflowNode
+}
+
+export type WorkflowNodeUpdateResponse = WorkflowNodeUpdateResponses[keyof WorkflowNodeUpdateResponses]
+
+export type WorkflowNodePullData = {
+  body?: never
+  path: {
+    nodeID: string
+  }
+  query?: {
+    directory?: string
+    cursor?: number
+  }
+  url: "/workflow/node/{nodeID}/pull"
+}
+
+export type WorkflowNodePullErrors = {
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type WorkflowNodePullError = WorkflowNodePullErrors[keyof WorkflowNodePullErrors]
+
+export type WorkflowNodePullResponses = {
+  /**
+   * Pending node events
+   */
+  200: {
+    node: WorkflowNode
+    cursor: number
+    events: Array<WorkflowEvent>
+  }
+}
+
+export type WorkflowNodePullResponse = WorkflowNodePullResponses[keyof WorkflowNodePullResponses]
 
 export type PermissionReplyData = {
   body?: {

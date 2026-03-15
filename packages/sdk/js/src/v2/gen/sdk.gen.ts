@@ -173,6 +173,28 @@ import type {
   TuiShowToastResponses,
   TuiSubmitPromptResponses,
   VcsGetResponses,
+  WorkflowCheckpointCreateErrors,
+  WorkflowCheckpointCreateResponses,
+  WorkflowControlErrors,
+  WorkflowControlResponses,
+  WorkflowCreateErrors,
+  WorkflowCreateResponses,
+  WorkflowDiffErrors,
+  WorkflowDiffResponses,
+  WorkflowEdgeCreateErrors,
+  WorkflowEdgeCreateResponses,
+  WorkflowGetErrors,
+  WorkflowGetResponses,
+  WorkflowNodeCreateErrors,
+  WorkflowNodeCreateResponses,
+  WorkflowNodePullErrors,
+  WorkflowNodePullResponses,
+  WorkflowNodeUpdateErrors,
+  WorkflowNodeUpdateResponses,
+  WorkflowReadErrors,
+  WorkflowReadResponses,
+  WorkflowSessionErrors,
+  WorkflowSessionResponses,
   WorktreeCreateErrors,
   WorktreeCreateInput,
   WorktreeCreateResponses,
@@ -2381,6 +2403,571 @@ export class Permission extends HeyApiClient {
   }
 }
 
+export class Node extends HeyApiClient {
+  /**
+   * Create workflow node
+   */
+  public create<ThrowOnError extends boolean = false>(
+    parameters: {
+      workflowID: string
+      directory?: string
+      session_id?: string
+      title?: string
+      agent?: string
+      model?: {
+        providerID?: string
+        modelID?: string
+        variant?: string
+      }
+      config?: {
+        [key: string]: unknown
+      }
+      status?:
+        | "pending"
+        | "ready"
+        | "running"
+        | "waiting"
+        | "paused"
+        | "interrupted"
+        | "completed"
+        | "failed"
+        | "cancelled"
+      result_status?: "unknown" | "success" | "fail" | "partial"
+      max_attempts?: number
+      max_actions?: number
+      position?: number
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "workflowID" },
+            { in: "query", key: "directory" },
+            { in: "body", key: "session_id" },
+            { in: "body", key: "title" },
+            { in: "body", key: "agent" },
+            { in: "body", key: "model" },
+            { in: "body", key: "config" },
+            { in: "body", key: "status" },
+            { in: "body", key: "result_status" },
+            { in: "body", key: "max_attempts" },
+            { in: "body", key: "max_actions" },
+            { in: "body", key: "position" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<WorkflowNodeCreateResponses, WorkflowNodeCreateErrors, ThrowOnError>({
+      url: "/workflow/{workflowID}/node",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Update workflow node
+   */
+  public update<ThrowOnError extends boolean = false>(
+    parameters: {
+      nodeID: string
+      directory?: string
+      source?: string
+      patch?: {
+        status?:
+          | "pending"
+          | "ready"
+          | "running"
+          | "waiting"
+          | "paused"
+          | "interrupted"
+          | "completed"
+          | "failed"
+          | "cancelled"
+        result_status?: "unknown" | "success" | "fail" | "partial"
+        fail_reason?: string | null
+        session_id?: string | null
+        model?: {
+          providerID?: string
+          modelID?: string
+          variant?: string
+        } | null
+        config?: {
+          mode?: "replace" | "merge"
+          value?: {
+            [key: string]: unknown
+          }
+        }
+        state_json?: {
+          mode?: "replace" | "merge"
+          value?: {
+            [key: string]: unknown
+          }
+        }
+        result_json?: {
+          mode?: "replace" | "merge"
+          value?: {
+            [key: string]: unknown
+          }
+        }
+        attempt_delta?: number
+        action_count?: number
+        max_attempts?: number
+        max_actions?: number
+        title?: string
+      }
+      action_delta?: number
+      event?: {
+        kind: string
+        target_node_id?: string
+        payload?: {
+          [key: string]: unknown
+        }
+      }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "nodeID" },
+            { in: "query", key: "directory" },
+            { in: "body", key: "source" },
+            { in: "body", key: "patch" },
+            { in: "body", key: "action_delta" },
+            { in: "body", key: "event" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).patch<WorkflowNodeUpdateResponses, WorkflowNodeUpdateErrors, ThrowOnError>({
+      url: "/workflow/node/{nodeID}",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Pull workflow node commands
+   */
+  public pull<ThrowOnError extends boolean = false>(
+    parameters: {
+      nodeID: string
+      directory?: string
+      cursor?: number
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "nodeID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "cursor" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<WorkflowNodePullResponses, WorkflowNodePullErrors, ThrowOnError>({
+      url: "/workflow/node/{nodeID}/pull",
+      ...options,
+      ...params,
+    })
+  }
+}
+
+export class Edge extends HeyApiClient {
+  /**
+   * Create workflow edge
+   */
+  public create<ThrowOnError extends boolean = false>(
+    parameters: {
+      workflowID: string
+      directory?: string
+      from_node_id?: string
+      to_node_id?: string
+      label?: string
+      config?: {
+        [key: string]: unknown
+      }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "workflowID" },
+            { in: "query", key: "directory" },
+            { in: "body", key: "from_node_id" },
+            { in: "body", key: "to_node_id" },
+            { in: "body", key: "label" },
+            { in: "body", key: "config" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<WorkflowEdgeCreateResponses, WorkflowEdgeCreateErrors, ThrowOnError>({
+      url: "/workflow/{workflowID}/edge",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
+export class Checkpoint extends HeyApiClient {
+  /**
+   * Create workflow checkpoint
+   */
+  public create<ThrowOnError extends boolean = false>(
+    parameters: {
+      workflowID: string
+      directory?: string
+      node_id?: string
+      label?: string
+      status?: "pending" | "passed" | "failed" | "skipped"
+      config?: {
+        [key: string]: unknown
+      }
+      result_json?: {
+        [key: string]: unknown
+      }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "workflowID" },
+            { in: "query", key: "directory" },
+            { in: "body", key: "node_id" },
+            { in: "body", key: "label" },
+            { in: "body", key: "status" },
+            { in: "body", key: "config" },
+            { in: "body", key: "result_json" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      WorkflowCheckpointCreateResponses,
+      WorkflowCheckpointCreateErrors,
+      ThrowOnError
+    >({
+      url: "/workflow/{workflowID}/checkpoint",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
+export class Workflow extends HeyApiClient {
+  /**
+   * Get workflow for session
+   */
+  public session<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<WorkflowSessionResponses, WorkflowSessionErrors, ThrowOnError>({
+      url: "/workflow/session/{sessionID}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get workflow
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters: {
+      workflowID: string
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "workflowID" },
+            { in: "query", key: "directory" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<WorkflowGetResponses, WorkflowGetErrors, ThrowOnError>({
+      url: "/workflow/{workflowID}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Read workflow delta
+   */
+  public read<ThrowOnError extends boolean = false>(
+    parameters: {
+      workflowID: string
+      directory?: string
+      cursor?: number
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "workflowID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "cursor" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<WorkflowReadResponses, WorkflowReadErrors, ThrowOnError>({
+      url: "/workflow/{workflowID}/read",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get workflow diff
+   */
+  public diff<ThrowOnError extends boolean = false>(
+    parameters: {
+      workflowID: string
+      directory?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "workflowID" },
+            { in: "query", key: "directory" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<WorkflowDiffResponses, WorkflowDiffErrors, ThrowOnError>({
+      url: "/workflow/{workflowID}/diff",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Create workflow
+   */
+  public create<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      session_id?: string
+      title?: string
+      config?: {
+        [key: string]: unknown
+      }
+      summary?: {
+        [key: string]: unknown
+      }
+      nodes?: Array<{
+        id?: string
+        session_id?: string
+        title: string
+        agent: string
+        model?: {
+          providerID?: string
+          modelID?: string
+          variant?: string
+        }
+        config?: {
+          [key: string]: unknown
+        }
+        status?:
+          | "pending"
+          | "ready"
+          | "running"
+          | "waiting"
+          | "paused"
+          | "interrupted"
+          | "completed"
+          | "failed"
+          | "cancelled"
+        result_status?: "unknown" | "success" | "fail" | "partial"
+        fail_reason?: string
+        action_count?: number
+        attempt?: number
+        max_attempts?: number
+        max_actions?: number
+        state_json?: {
+          [key: string]: unknown
+        }
+        result_json?: {
+          [key: string]: unknown
+        }
+        position?: number
+      }>
+      edges?: Array<{
+        id?: string
+        from_node_id: string
+        to_node_id: string
+        label?: string
+        config?: {
+          [key: string]: unknown
+        }
+      }>
+      checkpoints?: Array<{
+        id?: string
+        node_id: string
+        label: string
+        status?: "pending" | "passed" | "failed" | "skipped"
+        config?: {
+          [key: string]: unknown
+        }
+        result_json?: {
+          [key: string]: unknown
+        }
+      }>
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "body", key: "session_id" },
+            { in: "body", key: "title" },
+            { in: "body", key: "config" },
+            { in: "body", key: "summary" },
+            { in: "body", key: "nodes" },
+            { in: "body", key: "edges" },
+            { in: "body", key: "checkpoints" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<WorkflowCreateResponses, WorkflowCreateErrors, ThrowOnError>({
+      url: "/workflow",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Control workflow node
+   */
+  public control<ThrowOnError extends boolean = false>(
+    parameters: {
+      workflowID: string
+      directory?: string
+      nodeID?: string
+      source?: string
+      command?: "continue" | "pause" | "resume" | "interrupt" | "retry" | "cancel" | "inject_context"
+      payload?: {
+        [key: string]: unknown
+      }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "workflowID" },
+            { in: "query", key: "directory" },
+            { in: "body", key: "nodeID" },
+            { in: "body", key: "source" },
+            { in: "body", key: "command" },
+            { in: "body", key: "payload" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<WorkflowControlResponses, WorkflowControlErrors, ThrowOnError>({
+      url: "/workflow/{workflowID}/control",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  private _node?: Node
+  get node(): Node {
+    return (this._node ??= new Node({ client: this.client }))
+  }
+
+  private _edge?: Edge
+  get edge(): Edge {
+    return (this._edge ??= new Edge({ client: this.client }))
+  }
+
+  private _checkpoint?: Checkpoint
+  get checkpoint(): Checkpoint {
+    return (this._checkpoint ??= new Checkpoint({ client: this.client }))
+  }
+}
+
 export class Question extends HeyApiClient {
   /**
    * List pending questions
@@ -3955,6 +4542,11 @@ export class OpencodeClient extends HeyApiClient {
   private _permission?: Permission
   get permission(): Permission {
     return (this._permission ??= new Permission({ client: this.client }))
+  }
+
+  private _workflow?: Workflow
+  get workflow(): Workflow {
+    return (this._workflow ??= new Workflow({ client: this.client }))
   }
 
   private _question?: Question

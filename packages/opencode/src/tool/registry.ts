@@ -29,6 +29,17 @@ import { LspTool } from "./lsp"
 import { Truncate } from "./truncation"
 
 import { ApplyPatchTool } from "./apply_patch"
+import {
+  WorkflowCheckpointCreateTool,
+  WorkflowControlTool,
+  WorkflowCreateTool,
+  WorkflowEdgeCreateTool,
+  WorkflowNodeCreateTool,
+  WorkflowNodeStartTool,
+  WorkflowPullTool,
+  WorkflowReadTool,
+  WorkflowUpdateTool,
+} from "./workflow"
 import { Glob } from "../util/glob"
 import { pathToFileURL } from "url"
 
@@ -117,6 +128,15 @@ export namespace ToolRegistry {
       WebSearchTool,
       CodeSearchTool,
       SkillTool,
+      WorkflowCreateTool,
+      WorkflowNodeCreateTool,
+      WorkflowNodeStartTool,
+      WorkflowEdgeCreateTool,
+      WorkflowCheckpointCreateTool,
+      WorkflowReadTool,
+      WorkflowControlTool,
+      WorkflowUpdateTool,
+      WorkflowPullTool,
       ApplyPatchTool,
       ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [LspTool] : []),
       ...(config.experimental?.batch_tool === true ? [BatchTool] : []),

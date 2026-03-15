@@ -32,6 +32,10 @@ export function SessionSidePanel(props: {
   focusReviewDiff: (path: string) => void
   reviewSnap: boolean
   size: Sizing
+  diffs?: () => ReturnType<typeof useSync>["data"]["session_diff"][string]
+  hasReview?: () => boolean
+  reviewCount?: () => number
+  diffsReady?: () => boolean
 }) {
   const layout = useLayout()
   const sync = useSync()
@@ -55,10 +59,12 @@ export function SessionSidePanel(props: {
   const treeWidth = createMemo(() => (fileOpen() ? `${layout.fileTree.width()}px` : "0px"))
 
   const info = createMemo(() => (params.id ? sync.session.get(params.id) : undefined))
-  const diffs = createMemo(() => (params.id ? (sync.data.session_diff[params.id] ?? []) : []))
-  const reviewCount = createMemo(() => Math.max(info()?.summary?.files ?? 0, diffs().length))
-  const hasReview = createMemo(() => reviewCount() > 0)
+  const diffs = createMemo(() => props.diffs?.() ?? (params.id ? (sync.data.session_diff[params.id] ?? []) : []))
+  const reviewCount = createMemo(() => props.reviewCount?.() ?? Math.max(info()?.summary?.files ?? 0, diffs().length))
+  const hasReview = createMemo(() => props.hasReview?.() ?? reviewCount() > 0)
   const diffsReady = createMemo(() => {
+    const override = props.diffsReady?.()
+    if (override !== undefined) return override
     const id = params.id
     if (!id) return true
     if (!hasReview()) return true

@@ -66,6 +66,7 @@ export interface SessionReviewProps {
   title?: JSX.Element
   empty?: JSX.Element
   split?: boolean
+  flat?: boolean
   diffStyle?: SessionReviewDiffStyle
   onDiffStyleChange?: (diffStyle: SessionReviewDiffStyle) => void
   onDiffRendered?: () => void
@@ -149,13 +150,14 @@ export const SessionReview = (props: SessionReviewProps) => {
   const commenting = () => store.commenting
   const opened = () => store.opened
 
-  const open = () => props.open ?? store.open
   const files = createMemo(() => props.diffs.map((diff) => diff.file))
+  const open = () => (props.flat ? files() : props.open ?? store.open)
   const diffs = createMemo(() => new Map(props.diffs.map((diff) => [diff.file, diff] as const)))
   const diffStyle = () => props.diffStyle ?? (props.split ? "split" : "unified")
   const hasDiffs = () => files().length > 0
 
   const handleChange = (open: string[]) => {
+    if (props.flat) return
     props.onOpenChange?.(open)
     if (props.open !== undefined) return
     setStore("open", open)
@@ -250,7 +252,7 @@ export const SessionReview = (props: SessionReviewProps) => {
               onSelect={(style) => style && props.onDiffStyleChange?.(style)}
             />
           </Show>
-          <Show when={hasDiffs()}>
+          <Show when={hasDiffs() && !props.flat}>
             <Button
               size="small"
               icon="chevron-grabber-vertical"
@@ -281,7 +283,7 @@ export const SessionReview = (props: SessionReviewProps) => {
         <div data-slot="session-review-container" class={props.classes?.container}>
           <Show when={hasDiffs()} fallback={props.empty}>
             <div class="pb-6">
-              <Accordion multiple value={open()} onChange={handleChange}>
+          <Accordion multiple value={open()} onChange={handleChange} data-flat={props.flat ? "" : undefined}>
                 <For each={files()}>
                   {(file) => {
                     let wrapper: HTMLDivElement | undefined
