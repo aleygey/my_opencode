@@ -62,6 +62,12 @@ export type SessionReviewFocus = { file: string; id: string }
 
 type ReviewDiff = FileDiff & { preloaded?: PreloadMultiFileDiffResult<any> }
 
+const asList = <T,>(value: readonly T[] | Record<string, T> | undefined) =>
+  Array.isArray(value) ? value : Object.values(value ?? {})
+
+const hasPath = (diff: FileDiff): diff is ReviewDiff & { file: string } =>
+  typeof diff.file === "string" && diff.file.length > 0
+
 export interface SessionReviewProps {
   title?: JSX.Element
   empty?: JSX.Element
@@ -150,9 +156,10 @@ export const SessionReview = (props: SessionReviewProps) => {
   const commenting = () => store.commenting
   const opened = () => store.opened
 
-  const files = createMemo(() => props.diffs.map((diff) => diff.file))
+  const list = createMemo(() => asList(props.diffs).filter(hasPath))
+  const files = createMemo(() => list().map((diff) => diff.file))
   const open = () => (props.flat ? files() : props.open ?? store.open)
-  const diffs = createMemo(() => new Map(props.diffs.map((diff) => [diff.file, diff] as const)))
+  const diffs = createMemo(() => new Map(list().map((diff) => [diff.file, diff] as const)))
   const diffStyle = () => props.diffStyle ?? (props.split ? "split" : "unified")
   const hasDiffs = () => files().length > 0
 

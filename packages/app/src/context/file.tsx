@@ -49,6 +49,9 @@ function errorMessage(error: unknown, fallback: string) {
   return fallback
 }
 
+const asList = <T,>(value: T[] | Record<string, T> | undefined) =>
+  Array.isArray(value) ? value : Object.values(value ?? {})
+
 export const { use: useFile, provider: FileProvider } = createSimpleContext({
   name: "File",
   gate: false,
@@ -73,7 +76,7 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
     const tree = createFileTreeStore({
       scope,
       normalizeDir: path.normalizeDir,
-      list: (dir) => sdk.client.file.list({ path: dir }).then((x) => x.data ?? []),
+      list: (dir) => sdk.client.file.list({ path: dir }).then((x) => asList(x.data)),
       onError: (message) => {
         showToast({
           variant: "error",
@@ -196,7 +199,7 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
 
     const search = (query: string, dirs: "true" | "false") =>
       sdk.client.find.files({ query, dirs }).then(
-        (x) => (x.data ?? []).map(path.normalize),
+        (x) => asList(x.data).map(path.normalize),
         () => [],
       )
 

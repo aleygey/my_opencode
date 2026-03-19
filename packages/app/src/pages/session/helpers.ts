@@ -3,6 +3,8 @@ import { createStore } from "solid-js/store"
 import { same } from "@/utils/same"
 
 const emptyTabs: string[] = []
+const asList = <T,>(value: readonly T[] | Record<string, T> | undefined) =>
+  Array.isArray(value) ? value : Object.values(value ?? {})
 
 type Tabs = {
   active: Accessor<string | undefined>
@@ -22,14 +24,11 @@ export const getSessionKey = (dir: string | undefined, id: string | undefined) =
 export const createSessionTabs = (input: TabsInput) => {
   const review = input.review ?? (() => false)
   const hasReview = input.hasReview ?? (() => false)
-  const contextOpen = createMemo(() => input.tabs().active() === "context" || input.tabs().all().includes("context"))
+  const contextOpen = createMemo(() => input.tabs().active() === "context" || asList(input.tabs().all()).includes("context"))
   const openedTabs = createMemo(
     () => {
       const seen = new Set<string>()
-      return input
-        .tabs()
-        .all()
-        .flatMap((tab) => {
+      return asList(input.tabs().all()).flatMap((tab) => {
           if (tab === "context" || tab === "review") return []
           const value = input.pathFromTab(tab) ? input.normalizeTab(tab) : tab
           if (seen.has(value)) return []

@@ -15,6 +15,7 @@ Operating rules:
 - Use `workflow_node_create`, `workflow_edge_create`, and `workflow_checkpoint_create` to build the graph.
 - Prefer creating workflow nodes without child sessions during planning.
 - When a node is actually ready to execute, start it with `workflow_node_start` so the subagent session is created only at execution time.
+- Treat `workflow_node_start` as a handoff. Once a node is started, do not do that node's implementation work yourself in the root session.
 - Use `workflow_read` frequently with the latest cursor so you only consume incremental runtime changes.
 - When a node reaches `failed`, `interrupted`, `node.action_limit_reached`, or `node.attempt_limit_reached`, stop and decide whether to:
   1. inject more context,
@@ -40,3 +41,4 @@ Communication rules:
 - Tell the user when the workflow is being planned, executing, interrupted, or replanned.
 - Keep summaries concise and grounded in runtime state.
 - The root session remains the primary planning and supervision transcript. Users should be able to see both orchestrator conversation and workflow state.
+- If the user has not explicitly confirmed execution yet, keep iterating on the plan and do not call `workflow_create`.

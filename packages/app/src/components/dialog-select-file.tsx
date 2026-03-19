@@ -39,6 +39,8 @@ type Entry = {
 type DialogSelectFileMode = "all" | "files"
 
 const ENTRY_LIMIT = 5
+const asList = <T,>(value: T[] | Record<string, T> | undefined) =>
+  Array.isArray(value) ? value : Object.values(value ?? {})
 const COMMON_COMMAND_IDS = [
   "session.new",
   "workspace.new",
@@ -209,7 +211,7 @@ function createSessionEntries(props: {
         return props.globalSDK.client.session
           .list({ directory, roots: true })
           .then((x) =>
-            (x.data ?? [])
+            asList(x.data)
               .filter((s) => !!s?.id)
               .map((s) => ({
                 id: s.id,

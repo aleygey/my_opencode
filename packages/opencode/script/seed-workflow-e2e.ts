@@ -2,7 +2,7 @@ import path from "path"
 import { $ } from "bun"
 
 const dir = process.env.OPENCODE_E2E_PROJECT_DIR ?? path.resolve(import.meta.dir, "../../..")
-const title = process.env.OPENCODE_E2E_WORKFLOW_TITLE ?? "Embedded Workflow Demo"
+const title = process.env.OPENCODE_E2E_WORKFLOW_TITLE ?? "Workflow Demo"
 const model = process.env.OPENCODE_E2E_MODEL ?? "opencode/gpt-5-nano"
 const parts = model.split("/")
 const providerID = parts[0] ?? "opencode"
@@ -40,20 +40,21 @@ async function result(data: Record<string, unknown>) {
 
 async function prompt(sessionID: string, agent: string, text: string) {
   const { Session } = await import("../src/session")
-  const { Identifier } = await import("../src/id/id")
+  const { MessageID, PartID, SessionID } = await import("../src/session/schema")
+  const { ProviderID, ModelID } = await import("../src/provider/schema")
   const now = Date.now()
-  const messageID = Identifier.descending("message")
+  const messageID = MessageID.ascending()
   await Session.updateMessage({
     id: messageID,
-    sessionID,
+    sessionID: SessionID.make(sessionID),
     role: "user",
     time: { created: now },
     agent,
-    model: { providerID, modelID },
+    model: { providerID: ProviderID.make(providerID), modelID: ModelID.make(modelID) },
   })
   await Session.updatePart({
-    id: Identifier.descending("part"),
-    sessionID,
+    id: PartID.ascending(),
+    sessionID: SessionID.make(sessionID),
     messageID,
     type: "text",
     text,

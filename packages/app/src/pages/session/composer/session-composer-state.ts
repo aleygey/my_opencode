@@ -11,6 +11,9 @@ import { useSync } from "@/context/sync"
 import { composerDriver, composerEnabled, composerEvent } from "@/testing/session-composer"
 import { sessionPermissionRequest, sessionQuestionRequest } from "./session-request-tree"
 
+const asList = <T,>(value: readonly T[] | Record<string, T> | undefined) =>
+  Array.isArray(value) ? value : Object.values(value ?? {})
+
 export const todoState = (input: {
   count: number
   done: boolean
@@ -91,10 +94,10 @@ export function createSessionComposerState(options?: { closeMs?: number | (() =>
   })
 
   const todos = createMemo((): Todo[] => {
-    if (test.on && test.todos !== undefined) return test.todos
+    if (test.on && test.todos !== undefined) return asList(test.todos)
     const id = params.id
     if (!id) return []
-    return globalSync.data.session_todo[id] ?? []
+    return asList(globalSync.data.session_todo[id])
   })
 
   const done = createMemo(

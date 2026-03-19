@@ -51,7 +51,6 @@ import { useSessionCommands } from "@/pages/session/use-session-commands"
 import { useSessionHashScroll } from "@/pages/session/use-session-hash-scroll"
 import {
   createWorkflowRuntime,
-  WorkflowContextBar,
   WorkflowRuntimePanel,
   WorkflowSessionStrip,
 } from "@/pages/session/workflow-panel"
@@ -525,6 +524,13 @@ export default function Page() {
     navigate(`/${slug}/session/${sessionID}`)
   }
 
+  const selectWorkflowRoot = (view: "graph" | "session") => {
+    const snapshot = workflowSnapshot()
+    if (!snapshot) return
+    setStore("workflow", view)
+    selectWorkflowSession(snapshot.workflow.session_id)
+  }
+
   createEffect(() => {
     const snapshot = workflowSnapshot()
     const sessionID = params.id
@@ -568,6 +574,7 @@ export default function Page() {
     messageId: undefined as string | undefined,
     mobileTab: "session" as "session" | "changes",
     changes: "session" as "session" | "turn",
+    workflow: "graph" as "graph" | "session",
     newSessionWorktree: "main",
     deferRender: false,
   })
@@ -1786,19 +1793,18 @@ export default function Page() {
             <WorkflowSessionStrip
               snapshot={workflowSnapshot()!}
               currentSessionID={params.id}
+              rootView={store.workflow}
+              onSelectRootView={selectWorkflowRoot}
               onSelectSession={selectWorkflowSession}
             />
-          </Show>
-          <Show when={params.id && workflowSnapshot()}>
-            <WorkflowContextBar snapshot={workflowSnapshot()!} currentSessionID={params.id} />
           </Show>
           <div class="flex-1 min-h-0 overflow-hidden">
             <Switch>
               <Match when={params.id}>
                 <Switch>
                   <Match when={workflowRootSelected() && workflowSnapshot()}>
-                    <div class="flex h-full min-h-0 flex-col">
-                      <div class="min-h-0 basis-[34%] border-b border-border-weak-base">
+                    <Switch>
+                      <Match when={store.workflow === "session"}>
                         <Show when={lastUserMessage()}>
                           <MessageTimeline
                             mobileChanges={mobileChanges()}
@@ -1841,15 +1847,15 @@ export default function Page() {
                             anchor={anchor}
                           />
                         </Show>
-                      </div>
-                      <div class="min-h-0 flex-1">
+                      </Match>
+                      <Match when={true}>
                         <WorkflowRuntimePanel
                           snapshot={workflowSnapshot()!}
                           currentSessionID={params.id}
                           onSelectSession={selectWorkflowSession}
                         />
-                      </div>
-                    </div>
+                      </Match>
+                    </Switch>
                   </Match>
                   <Match when={true}>
                     <Show when={lastUserMessage()}>
@@ -1899,7 +1905,7 @@ export default function Page() {
               </Match>
               <Match when={true}>
                 <div class="flex h-full flex-col">
-                  <Show when={local.agent.current()?.name?.toLowerCase().includes("orchestrator")}>
+                  <Show when={local.agent.current()?.name?.toLowerCase()?.includes("orchestrator")}>
                     <div class="border-b border-border-weak-base bg-background-panel px-5 py-4">
                       <div class="flex items-center gap-2">
                         <span class="rounded-full border border-sky-500/25 bg-sky-500/8 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-sky-700 dark:text-sky-300">

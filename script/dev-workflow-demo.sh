@@ -2,6 +2,8 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+bind_host="${OPENCODE_WORKFLOW_BIND_HOST:-0.0.0.0}"
+public_host="${OPENCODE_WORKFLOW_PUBLIC_HOST:-localhost}"
 server_port="${OPENCODE_WORKFLOW_SERVER_PORT:-4211}"
 app_port="${OPENCODE_WORKFLOW_APP_PORT:-4173}"
 keep="${OPENCODE_WORKFLOW_KEEP_SANDBOX:-0}"
@@ -56,6 +58,7 @@ need() {
 
 need bun
 need curl
+need lsof
 need python3
 need tar
 
@@ -77,29 +80,18 @@ copy_state() {
 }
 
 port_free() {
-  python3 - "$1" <<'PY'
-import socket
-import sys
-
-port = int(sys.argv[1])
-sock = socket.socket()
-sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-try:
-    sock.bind(("127.0.0.1", port))
-except OSError:
-    print("busy")
-else:
-    print("free")
-finally:
-    sock.close()
-PY
+  if lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "busy"
+    return
+  fi
+  echo "free"
 }
 
 wait_http() {
   local url="$1"
   local label="$2"
   for _ in $(seq 1 240); do
-    if curl -sf "$url" >/dev/null 2>&1; then
+    if env NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost curl -sf "$url" >/dev/null 2>&1; then
       return
     fi
     sleep 0.5
@@ -187,7 +179,7 @@ echo "seeding workflow demo..."
 root_session_id="$(read_json "$seed_file" rootSessionID)"
 workflow_id="$(read_json "$seed_file" workflowID)"
 workflow_slug="$(slug)"
-workflow_url="http://127.0.0.1:${app_port}/${workflow_slug}/session/${root_session_id}"
+workflow_url="http://${public_host}:${app_port}/${workflow_slug}/session/${root_session_id}"
 directory_q="$(python3 - "$root" <<'PY'
 import urllib.parse
 import sys
@@ -199,7 +191,7 @@ PY
 echo "starting opencode server on :$server_port"
 (
   cd "$root/packages/opencode"
-  bun run --conditions=browser ./src/index.ts serve --hostname 127.0.0.1 --port "$server_port"
+  bun run --conditions=browser ./src/index.ts serve --hostname "$bind_host" --port "$server_port" --cors "http://${public_host}:${app_port}"
 ) >"$server_log" 2>&1 &
 server_pid="$!"
 
@@ -210,13 +202,16 @@ use_node
 echo "starting app on :$app_port"
 (
   cd "$root/packages/app"
-  VITE_OPENCODE_SERVER_HOST=127.0.0.1 \
+  VITE_OPENCODE_SERVER_HOST="$public_host" \
     VITE_OPENCODE_SERVER_PORT="$server_port" \
-    bun run dev -- --host 127.0.0.1 --port "$app_port"
+    bun run build
+  VITE_OPENCODE_SERVER_HOST="$public_host" \
+    VITE_OPENCODE_SERVER_PORT="$server_port" \
+    bun run serve -- --host "$bind_host" --port "$app_port"
 ) >"$app_log" 2>&1 &
 app_pid="$!"
 
-wait_http "http://127.0.0.1:${app_port}" "vite app"
+wait_http "http://127.0.0.1:${app_port}" "app preview"
 
 echo
 echo "Workflow demo is ready."
@@ -228,8 +223,8 @@ echo "app log: $app_log"
 echo "seed log: $seed_log"
 echo
 echo "API checks:"
-echo "  curl -sf http://127.0.0.1:${server_port}/global/health"
-echo "  curl -sf \"http://127.0.0.1:${server_port}/workflow/session/${root_session_id}?directory=${directory_q}\""
+echo "  curl -sf http://${public_host}:${server_port}/global/health"
+echo "  curl -sf \"http://${public_host}:${server_port}/workflow/session/${root_session_id}?directory=${directory_q}\""
 echo
 echo "Press Ctrl+C to stop."
 

@@ -26,6 +26,9 @@ import { createOpenSessionFileTab, createSessionTabs, getTabReorderIndex, type S
 import { setSessionHandoff } from "@/pages/session/handoff"
 import { useSessionLayout } from "@/pages/session/session-layout"
 
+const asList = <T,>(value: readonly T[] | Record<string, T> | undefined) =>
+  Array.isArray(value) ? value : Object.values(value ?? {})
+
 export function SessionSidePanel(props: {
   reviewPanel: () => JSX.Element
   activeDiff?: string
@@ -59,7 +62,7 @@ export function SessionSidePanel(props: {
   const treeWidth = createMemo(() => (fileOpen() ? `${layout.fileTree.width()}px` : "0px"))
 
   const info = createMemo(() => (params.id ? sync.session.get(params.id) : undefined))
-  const diffs = createMemo(() => props.diffs?.() ?? (params.id ? (sync.data.session_diff[params.id] ?? []) : []))
+  const diffs = createMemo(() => asList(props.diffs?.() ?? (params.id ? sync.data.session_diff[params.id] : undefined)))
   const reviewCount = createMemo(() => props.reviewCount?.() ?? Math.max(info()?.summary?.files ?? 0, diffs().length))
   const hasReview = createMemo(() => props.hasReview?.() ?? reviewCount() > 0)
   const diffsReady = createMemo(() => {
@@ -77,7 +80,7 @@ export function SessionSidePanel(props: {
     return "session.review.noChanges"
   })
 
-  const diffFiles = createMemo(() => diffs().map((d) => d.file))
+  const diffFiles = createMemo(() => diffs().map((d) => d.file).filter((file): file is string => typeof file === "string"))
   const kinds = createMemo(() => {
     const merge = (a: "add" | "del" | "mix" | undefined, b: "add" | "del" | "mix") => {
       if (!a) return b
@@ -85,11 +88,12 @@ export function SessionSidePanel(props: {
       return "mix" as const
     }
 
-    const normalize = (p: string) => p.replaceAll("\\\\", "/").replace(/\/+$/, "")
+    const normalize = (p: string | undefined) => (p ?? "").replaceAll("\\\\", "/").replace(/\/+$/, "")
 
     const out = new Map<string, "add" | "del" | "mix">()
     for (const diff of diffs()) {
       const file = normalize(diff.file)
+      if (!file) continue
       const kind = diff.status === "added" ? "add" : diff.status === "deleted" ? "del" : "mix"
 
       out.set(file, kind)

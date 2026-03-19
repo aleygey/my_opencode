@@ -1,5 +1,5 @@
 import type { FileDiff } from "@opencode-ai/sdk/v2/client"
-import { createMemo, createEffect, For, Match, on, onCleanup, Show, Switch } from "solid-js"
+import { createMemo, createEffect, For, on, onCleanup, Show } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useParams } from "@solidjs/router"
 import { useSDK } from "@/context/sdk"
@@ -20,6 +20,17 @@ export type WorkflowInfo = {
   current_node_id?: string
   selected_node_id?: string
   version: number
+}
+
+export type WorkflowRuntime = {
+  phase: string
+  active_node_id?: string
+  waiting_node_ids: string[]
+  failed_node_ids: string[]
+  command_count: number
+  update_count: number
+  pull_count: number
+  last_event_id: number
 }
 
 export type WorkflowNode = {
@@ -43,6 +54,14 @@ export type WorkflowNode = {
   max_actions: number
   version: number
   position: number
+  state_json?: Record<string, unknown>
+  result_json?: Record<string, unknown>
+  time: {
+    created: number
+    updated: number
+    started?: number
+    completed?: number
+  }
 }
 
 export type WorkflowEdge = {
@@ -67,6 +86,7 @@ export type WorkflowEvent = {
 
 export type WorkflowSnapshot = {
   workflow: WorkflowInfo
+  runtime: WorkflowRuntime
   nodes: WorkflowNode[]
   edges: WorkflowEdge[]
   checkpoints: WorkflowCheckpoint[]
@@ -84,6 +104,7 @@ export type WorkflowCheckpoint = {
 
 type WorkflowReadResult = {
   workflow?: WorkflowInfo
+  runtime?: WorkflowRuntime
   nodes: WorkflowNode[]
   edges: WorkflowEdge[]
   checkpoints: WorkflowSnapshot["checkpoints"]
@@ -113,9 +134,7 @@ type LayoutGraph = {
   nodes: LayoutNode[]
   width: number
   height: number
-  bus_x: number
-  bus_y: number
-  bus_h: number
+  rootW: number
   orchestrator_x: number
   orchestrator_y: number
 }
@@ -141,12 +160,44 @@ const modelLabel = (node: Pick<WorkflowNode, "model">) => {
   return `${node.model.providerID}/${node.model.modelID}`
 }
 
+const nodeTone = (status: string) => {
+  if (status === "completed") return "success"
+  if (status === "failed" || status === "cancelled") return "error"
+  if (status === "running" || status === "waiting") return "info"
+  return "neutral"
+}
+
+const terminal = (status: string) => ["completed", "failed", "cancelled"].includes(status)
+
 const statusDot = (status: string) => {
   if (status === "completed") return "bg-emerald-500"
   if (status === "failed" || status === "cancelled") return "bg-red-500"
   if (status === "interrupted" || status === "paused") return "bg-amber-500"
   if (status === "running" || status === "waiting") return "bg-sky-500 animate-pulse"
   return "bg-zinc-400"
+}
+
+const nodeBorder = (status: string, selected: boolean) => {
+  if (selected) return "border-sky-500/70"
+  if (status === "running" || status === "waiting") return "border-sky-500/55"
+  if (status === "completed") return "border-emerald-500/35"
+  if (status === "failed" || status === "cancelled") return "border-red-500/35"
+  return "border-slate-200"
+}
+
+const nodeBg = (status: string, selected: boolean) => {
+  if (selected) return "bg-sky-50/90"
+  if (status === "running" || status === "waiting") return "bg-sky-50/65"
+  if (status === "completed") return "bg-emerald-50/65"
+  if (status === "failed" || status === "cancelled") return "bg-red-50/65"
+  return "bg-white"
+}
+
+const nodeIcon = (status: string) => {
+  if (status === "completed") return "bg-emerald-500/10 text-emerald-700"
+  if (status === "failed" || status === "cancelled") return "bg-red-500/10 text-red-700"
+  if (status === "running" || status === "waiting") return "bg-sky-500/10 text-sky-700"
+  return "bg-slate-100 text-slate-600"
 }
 
 const eventSummary = (event: WorkflowEvent) => {
@@ -156,6 +207,14 @@ const eventSummary = (event: WorkflowEvent) => {
   if (event.payload.status) return `status: ${String(event.payload.status)}`
   if (event.payload.result_status) return `result: ${String(event.payload.result_status)}`
   return "state change persisted on runtime bus"
+}
+
+const pretty = (value: unknown) => JSON.stringify(value, null, 2)
+
+const short = (value: unknown) => {
+  if (!value) return ""
+  const json = pretty(value)
+  return json.length > 320 ? `${json.slice(0, 317)}...` : json
 }
 
 function Badge(props: { tone: string; children: string | number }) {
@@ -192,12 +251,11 @@ const mergeNodes = (current: WorkflowNode[], next: WorkflowNode[]) => {
 }
 
 function layout(snapshot: WorkflowSnapshot) {
-  const cardW = 188
-  const cardH = 132
-  const orchestrator_x = 32
-  const orchestrator_y = 70
-  const bus_x = 236
-  const bus_y = 30
+  const cardW = 264
+  const cardH = 148
+  const rootW = 220
+  const orchestrator_x = 40
+  const orchestrator_y = 96
   const nodes = sortNodes(snapshot.nodes)
   const parents = new Map<string, string[]>()
   for (const edge of snapshot.edges) {
@@ -235,22 +293,20 @@ function layout(snapshot: WorkflowSnapshot) {
         node,
         level: value,
         row,
-        x: 332 + value * 224,
-        y: 62 + row * 168,
+        x: 360 + value * 316,
+        y: 96 + row * 188,
       })
     }
   }
 
   const items = [...placed.values()]
-  const width = Math.max(...items.map((item) => item.x), 0) + cardW + 40
-  const height = Math.max(...items.map((item) => item.y), 0) + cardH + 72
+  const width = Math.max(...items.map((item) => item.x), 0) + cardW + 72
+  const height = Math.max(...items.map((item) => item.y), 0) + cardH + 96
   return {
     nodes: items,
     width,
     height,
-    bus_x,
-    bus_y,
-    bus_h: height - 52,
+    rootW,
     orchestrator_x,
     orchestrator_y,
   }
@@ -343,6 +399,9 @@ export function createWorkflowRuntime() {
         if (data.workflow) {
           setStore("snapshot", "workflow", data.workflow)
         }
+        if (data.runtime) {
+          setStore("snapshot", "runtime", data.runtime)
+        }
         if (data.nodes.length > 0) {
           setStore("snapshot", "nodes", (current) => mergeNodes(current ?? [], data.nodes))
         }
@@ -377,6 +436,16 @@ export function createWorkflowRuntime() {
     ),
   )
 
+  createEffect(() => {
+    const snapshot = workflow()
+    if (!snapshot) return
+    const fast = terminal(snapshot.workflow.status) ? 8000 : 2500
+    const timer = setInterval(() => {
+      void read()
+    }, fast)
+    onCleanup(() => clearInterval(timer))
+  })
+
   const stop = sdk.event.listen((e) => {
     const snapshot = workflow()
     const event = e.details as WorkflowBusEvent
@@ -403,62 +472,95 @@ export function createWorkflowRuntime() {
 export function WorkflowSessionStrip(props: {
   snapshot: WorkflowSnapshot
   currentSessionID?: string
+  rootView: "graph" | "session"
+  onSelectRootView: (view: "graph" | "session") => void
   onSelectSession: (sessionID: string) => void
 }) {
   const sync = useSync()
-  const root = createMemo(() => props.snapshot.workflow.session_id)
-  const visible = createMemo(() =>
-    sortNodes(props.snapshot.nodes).filter(
-      (node) =>
-        !!node.session_id &&
-        (node.session_id === props.currentSessionID ||
-          props.snapshot.events.some((event) => event.node_id === node.id || event.session_id === node.session_id) ||
-          !["pending", "ready"].includes(node.status)),
-    ),
-  )
+  const done = createMemo(() => terminal(props.snapshot.workflow.status))
   const cards = createMemo(() => [
     {
-      id: props.snapshot.workflow.session_id,
+      key: `${props.snapshot.workflow.session_id}:graph`,
       title: props.snapshot.workflow.title,
-      subtitle: "orchestrator",
+      subtitle: done() ? "plan" : "workflow",
+      status: props.snapshot.workflow.status,
+      type: "graph" as const,
+      note: done() ? "plan" : "run",
+    },
+    {
+      key: props.snapshot.workflow.session_id,
+      sessionID: props.snapshot.workflow.session_id,
+      title: "Orchestrator",
+      subtitle: "root session",
       status: props.snapshot.workflow.status,
       type: "root" as const,
+      note: "root",
     },
-    ...visible()
+    ...(done()
+      ? []
+      : sortNodes(props.snapshot.nodes))
+      .filter(
+        (node) =>
+          !!node.session_id ||
+          props.snapshot.events.some((event) => event.node_id === node.id || event.target_node_id === node.id) ||
+          !["pending", "ready"].includes(node.status),
+      )
       .map((node, index) => ({
-        id: node.session_id!,
+        key: node.session_id ?? node.id,
+        sessionID: node.session_id,
         title: node.title,
         subtitle: node.agent,
         status: node.status,
         type: "node" as const,
-        model: modelLabel(node),
         note: `n${index + 1}`,
       })),
   ])
 
   return (
     <div class="border-b border-border-weak-base bg-background-stronger px-3 py-2 overflow-x-auto">
-      <div class="flex items-center gap-2 min-w-max">
+      <div class="flex items-center gap-1.5 min-w-max">
         <For each={cards()}>
           {(card) => {
-            const session = createMemo(() => sync.session.get(card.id))
-            const active = () => props.currentSessionID === card.id
+            const session = createMemo(() => (card.sessionID ? sync.session.get(card.sessionID) : undefined))
+            const active = () =>
+              card.type === "graph"
+                ? props.currentSessionID === props.snapshot.workflow.session_id && props.rootView === "graph"
+                : !!card.sessionID &&
+                  props.currentSessionID === card.sessionID &&
+                  (card.type !== "root" || props.rootView === "session")
             return (
               <button
-                class="inline-flex h-10 min-w-0 items-center gap-2 rounded-lg border px-3 text-left transition-all"
+                disabled={!card.sessionID && card.type !== "graph"}
+                class="inline-flex h-8 min-w-0 items-center gap-2 rounded-full border px-3 text-left transition-all"
                 classList={{
-                  "border-sky-500/45 bg-sky-500/8 shadow-xs": active() && card.type === "root",
-                  "border-emerald-500/25 bg-background-base shadow-xs": active() && card.type !== "root",
-                  "border-border-weak-base bg-background-panel hover:border-border-strong": !active(),
+                  "border-sky-500/45 bg-sky-500/8 shadow-xs": active(),
+                  "border-border-weak-base bg-background-base hover:border-border-strong":
+                    !active() && (!!card.sessionID || card.type === "graph"),
+                  "border-border-weak-base bg-background-panel/70 opacity-80": !active() && !card.sessionID,
                 }}
-                onClick={() => props.onSelectSession(card.id)}
+                onClick={() => {
+                  if (card.type === "graph") {
+                    props.onSelectRootView("graph")
+                    return
+                  }
+                  if (!card.sessionID) return
+                  if (card.type === "root") props.onSelectRootView("session")
+                  props.onSelectSession(card.sessionID)
+                }}
               >
-                <span class={`size-2 shrink-0 rounded-full ${card.type === "root" ? "bg-sky-500" : statusDot(card.status)}`} />
+                <span
+                  class={`size-2 shrink-0 rounded-full ${card.type === "graph" || card.type === "root" ? "bg-sky-500" : statusDot(card.status)}`}
+                />
                 <span class="rounded-full border border-border-weak-base px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.08em] text-text-weak">
-                  {card.id === root() ? "root" : card.type === "node" ? card.note : "root"}
+                  {card.note}
                 </span>
                 <span class="max-w-40 truncate text-12-medium text-text-strong">{session()?.title ?? card.title}</span>
                 <span class="truncate text-[11px] text-text-weak">{card.subtitle}</span>
+                <Show when={!card.sessionID}>
+                  <span class="rounded-full bg-amber-500/12 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">
+                    no session
+                  </span>
+                </Show>
               </button>
             )
           }}
@@ -540,10 +642,27 @@ export function WorkflowRuntimePanel(props: {
   currentSessionID?: string
   onSelectSession: (sessionID: string) => void
 }) {
+  const [store, setStore] = createStore({
+    node: undefined as string | undefined,
+    folded: false,
+  })
   const graph = createMemo(() => layout(props.snapshot))
-  const selectedNode = createMemo(() => {
-    const direct = props.snapshot.nodes.find((node) => node.session_id === props.currentSessionID)
-    if (direct) return direct
+  const currentNode = createMemo(() => {
+    const active = props.snapshot.runtime.active_node_id
+    if (active) {
+      const direct = props.snapshot.nodes.find((node) => node.id === active)
+      if (direct) return direct
+    }
+    const selected = props.snapshot.workflow.selected_node_id
+    if (selected) {
+      const direct = props.snapshot.nodes.find((node) => node.id === selected)
+      if (direct) return direct
+    }
+    const current = props.snapshot.workflow.current_node_id
+    if (current) {
+      const direct = props.snapshot.nodes.find((node) => node.id === current)
+      if (direct) return direct
+    }
     return props.snapshot.nodes.find((node) => node.status === "running" || node.status === "waiting")
   })
   const roots = createMemo(() => {
@@ -560,19 +679,49 @@ export function WorkflowRuntimePanel(props: {
     return map
   })
   const lastEvent = createMemo(() => props.snapshot.events.at(-1))
-  const summary = createMemo(() => {
-    const total = props.snapshot.nodes.length
-    const running = props.snapshot.nodes.filter((node) => node.status === "running" || node.status === "waiting").length
-    const waiting = props.snapshot.nodes.filter((node) => node.status === "waiting").length
-    const done = props.snapshot.nodes.filter((node) => node.status === "completed").length
-    const failed = props.snapshot.nodes.filter((node) => node.status === "failed").length
-    return { total, running, waiting, done, failed }
-  })
   const eventNodes = createMemo(() => {
     const map = new Map(props.snapshot.nodes.map((node) => [node.id, node.title]))
     return map
   })
+  createEffect(() => {
+    const picked = props.snapshot.nodes.find((node) => node.session_id === props.currentSessionID)?.id
+    if (picked && picked !== store.node) {
+      setStore("node", picked)
+      return
+    }
+    if (store.node && props.snapshot.nodes.some((node) => node.id === store.node)) return
+    if (currentNode()?.id) setStore("node", currentNode()!.id)
+  })
+  const selectedNode = createMemo(() => props.snapshot.nodes.find((node) => node.id === store.node) ?? currentNode())
   const focusedNodeID = createMemo(() => selectedNode()?.id)
+  const controls = createMemo(() =>
+    props.snapshot.events
+      .filter((event) => event.kind === "node.control" && event.target_node_id === focusedNodeID())
+      .toReversed(),
+  )
+  const pulls = createMemo(() =>
+    props.snapshot.events
+      .filter((event) => event.kind === "node.pulled" && event.node_id === focusedNodeID())
+      .toReversed(),
+  )
+  const updates = createMemo(() =>
+    props.snapshot.events
+      .filter((event) => event.node_id === focusedNodeID() && (event.kind === "node.updated" || event.source === "node"))
+      .toReversed(),
+  )
+  const lastPull = createMemo(() => pulls()[0])
+  const lastControl = createMemo(() => controls()[0])
+  const lastUpdate = createMemo(() => updates()[0])
+  const pending = createMemo(() =>
+    focusedNodeID()
+      ? props.snapshot.events.filter(
+          (event) =>
+            event.target_node_id === focusedNodeID() &&
+            event.kind === "node.control" &&
+            event.id > (lastPull()?.id ?? 0),
+        ).length
+      : 0,
+  )
   const focusedEvents = createMemo(() =>
     props.snapshot.events
       .filter(
@@ -585,6 +734,32 @@ export function WorkflowRuntimePanel(props: {
       .slice(-6)
       .reverse(),
   )
+  const focusedCheckpoints = createMemo(() => checkpointMap().get(focusedNodeID() ?? "") ?? [])
+  const rootPath = (target: LayoutNode) =>
+    `M ${graph().orchestrator_x + graph().rootW} ${graph().orchestrator_y + 70} C ${graph().orchestrator_x + graph().rootW + 48} ${graph().orchestrator_y + 70}, ${target.x - 48} ${target.y + 70}, ${target.x} ${target.y + 70}`
+  const edgePath = (from: LayoutNode, to: LayoutNode) =>
+    `M ${from.x + 264} ${from.y + 70} C ${from.x + 312} ${from.y + 70}, ${to.x - 48} ${to.y + 70}, ${to.x} ${to.y + 70}`
+  const activeRootIDs = createMemo(() => {
+    const node = currentNode()
+    if (!node) return new Set<string>()
+    return new Set(roots().filter((item) => item.id === node.id).map((item) => item.id))
+  })
+  const activeEdgeIDs = createMemo(() => {
+    const node = currentNode()
+    if (!node) return new Set<string>()
+    return new Set(props.snapshot.edges.filter((edge) => edge.to_node_id === node.id).map((edge) => edge.id))
+  })
+  const doneEdgeIDs = createMemo(() =>
+    new Set(
+      props.snapshot.edges
+        .filter((edge) => {
+          const to = props.snapshot.nodes.find((node) => node.id === edge.to_node_id)
+          if (!to) return false
+          return !["pending"].includes(to.status)
+        })
+        .map((edge) => edge.id),
+    ),
+  )
   const checkpointPins = createMemo(() =>
     props.snapshot.checkpoints
       .map((checkpoint) => {
@@ -592,105 +767,137 @@ export function WorkflowRuntimePanel(props: {
         if (!target) return
         return {
           checkpoint,
-          x: target.x - 20,
-          y: target.y + 72,
+          x: target.x + 18,
+          y: target.y - 16,
         }
       })
       .filter(Boolean) as Array<{ checkpoint: WorkflowCheckpoint; x: number; y: number }>,
   )
+  const total = createMemo(() => props.snapshot.nodes.length)
+  const done = createMemo(() => props.snapshot.nodes.filter((node) => node.status === "completed").length)
+  const failed = createMemo(() => props.snapshot.nodes.filter((node) => node.status === "failed").length)
+  const waiting = createMemo(() => props.snapshot.nodes.filter((node) => node.status === "waiting").length)
+  const finished = createMemo(() => terminal(props.snapshot.workflow.status))
+  createEffect(() => {
+    if (!finished()) return
+    if (store.folded) return
+    setStore("folded", true)
+  })
 
   return (
-    <div class="flex h-full min-h-0 flex-col bg-background-stronger">
-      <div class="border-b border-border-weak-base px-4 py-3">
-        <div class="flex flex-wrap items-center gap-2">
-          <div class="text-15-medium text-text-strong">{props.snapshot.workflow.title}</div>
-          <Badge tone={statusTone(props.snapshot.workflow.status)}>{props.snapshot.workflow.status}</Badge>
-          <Badge tone="info">{`current ${selectedNode()?.title ?? "idle"}`}</Badge>
-          <Badge tone="neutral">{`${summary().running} active`}</Badge>
-          <Badge tone="warning">{`${summary().waiting} waiting`}</Badge>
-          <Badge tone="success">{`${props.snapshot.cursor} cursor`}</Badge>
-        </div>
-        <div class="mt-2 text-11-regular text-text-weak">
-          Root orchestrator drives the runtime bus. Highlighted node is the live execution target; arrows are dependencies and checkpoint pills gate the next edge.
-        </div>
-        <Show when={lastEvent()}>
-          <div class="mt-3 rounded-xl border border-border-weak-base bg-background-base px-3 py-2 text-11-regular text-text-weak">
-            Latest runtime event: <span class="text-text-strong">{lastEvent()!.kind}</span> from{" "}
-            <span class="text-text-strong">{lastEvent()!.source}</span>
+    <div class="flex h-full min-h-0 flex-col bg-[#f6f7fb]">
+      <div class="border-b border-border-weak-base bg-background-base px-4 py-3">
+        <div class="flex items-center justify-between gap-3">
+          <div class="min-w-0">
+            <div class="truncate text-15-medium text-text-strong">{props.snapshot.workflow.title}</div>
           </div>
-        </Show>
+          <div class="flex items-center gap-2">
+            <Badge tone={statusTone(props.snapshot.workflow.status)}>{props.snapshot.workflow.status}</Badge>
+            <Show when={currentNode()}>
+              <Badge tone="info">{currentNode()!.title}</Badge>
+            </Show>
+          </div>
+        </div>
       </div>
 
-      <div class="flex-1 min-h-0 overflow-auto px-4 py-4">
-        <div
-          class="relative rounded-2xl border border-border-weak-base bg-background-panel/70"
-          style={{
-            width: `${graph().width}px`,
-            height: `${graph().height}px`,
-            "background-image":
-              "linear-gradient(to right, rgba(148,163,184,0.08) 1px, transparent 1px), linear-gradient(to bottom, rgba(148,163,184,0.08) 1px, transparent 1px)",
-              "background-size": "24px 24px",
-          }}
-        >
-          <div class="absolute right-4 top-4 z-10 rounded-xl border border-border-weak-base bg-background-base/95 px-3 py-2 text-[11px] text-text-weak shadow-xs">
-            <div class="font-medium text-text-strong">Runtime snapshot</div>
-            <div class="mt-1">{`${props.snapshot.edges.length} edges · ${props.snapshot.checkpoints.length} checkpoints · ${props.snapshot.events.length} events`}</div>
-            <div class="mt-1">{selectedNode() ? `${selectedNode()!.agent} is ${selectedNode()!.status}` : "waiting for orchestrator"}</div>
-          </div>
-
-          <div
-            class="absolute rounded-2xl border border-sky-500/25 bg-sky-500/10 px-4 py-3 shadow-xs"
-            style={{ left: `${graph().orchestrator_x}px`, top: `${graph().orchestrator_y}px`, width: "156px" }}
-          >
-            <div class="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-sky-700 dark:text-sky-300">
-              <span class="size-2 rounded-full bg-sky-500" />
-              orchestrator
-            </div>
-            <div class="mt-2 text-13-medium text-text-strong">{props.snapshot.workflow.title}</div>
-            <div class="mt-1 text-11-regular text-text-weak">Plan, control, replan</div>
-          </div>
-
-          <div
-            class="absolute rounded-[22px] border border-border-weak-base bg-background-base/90 px-3 py-3"
-            style={{ left: `${graph().bus_x}px`, top: `${graph().bus_y}px`, width: "72px", height: `${graph().bus_h}px` }}
-          >
-            <div class="text-center text-[10px] font-semibold uppercase tracking-[0.08em] text-text-weak">runtime</div>
-            <div class="mt-2 flex h-full flex-col items-center justify-between pb-3">
-              <div class="grid gap-2">
-                <span class="size-2 rounded-full bg-sky-500 animate-pulse" />
-                <span class="size-2 rounded-full bg-sky-500/70 animate-pulse [animation-delay:150ms]" />
-                <span class="size-2 rounded-full bg-sky-500/40 animate-pulse [animation-delay:300ms]" />
+      <div class="flex min-h-0 flex-1 gap-4 p-4">
+        <div class="min-w-0 flex-1 overflow-auto rounded-2xl border border-slate-200 bg-[#f4f6f8] p-4">
+          <Show
+            when={!store.folded}
+            fallback={
+              <div class="flex h-full min-h-[320px] items-start justify-center">
+                <div class="w-full max-w-[720px] rounded-2xl border border-slate-200 bg-white p-5">
+                  <div class="flex items-center justify-between gap-3">
+                    <div>
+                      <div class="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-weak">plan</div>
+                      <div class="mt-1 text-15-medium text-text-strong">{props.snapshot.workflow.title}</div>
+                    </div>
+                    <Badge tone={statusTone(props.snapshot.workflow.status)}>{props.snapshot.workflow.status}</Badge>
+                  </div>
+                  <div class="mt-4 grid grid-cols-4 gap-3 text-11-regular text-text-weak">
+                    <div class="rounded-xl border border-slate-200 bg-[#fafbfc] px-3 py-2">
+                      <div class="text-[10px] uppercase tracking-[0.08em]">nodes</div>
+                      <div class="mt-1 text-text-strong">{total()}</div>
+                    </div>
+                    <div class="rounded-xl border border-slate-200 bg-[#fafbfc] px-3 py-2">
+                      <div class="text-[10px] uppercase tracking-[0.08em]">done</div>
+                      <div class="mt-1 text-text-strong">{done()}</div>
+                    </div>
+                    <div class="rounded-xl border border-slate-200 bg-[#fafbfc] px-3 py-2">
+                      <div class="text-[10px] uppercase tracking-[0.08em]">failed</div>
+                      <div class="mt-1 text-text-strong">{failed()}</div>
+                    </div>
+                    <div class="rounded-xl border border-slate-200 bg-[#fafbfc] px-3 py-2">
+                      <div class="text-[10px] uppercase tracking-[0.08em]">waiting</div>
+                      <div class="mt-1 text-text-strong">{waiting()}</div>
+                    </div>
+                  </div>
+                  <div class="mt-4 flex items-center justify-between gap-3">
+                    <div class="text-11-regular text-text-weak">
+                      The workflow is finished. Node sessions are hidden from the strip by default; open details only if you need history.
+                    </div>
+                    <button
+                      class="rounded-xl border border-slate-200 bg-[#fafbfc] px-3 py-2 text-12-medium text-text-strong transition-colors hover:border-slate-300"
+                      onClick={() => setStore("folded", false)}
+                    >
+                      Show graph
+                    </button>
+                  </div>
+                </div>
               </div>
-              <div class="text-[10px] text-text-weak">{`${props.snapshot.cursor}`}</div>
-            </div>
-          </div>
+            }
+          >
+            <div
+              class="relative min-w-max rounded-[20px]"
+              style={{
+                width: `${graph().width}px`,
+                height: `${graph().height}px`,
+                "background-image":
+                  "linear-gradient(rgba(148,163,184,0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(148,163,184,0.08) 1px, transparent 1px)",
+                "background-size": "28px 28px",
+              }}
+            >
+            <button
+              class="absolute w-[220px] rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left"
+              style={{ left: `${graph().orchestrator_x}px`, top: `${graph().orchestrator_y}px` }}
+            >
+              <div class="flex items-center gap-3">
+                <div class="flex size-9 items-center justify-center rounded-xl bg-slate-900 text-xs font-semibold text-white">O</div>
+                <div class="min-w-0 flex-1">
+                  <div class="truncate text-13-medium text-text-strong">Orchestrator</div>
+                  <div class="mt-1 text-[10px] text-text-weak">plan · supervise · control</div>
+                </div>
+                <span class={`size-2 shrink-0 rounded-full ${statusDot(props.snapshot.workflow.status)}`} />
+              </div>
+            </button>
 
-          <svg class="absolute inset-0 size-full" viewBox={`0 0 ${graph().width} ${graph().height}`}>
+            <svg class="absolute inset-0 size-full" viewBox={`0 0 ${graph().width} ${graph().height}`}>
             <defs>
-              <marker id="workflow-arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
-                <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--color-border-strong)" />
+              <marker id={`workflow-arrow-${props.snapshot.workflow.id}`} markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563eb" />
               </marker>
             </defs>
-            <path
-              d={`M ${graph().orchestrator_x + 176} ${graph().orchestrator_y + 38} C ${graph().orchestrator_x + 210} ${graph().orchestrator_y + 38}, ${graph().bus_x - 20} ${graph().orchestrator_y + 38}, ${graph().bus_x} ${graph().orchestrator_y + 38}`}
-              fill="none"
-              stroke="var(--color-border-strong)"
-              stroke-width="2"
-              marker-end="url(#workflow-arrow)"
-            />
             <For each={roots()}>
               {(node) => {
                 const target = createMemo(() => graph().nodes.find((item) => item.node.id === node.id))
+                const path = createMemo(() => (target() ? rootPath(target()!) : ""))
+                const active = createMemo(() => activeRootIDs().has(node.id))
                 return (
                   <Show when={target()}>
-                    <path
-                      d={`M ${graph().bus_x + 72} ${target()!.y + 42} C ${graph().bus_x + 116} ${target()!.y + 42}, ${target()!.x - 24} ${target()!.y + 42}, ${target()!.x} ${target()!.y + 42}`}
-                      fill="none"
-                      stroke="var(--color-border-strong)"
-                      stroke-width="2"
-                      stroke-dasharray="7 7"
-                      marker-end="url(#workflow-arrow)"
-                    />
+                    <>
+                      <path
+                        d={path()}
+                        fill="none"
+                        stroke={active() ? "#2563eb" : "#cbd5e1"}
+                        stroke-width={active() ? "2.5" : "1.5"}
+                        marker-end={`url(#workflow-arrow-${props.snapshot.workflow.id})`}
+                      />
+                      <Show when={active()}>
+                        <circle r="4" fill="#2563eb">
+                          <animateMotion dur="2s" repeatCount="indefinite" path={path()} />
+                        </circle>
+                      </Show>
+                    </>
                   </Show>
                 )
               }}
@@ -699,25 +906,32 @@ export function WorkflowRuntimePanel(props: {
               {(edge) => {
                 const from = createMemo(() => graph().nodes.find((item) => item.node.id === edge.from_node_id))
                 const to = createMemo(() => graph().nodes.find((item) => item.node.id === edge.to_node_id))
+                const path = createMemo(() => (from() && to() ? edgePath(from()!, to()!) : ""))
+                const active = createMemo(() => activeEdgeIDs().has(edge.id))
+                const done = createMemo(() => doneEdgeIDs().has(edge.id))
                 return (
                   <Show when={from() && to()}>
                     <>
                       <path
-                        d={`M ${from()!.x + 188} ${from()!.y + 42} C ${from()!.x + 220} ${from()!.y + 42}, ${to()!.x - 24} ${to()!.y + 42}, ${to()!.x} ${to()!.y + 42}`}
+                        d={path()}
                         fill="none"
-                        stroke="var(--color-border-strong)"
-                        stroke-width="2"
-                        opacity="0.8"
-                        stroke-dasharray={edge.label ? "0" : "6 6"}
-                        marker-end="url(#workflow-arrow)"
+                        stroke={active() || done() ? "#2563eb" : "#cbd5e1"}
+                        stroke-width={active() ? "2.5" : done() ? "2" : "1.5"}
+                        opacity={active() ? "1" : done() ? "0.78" : "0.92"}
+                        marker-end={`url(#workflow-arrow-${props.snapshot.workflow.id})`}
                       />
+                      <Show when={active()}>
+                        <circle r="4" fill="#2563eb">
+                          <animateMotion dur="2s" repeatCount="indefinite" path={path()} />
+                        </circle>
+                      </Show>
                       <Show when={edge.label}>
                         <text
-                          x={(from()!.x + to()!.x + 188) / 2}
-                          y={to()!.y + 24}
+                          x={(from()!.x + to()!.x + 264) / 2}
+                          y={to()!.y + 32}
                           text-anchor="middle"
                           fill="currentColor"
-                          class="fill-text-weak text-[10px]"
+                          class="fill-slate-400 text-[10px]"
                         >
                           {edge.label}
                         </text>
@@ -727,104 +941,247 @@ export function WorkflowRuntimePanel(props: {
                 )
               }}
             </For>
-          </svg>
+            </svg>
 
-          <For each={checkpointPins()}>
-            {(pin) => (
-              <div
-                class="absolute z-10 rounded-full border bg-background-base px-2 py-1 text-[10px] font-medium shadow-xs"
-                classList={{
-                  "border-emerald-500/30 text-emerald-700 dark:text-emerald-300": checkpointTone(pin.checkpoint.status) === "success",
-                  "border-red-500/30 text-red-700 dark:text-red-300": checkpointTone(pin.checkpoint.status) === "error",
-                  "border-zinc-500/30 text-zinc-700 dark:text-zinc-300": checkpointTone(pin.checkpoint.status) === "neutral",
-                  "border-amber-500/30 text-amber-700 dark:text-amber-300": checkpointTone(pin.checkpoint.status) === "warning",
-                }}
-                style={{ left: `${pin.x}px`, top: `${pin.y}px`, "max-width": "160px" }}
-              >
-                {`${pin.checkpoint.label} · ${pin.checkpoint.status}`}
-              </div>
-            )}
-          </For>
-
-          <For each={graph().nodes}>
-            {(item) => {
-              const active = () => item.node.session_id === props.currentSessionID
-              const checkpoints = createMemo(() => checkpointMap().get(item.node.id) ?? [])
-              return (
-                <button
-                  class="absolute w-[188px] rounded-[18px] border px-3 py-3 text-left shadow-xs transition-all"
+            <For each={checkpointPins()}>
+              {(pin) => (
+                <div
+                  class="absolute z-10 rounded-full border bg-white px-2 py-0.5 text-[10px] font-medium"
                   classList={{
-                    "border-sky-500/50 bg-background-base ring-2 ring-sky-500/20": active(),
-                    "border-emerald-500/30 bg-background-base": item.node.status === "completed" && !active(),
-                    "border-sky-500/30 bg-background-base shadow-[0_0_0_1px_rgba(14,165,233,0.08)]": (item.node.status === "running" || item.node.status === "waiting") && !active(),
-                    "border-border-weak-base bg-background-base/95 hover:border-border-strong": !active(),
+                    "border-emerald-500/30 text-emerald-700 dark:text-emerald-300": checkpointTone(pin.checkpoint.status) === "success",
+                    "border-red-500/30 text-red-700 dark:text-red-300": checkpointTone(pin.checkpoint.status) === "error",
+                    "border-zinc-500/30 text-zinc-700 dark:text-zinc-300": checkpointTone(pin.checkpoint.status) === "neutral",
+                    "border-amber-500/30 text-amber-700 dark:text-amber-300": checkpointTone(pin.checkpoint.status) === "warning",
                   }}
-                  style={{ left: `${item.x}px`, top: `${item.y}px` }}
-                  onClick={() => item.node.session_id && props.onSelectSession(item.node.session_id)}
+                  style={{ left: `${pin.x}px`, top: `${pin.y}px`, "max-width": "160px" }}
                 >
-                  <div class="flex items-start justify-between gap-2">
-                    <div class="min-w-0">
-                      <div class="flex items-center gap-2 text-[10px] font-medium uppercase tracking-[0.08em] text-text-weak">
-                        <span class={`size-2 rounded-full ${statusDot(item.node.status)}`} />
-                        subagent
+                  {`${pin.checkpoint.label} · ${pin.checkpoint.status}`}
+                </div>
+              )}
+            </For>
+
+            <For each={graph().nodes}>
+              {(item) => {
+                const selected = () => focusedNodeID() === item.node.id
+                const current = () => currentNode()?.id === item.node.id
+                return (
+                  <button
+                    class={`absolute w-[264px] rounded-2xl border px-4 py-3 text-left transition-all ${nodeBorder(item.node.status, selected())} ${nodeBg(item.node.status, selected())}`}
+                    style={{ left: `${item.x}px`, top: `${item.y}px` }}
+                    onClick={() => setStore("node", item.node.id)}
+                  >
+                    <Show when={current() && (item.node.status === "running" || item.node.status === "waiting")}>
+                      <span class="absolute inset-[-6px] rounded-[22px] border border-sky-500/20 animate-pulse" />
+                    </Show>
+                    <div class="flex items-center gap-3">
+                      <div class={`relative flex size-9 items-center justify-center rounded-xl text-xs font-semibold ${nodeIcon(item.node.status)}`}>
+                        <span class="relative">{item.node.agent.slice(0, 1).toUpperCase()}</span>
                       </div>
-                      <div class="truncate text-13-medium text-text-strong">{item.node.title}</div>
-                      <div class="mt-1 truncate text-12-regular text-text-weak">{item.node.agent}</div>
-                      <div class="mt-1 truncate text-[10px] text-text-weak">{modelLabel(item.node)}</div>
-                    </div>
-                    <Badge tone={statusTone(item.node.status)}>{item.node.status}</Badge>
-                  </div>
-
-                  <div class="mt-3 grid grid-cols-2 gap-2 text-[10px] text-text-weak">
-                    <div>attempt {item.node.attempt}/{item.node.max_attempts}</div>
-                    <div>action {item.node.action_count}/{item.node.max_actions}</div>
-                    <div class="truncate">result {item.node.result_status}</div>
-                    <div class="truncate">{item.node.session_id ? "session linked" : "no session"}</div>
-                  </div>
-
-                  <Show when={item.node.fail_reason}>
-                    <div class="mt-3 line-clamp-2 text-11-regular text-danger-base">{item.node.fail_reason}</div>
-                  </Show>
-
-                  <Show when={checkpoints().length > 0}>
-                    <div class="mt-3 flex flex-wrap gap-1">
-                      <For each={checkpoints()}>
-                        {(checkpoint) => (
-                          <span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium"
+                      <div class="min-w-0 flex-1">
+                        <div class="truncate text-13-medium text-text-strong">{item.node.title}</div>
+                        <div class="mt-1 flex items-center gap-2 text-[10px] text-text-weak">
+                          <span>{item.node.agent}</span>
+                          <span>•</span>
+                          <span>{item.node.status}</span>
+                          <Show when={item.node.session_id}>
+                            <>
+                              <span>•</span>
+                              <span>session</span>
+                            </>
+                          </Show>
+                        </div>
+                      </div>
+                      <div class="flex flex-col items-end gap-2">
+                        <span class={`size-2 shrink-0 rounded-full ${statusDot(item.node.status)}`} />
+                        <Show when={item.node.result_status !== "unknown"}>
+                          <span
+                            class="rounded-full px-1.5 py-0.5 text-[9px] font-medium"
                             classList={{
-                              "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300": checkpointTone(checkpoint.status) === "success",
-                              "bg-red-500/12 text-red-700 dark:text-red-300": checkpointTone(checkpoint.status) === "error",
-                              "bg-zinc-500/12 text-zinc-700 dark:text-zinc-300": checkpointTone(checkpoint.status) === "neutral",
-                              "bg-amber-500/12 text-amber-700 dark:text-amber-300": checkpointTone(checkpoint.status) === "warning",
+                              "bg-emerald-500/10 text-emerald-700": nodeTone(item.node.result_status) === "success",
+                              "bg-red-500/10 text-red-700": nodeTone(item.node.result_status) === "error",
+                              "bg-sky-500/10 text-sky-700": nodeTone(item.node.result_status) === "info",
+                              "bg-slate-200 text-slate-600": nodeTone(item.node.result_status) === "neutral",
                             }}
                           >
-                            {checkpoint.label}: {checkpoint.status}
+                            {item.node.result_status}
                           </span>
-                        )}
-                      </For>
+                        </Show>
+                      </div>
                     </div>
-                  </Show>
+                  </button>
+                )
+              }}
+            </For>
+            </div>
+          </Show>
+        </div>
+
+        <div class="flex w-[340px] shrink-0 flex-col gap-4">
+          <div class="rounded-2xl border border-slate-200 bg-white p-4">
+            <div class="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-weak">selected node</div>
+            <Show
+              when={selectedNode()}
+              fallback={
+                <div class="mt-3 text-12-regular text-text-weak">Select a node in the graph to inspect its runtime state.</div>
+              }
+            >
+              <div class="mt-3 flex items-center gap-3">
+                <div class={`flex size-10 items-center justify-center rounded-xl text-sm font-semibold ${nodeIcon(selectedNode()!.status)}`}>
+                  {selectedNode()!.agent.slice(0, 1).toUpperCase()}
+                </div>
+                <div class="min-w-0 flex-1">
+                  <div class="truncate text-14-medium text-text-strong">{selectedNode()!.title}</div>
+                  <div class="mt-1 text-11-regular text-text-weak">{selectedNode()!.agent}</div>
+                </div>
+                <Badge tone={statusTone(selectedNode()!.status)}>{selectedNode()!.status}</Badge>
+              </div>
+              <div class="mt-4 grid grid-cols-2 gap-2 text-11-regular text-text-weak">
+                <div class="rounded-xl border border-border-weak-base bg-background-panel px-3 py-2">
+                  <div class="text-[10px] uppercase tracking-[0.08em]">result</div>
+                  <div class="mt-1 text-text-strong">{selectedNode()!.result_status}</div>
+                </div>
+                <div class="rounded-xl border border-border-weak-base bg-background-panel px-3 py-2">
+                  <div class="text-[10px] uppercase tracking-[0.08em]">model</div>
+                  <div class="mt-1 truncate text-text-strong">{modelLabel(selectedNode()!)}</div>
+                </div>
+                <div class="rounded-xl border border-border-weak-base bg-background-panel px-3 py-2">
+                  <div class="text-[10px] uppercase tracking-[0.08em]">attempt</div>
+                  <div class="mt-1 text-text-strong">{`${selectedNode()!.attempt}/${selectedNode()!.max_attempts}`}</div>
+                </div>
+                <div class="rounded-xl border border-border-weak-base bg-background-panel px-3 py-2">
+                  <div class="text-[10px] uppercase tracking-[0.08em]">actions</div>
+                  <div class="mt-1 text-text-strong">{`${selectedNode()!.action_count}/${selectedNode()!.max_actions}`}</div>
+                </div>
+                <div class="rounded-xl border border-border-weak-base bg-background-panel px-3 py-2">
+                  <div class="text-[10px] uppercase tracking-[0.08em]">session</div>
+                  <div class="mt-1 truncate text-text-strong">{selectedNode()!.session_id ?? "not started"}</div>
+                </div>
+                <div class="rounded-xl border border-border-weak-base bg-background-panel px-3 py-2">
+                  <div class="text-[10px] uppercase tracking-[0.08em]">pending commands</div>
+                  <div class="mt-1 text-text-strong">{pending()}</div>
+                </div>
+              </div>
+              <Show when={selectedNode()!.fail_reason}>
+                <div class="mt-3 rounded-xl border border-red-500/20 bg-red-500/6 px-3 py-2 text-11-regular text-red-700 dark:text-red-300">
+                  {selectedNode()!.fail_reason}
+                </div>
+              </Show>
+              <div class="mt-4 space-y-3 text-11-regular text-text-weak">
+                <div>
+                  <div class="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-weak">communication</div>
+                  <div class="mt-2 grid gap-2">
+                    <div class="rounded-xl border border-border-weak-base bg-background-panel px-3 py-2">
+                      <div class="text-[10px] uppercase tracking-[0.08em]">last control</div>
+                      <div class="mt-1 text-text-strong">{lastControl()?.payload.command ? String(lastControl()!.payload.command) : "none"}</div>
+                    </div>
+                    <div class="rounded-xl border border-border-weak-base bg-background-panel px-3 py-2">
+                      <div class="text-[10px] uppercase tracking-[0.08em]">last pull</div>
+                      <div class="mt-1 text-text-strong">{lastPull() ? `event #${lastPull()!.id}` : "none"}</div>
+                    </div>
+                    <div class="rounded-xl border border-border-weak-base bg-background-panel px-3 py-2">
+                      <div class="text-[10px] uppercase tracking-[0.08em]">last update</div>
+                      <div class="mt-1 text-text-strong">{lastUpdate() ? `event #${lastUpdate()!.id}` : "none"}</div>
+                    </div>
+                  </div>
+                </div>
+                <Show when={selectedNode()!.state_json}>
+                  <div>
+                    <div class="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-weak">state_json</div>
+                    <pre class="mt-2 overflow-auto rounded-xl border border-border-weak-base bg-background-panel p-3 text-[10px] leading-5 text-text-weak">{short(selectedNode()!.state_json)}</pre>
+                  </div>
+                </Show>
+                <Show when={selectedNode()!.result_json}>
+                  <div>
+                    <div class="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-weak">result_json</div>
+                    <pre class="mt-2 overflow-auto rounded-xl border border-border-weak-base bg-background-panel p-3 text-[10px] leading-5 text-text-weak">{short(selectedNode()!.result_json)}</pre>
+                  </div>
+                </Show>
+              </div>
+              <Show when={focusedCheckpoints().length > 0}>
+                <div class="mt-3 flex flex-wrap gap-1.5">
+                  <For each={focusedCheckpoints()}>
+                    {(checkpoint) => (
+                      <span
+                        class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium"
+                        classList={{
+                          "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300": checkpointTone(checkpoint.status) === "success",
+                          "bg-red-500/12 text-red-700 dark:text-red-300": checkpointTone(checkpoint.status) === "error",
+                          "bg-zinc-500/12 text-zinc-700 dark:text-zinc-300": checkpointTone(checkpoint.status) === "neutral",
+                          "bg-amber-500/12 text-amber-700 dark:text-amber-300": checkpointTone(checkpoint.status) === "warning",
+                        }}
+                      >
+                        {checkpoint.label}
+                      </span>
+                    )}
+                  </For>
+                </div>
+              </Show>
+              <Show when={selectedNode()!.session_id}>
+                <button
+                  class="mt-4 w-full rounded-xl border border-border-weak-base bg-background-panel px-3 py-2 text-12-medium text-text-strong transition-colors hover:border-border-strong"
+                  onClick={() => props.onSelectSession(selectedNode()!.session_id!)}
+                >
+                  Open subagent session
                 </button>
-              )
-            }}
-          </For>
+              </Show>
+            </Show>
+          </div>
+          <div class="rounded-2xl border border-slate-200 bg-white p-4">
+            <div class="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-weak">runtime</div>
+            <div class="mt-3 grid gap-2 text-11-regular text-text-weak">
+              <div class="rounded-xl border border-border-weak-base bg-background-panel px-3 py-2">
+                <div class="text-[10px] uppercase tracking-[0.08em]">phase</div>
+                <div class="mt-1 text-text-strong">{props.snapshot.runtime.phase}</div>
+              </div>
+              <div class="rounded-xl border border-border-weak-base bg-background-panel px-3 py-2">
+                <div class="text-[10px] uppercase tracking-[0.08em]">active node</div>
+                <div class="mt-1 text-text-strong">{eventNodes().get(props.snapshot.runtime.active_node_id ?? "") ?? props.snapshot.runtime.active_node_id ?? "none"}</div>
+              </div>
+              <div class="grid grid-cols-3 gap-2">
+                <div class="rounded-xl border border-border-weak-base bg-background-panel px-3 py-2">
+                  <div class="text-[10px] uppercase tracking-[0.08em]">commands</div>
+                  <div class="mt-1 text-text-strong">{props.snapshot.runtime.command_count}</div>
+                </div>
+                <div class="rounded-xl border border-border-weak-base bg-background-panel px-3 py-2">
+                  <div class="text-[10px] uppercase tracking-[0.08em]">pulls</div>
+                  <div class="mt-1 text-text-strong">{props.snapshot.runtime.pull_count}</div>
+                </div>
+                <div class="rounded-xl border border-border-weak-base bg-background-panel px-3 py-2">
+                  <div class="text-[10px] uppercase tracking-[0.08em]">updates</div>
+                  <div class="mt-1 text-text-strong">{props.snapshot.runtime.update_count}</div>
+                </div>
+              </div>
+              <Show when={lastEvent()}>
+                <div class="rounded-xl border border-border-weak-base bg-background-panel px-3 py-2">
+                  <div class="text-[10px] uppercase tracking-[0.08em]">latest event</div>
+                  <div class="mt-1 text-text-strong">{lastEvent()!.kind}</div>
+                </div>
+              </Show>
+              <Show when={finished()}>
+                <button
+                  class="rounded-xl border border-slate-200 bg-[#fafbfc] px-3 py-2 text-left text-12-medium text-text-strong transition-colors hover:border-slate-300"
+                  onClick={() => setStore("folded", (value) => !value)}
+                >
+                  {store.folded ? "Expand graph" : "Collapse to plan card"}
+                </button>
+              </Show>
+            </div>
+          </div>
         </div>
       </div>
 
-      <div class="border-t border-border-weak-base px-4 py-3">
+      <div class="border-t border-slate-200 bg-white px-4 py-3">
         <div class="flex items-center justify-between gap-2">
-          <div class="text-12-medium text-text-strong">
-            {focusedNodeID() ? `${selectedNode()?.title ?? "Current node"} events` : "Runtime events"}
-          </div>
-          <div class="text-11-regular text-text-weak">current execution node only</div>
+          <div class="text-12-medium text-text-strong">{selectedNode()?.title ?? "runtime"} logs</div>
+          <div class="text-11-regular text-text-weak">latest execution events</div>
         </div>
-        <div class="mt-2 grid gap-2 md:grid-cols-2">
+        <div class="mt-3 grid max-h-40 gap-2 overflow-auto">
           <For each={focusedEvents()}>
             {(event) => (
-              <div class="rounded-xl border border-border-weak-base bg-background-base px-3 py-2">
-                <div class="flex items-center justify-between gap-2">
-                  <div class="truncate text-12-medium text-text-strong">{event.kind}</div>
-                  <div class="text-11-regular text-text-weak">{event.source}</div>
+              <div class="rounded-xl border border-slate-200 bg-[#fafbfc] px-3 py-2">
+                <div class="flex items-center justify-between gap-3">
+                  <div class="truncate text-11-medium text-text-strong">{event.kind}</div>
+                  <div class="text-[10px] text-text-weak">{event.source}</div>
                 </div>
                 <div class="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-text-weak">
                   <Show when={event.node_id}>

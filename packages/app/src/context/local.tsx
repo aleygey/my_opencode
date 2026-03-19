@@ -27,6 +27,8 @@ const WORKSPACE_KEY = "__workspace__"
 const handoff = new Map<string, State>()
 
 const handoffKey = (dir: string, id: string) => `${dir}\n${id}`
+const asList = <T,>(value: T[] | Record<string, T> | undefined) =>
+  Array.isArray(value) ? value : Object.values(value ?? {})
 
 const migrate = (value: unknown) => {
   if (!value || typeof value !== "object") return { session: {} }
@@ -62,7 +64,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const models = useModels()
 
     const id = createMemo(() => params.id || undefined)
-    const list = createMemo(() => sync.data.agent.filter((item) => !item.hidden))
+    const list = createMemo(() => asList(sync.data.agent).filter((item) => !item.hidden))
     const connected = createMemo(() => new Set(providers.connected().map((item) => item.id)))
 
     const [saved, setSaved] = persisted(
@@ -85,7 +87,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         variant?: string | null
       }
     }>({
-      current: list()[0]?.name,
+      current: undefined,
       draft: undefined,
       last: undefined,
     })

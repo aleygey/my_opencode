@@ -7,6 +7,9 @@ import { Log } from "@/util/log"
 import { MessageV2 } from "@/session/message-v2"
 import { NotFoundError } from "@/storage/db"
 import { Session } from "@/session"
+import { SessionPrompt } from "@/session/prompt"
+import { SessionID } from "@/session/schema"
+import { SessionStatus } from "@/session/status"
 import { fn } from "@/util/fn"
 import z from "zod"
 import {
@@ -61,6 +64,20 @@ function normalizeWorkflowStatus(status: WorkflowNodeStatus | WorkflowStatus): W
   if (status === "failed") return "failed"
   if (status === "cancelled") return "cancelled"
   return "pending"
+}
+
+const wakeDelay = 15_000
+const stallEvery = 15_000
+const stallAfter = 45_000
+
+type Wake = {
+  workflowID: string
+  sessionID: string
+  eventID: number
+  nodeID?: string
+  kind: string
+  reason: string
+  time: number
 }
 
 export namespace Workflow {
@@ -166,9 +183,24 @@ export namespace Workflow {
     .meta({ ref: "WorkflowEvent" })
   export type EventInfo = z.infer<typeof EventInfo>
 
+  export const Runtime = z
+    .object({
+      phase: z.enum(["planning", "running", "waiting", "interrupted", "failed", "completed"]),
+      active_node_id: z.string().optional(),
+      waiting_node_ids: z.array(z.string()),
+      failed_node_ids: z.array(z.string()),
+      command_count: z.number().int().nonnegative(),
+      update_count: z.number().int().nonnegative(),
+      pull_count: z.number().int().nonnegative(),
+      last_event_id: z.number().int().nonnegative(),
+    })
+    .meta({ ref: "WorkflowRuntime" })
+  export type Runtime = z.infer<typeof Runtime>
+
   export const Snapshot = z
     .object({
       workflow: Info,
+      runtime: Runtime,
       nodes: Node.array(),
       edges: Edge.array(),
       checkpoints: Checkpoint.array(),
@@ -181,6 +213,7 @@ export namespace Workflow {
   export const ReadResult = z
     .object({
       workflow: Info.optional(),
+      runtime: Runtime.optional(),
       nodes: Node.array(),
       edges: Edge.array(),
       checkpoints: Checkpoint.array(),
@@ -200,8 +233,153 @@ export namespace Workflow {
     EventCreated: BusEvent.define("workflow.event.created", z.object({ info: EventInfo })),
   }
 
+  async function workflowRow(workflowID: string) {
+    return Database.use((db) => db.select().from(WorkflowTable).where(eq(WorkflowTable.id, workflowID)).get())
+  }
+
+  async function sendWake(wake: Wake) {
+    await writeEvent({
+      workflowID: wake.workflowID,
+      sessionID: wake.sessionID,
+      nodeID: wake.nodeID,
+      source: "runtime",
+      kind: "workflow.orchestrator_woken",
+      payload: {
+        wake_kind: wake.kind,
+        wake_reason: wake.reason,
+        trigger_event_id: wake.eventID,
+      },
+    })
+    await SessionPrompt.prompt({
+      sessionID: SessionID.make(wake.sessionID),
+      agent: "orchestrator",
+      parts: [
+        {
+          type: "text",
+          text: [
+            `Workflow wake event: ${wake.kind}`,
+            `Reason: ${wake.reason}`,
+            `Workflow ID: ${wake.workflowID}`,
+            wake.nodeID ? `Node ID: ${wake.nodeID}` : "",
+            `Trigger event ID: ${wake.eventID}`,
+            "",
+            `Call workflow_read with workflow_id="${wake.workflowID}" and cursor=${Math.max(0, wake.eventID - 1)} first.`,
+            "Then decide whether to continue, inject context, retry, replan, or ask the user.",
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        },
+      ],
+    })
+  }
+
+  function classify(event: EventInfo) {
+    if (event.kind === "node.completed") return { kind: "node.completed", reason: "node completed" }
+    if (event.kind === "node.failed") return { kind: "node.failed", reason: "node failed" }
+    if (event.kind === "node.interrupted") return { kind: "node.interrupted", reason: "node interrupted" }
+    if (event.kind === "node.action_limit_reached") return { kind: "node.limit_reached", reason: "action limit reached" }
+    if (event.kind === "node.attempt_limit_reached") return { kind: "node.limit_reached", reason: "attempt limit reached" }
+    if (event.kind === "node.stalled") return { kind: "node.stalled", reason: "node stalled without recent pull or update" }
+    if (event.kind === "checkpoint.failed") return { kind: "checkpoint.failed", reason: "checkpoint failed" }
+    if (event.kind === "checkpoint.pending") return { kind: "checkpoint.pending_manual", reason: "checkpoint pending manual review" }
+    if (event.kind === "node.updated" && event.payload.status === "waiting") {
+      return { kind: "node.waiting", reason: "node is waiting for orchestrator or user input" }
+    }
+    if (event.kind === "node.blocked") return { kind: "node.waiting", reason: "node reported a blocked state" }
+  }
+
+  async function queueWake(input: Wake) {
+    const current = state()
+    const key = `${input.workflowID}:${input.kind}:${input.nodeID ?? "root"}`
+    const seen = current.seen[key]
+    if (seen && input.time - seen < wakeDelay) return
+    current.seen[key] = input.time
+
+    const status = SessionStatus.get(SessionID.make(input.sessionID))
+    if (status.type === "idle") {
+      await sendWake(input).catch(async (error) => {
+        if (!(error instanceof Session.BusyError)) {
+          log.warn("failed to wake orchestrator", { workflowID: input.workflowID, error })
+          return
+        }
+        current.queue[input.sessionID] = [...(current.queue[input.sessionID] ?? []), input]
+        await writeEvent({
+          workflowID: input.workflowID,
+          sessionID: input.sessionID,
+          nodeID: input.nodeID,
+          source: "runtime",
+          kind: "workflow.orchestrator_wake_queued",
+          payload: {
+            wake_kind: input.kind,
+            wake_reason: input.reason,
+            trigger_event_id: input.eventID,
+          },
+        })
+      })
+      return
+    }
+
+    current.queue[input.sessionID] = [...(current.queue[input.sessionID] ?? []), input]
+    await writeEvent({
+      workflowID: input.workflowID,
+      sessionID: input.sessionID,
+      nodeID: input.nodeID,
+      source: "runtime",
+      kind: "workflow.orchestrator_wake_queued",
+      payload: {
+        wake_kind: input.kind,
+        wake_reason: input.reason,
+        trigger_event_id: input.eventID,
+      },
+    })
+  }
+
+  async function flush(sessionID: string) {
+    const current = state()
+    const items = current.queue[sessionID]
+    if (!items?.length) return
+    const wake = items.at(-1)
+    delete current.queue[sessionID]
+    if (!wake) return
+    await sendWake(wake).catch((error) => {
+      current.queue[sessionID] = [...(current.queue[sessionID] ?? []), wake]
+      log.warn("failed to flush orchestrator wake", { sessionID, error })
+    })
+  }
+
+  async function detectStall() {
+    const now = Date.now()
+    const nodes = Database.use((db) =>
+      db
+        .select()
+        .from(WorkflowNodeTable)
+        .where(inArray(WorkflowNodeTable.status, ["running", "waiting"]))
+        .all(),
+    ).map(fromNodeRow)
+    for (const node of nodes) {
+      if (now - node.time.updated < stallAfter) continue
+      const current = state()
+      const seen = current.stall[node.id]
+      if (seen && now - seen < stallAfter) continue
+      current.stall[node.id] = now
+      await writeEvent({
+        workflowID: node.workflow_id,
+        nodeID: node.id,
+        sessionID: node.session_id,
+        target_node_id: node.id,
+        source: "runtime",
+        kind: "node.stalled",
+        payload: {
+          status: node.status,
+          updated_at: node.time.updated,
+          stalled_for_ms: now - node.time.updated,
+        },
+      })
+    }
+  }
+
   const state = Instance.state(() => {
-    const unsub = Bus.subscribe(MessageV2.Event.PartUpdated, async (event) => {
+    const unsubPart = Bus.subscribe(MessageV2.Event.PartUpdated, async (event) => {
       const part = event.properties.part
       if (part.type !== "tool") return
       if (part.state.status !== "pending") return
@@ -225,8 +403,57 @@ export namespace Workflow {
         log.warn("failed to count workflow action", { nodeID: node.id, error })
       })
     })
-    return { unsub }
-  }, async (entry) => entry.unsub())
+    const unsubWorkflow = Bus.subscribe(Event.EventCreated, async (event) => {
+      const info = event.properties.info
+      const wake = classify(info)
+      if (!wake) return
+      const workflow = await workflowRow(info.workflow_id)
+      if (!workflow || ["completed", "failed", "cancelled"].includes(workflow.status)) return
+      await writeEvent({
+        workflowID: info.workflow_id,
+        sessionID: workflow.session_id,
+        nodeID: info.node_id,
+        source: "runtime",
+        kind: "workflow.orchestrator_wake_requested",
+        payload: {
+          wake_kind: wake.kind,
+          wake_reason: wake.reason,
+          trigger_event_id: info.id,
+          node_id: info.node_id,
+        },
+      })
+      await queueWake({
+        workflowID: info.workflow_id,
+        sessionID: workflow.session_id,
+        eventID: info.id,
+        nodeID: info.node_id,
+        kind: wake.kind,
+        reason: wake.reason,
+        time: Date.now(),
+      })
+    })
+    const unsubStatus = Bus.subscribe(SessionStatus.Event.Status, async (event) => {
+      if (event.properties.status.type !== "idle") return
+      await flush(event.properties.sessionID)
+    })
+    const timer = setInterval(() => {
+      void detectStall()
+    }, stallEvery)
+    return {
+      unsubPart,
+      unsubWorkflow,
+      unsubStatus,
+      timer,
+      queue: {} as Record<string, Wake[]>,
+      seen: {} as Record<string, number>,
+      stall: {} as Record<string, number>,
+    }
+  }, async (entry) => {
+    entry.unsubPart()
+    entry.unsubWorkflow()
+    entry.unsubStatus()
+    clearInterval(entry.timer)
+  })
 
   function fromWorkflowRow(row: typeof WorkflowTable.$inferSelect): Info {
     return {
@@ -316,6 +543,34 @@ export namespace Workflow {
       source: row.source,
       payload: row.payload,
       time_created: row.time_created,
+    }
+  }
+
+  function runtime(input: { workflow: Info; nodes: Node[]; events: EventInfo[] }): Runtime {
+    const active = input.nodes.find((node) => node.status === "running") ?? input.nodes.find((node) => node.status === "waiting")
+    const waiting = input.nodes.filter((node) => node.status === "waiting").map((node) => node.id)
+    const failed = input.nodes.filter((node) => node.status === "failed").map((node) => node.id)
+    const phase =
+      input.workflow.status === "completed"
+        ? "completed"
+        : input.workflow.status === "failed"
+          ? "failed"
+          : input.workflow.status === "interrupted"
+            ? "interrupted"
+            : waiting.length > 0
+              ? "waiting"
+              : active
+                ? "running"
+                : "planning"
+    return {
+      phase,
+      active_node_id: active?.id,
+      waiting_node_ids: waiting,
+      failed_node_ids: failed,
+      command_count: input.events.filter((event) => event.kind === "node.control").length,
+      update_count: input.events.filter((event) => event.kind === "node.updated").length,
+      pull_count: input.events.filter((event) => event.kind === "node.pulled").length,
+      last_event_id: input.events.at(-1)?.id ?? 0,
     }
   }
 
@@ -539,6 +794,7 @@ export namespace Workflow {
       position: z.number().int().nonnegative().optional(),
     }),
     async (input) => {
+      await state()
       const row = Database.use((db) =>
         db
           .insert(WorkflowNodeTable)
@@ -669,12 +925,14 @@ export namespace Workflow {
   )
 
   export const getNode = fn(z.string(), async (nodeID) => {
+    await state()
     const row = Database.use((db) => db.select().from(WorkflowNodeTable).where(eq(WorkflowNodeTable.id, nodeID)).get())
     if (!row) throw new NotFoundError({ message: `Workflow node not found: ${nodeID}` })
     return fromNodeRow(row)
   })
 
   export const nodeBySession = fn(z.string(), async (sessionID) => {
+    await state()
     const row = Database.use((db) =>
       db.select().from(WorkflowNodeTable).where(eq(WorkflowNodeTable.session_id, sessionID)).get(),
     )
@@ -683,6 +941,7 @@ export namespace Workflow {
   })
 
   export const get = fn(z.string(), async (workflowID) => {
+    await state()
     const workflowRow = Database.use((db) =>
       db.select().from(WorkflowTable).where(eq(WorkflowTable.id, workflowID)).get(),
     )
@@ -710,9 +969,15 @@ export namespace Workflow {
         .all(),
     }))
     const events = rows.events.toReversed().map(fromEventRow)
+    const nodes = rows.nodes.map(fromNodeRow)
     return {
       workflow,
-      nodes: rows.nodes.map(fromNodeRow),
+      runtime: runtime({
+        workflow,
+        nodes,
+        events,
+      }),
+      nodes,
       edges: rows.edges.map(fromEdgeRow),
       checkpoints: rows.checkpoints.map(fromCheckpointRow),
       events,
@@ -721,6 +986,7 @@ export namespace Workflow {
   })
 
   export const bySession = fn(z.string(), async (sessionID) => {
+    await state()
     const direct = Database.use((db) =>
       db.select().from(WorkflowTable).where(eq(WorkflowTable.session_id, sessionID)).get(),
     )
@@ -736,6 +1002,7 @@ export namespace Workflow {
       cursor: z.number().int().nonnegative().optional(),
     }),
     async (input) => {
+      await state()
       const workflowRow = Database.use((db) =>
         db.select().from(WorkflowTable).where(eq(WorkflowTable.id, input.workflowID)).get(),
       )
@@ -757,8 +1024,30 @@ export namespace Workflow {
       const changedEdge = events.some((row) => row.kind.startsWith("edge."))
       const changedCheckpoint = events.some((row) => row.kind.startsWith("checkpoint."))
       const includeWorkflow = events.some((row) => row.kind.startsWith("workflow.") || row.kind.startsWith("node."))
+      const info = fromWorkflowRow(workflowRow)
+      const feed = events.map(fromEventRow)
       return {
-        workflow: includeWorkflow ? fromWorkflowRow(workflowRow) : undefined,
+        workflow: includeWorkflow ? info : undefined,
+        runtime: includeWorkflow
+          ? runtime({
+              workflow: info,
+              nodes: changedNodes.length > 0
+                ? changedNodes
+                : Database.use((db) =>
+                    db.select().from(WorkflowNodeTable).where(eq(WorkflowNodeTable.workflow_id, input.workflowID)).all(),
+                  ).map(fromNodeRow),
+              events: input.cursor === undefined
+                ? feed
+                : Database.use((db) =>
+                    db
+                      .select()
+                      .from(WorkflowEventTable)
+                      .where(eq(WorkflowEventTable.workflow_id, input.workflowID))
+                      .orderBy(WorkflowEventTable.id)
+                      .all(),
+                  ).map(fromEventRow),
+            })
+          : undefined,
         nodes: changedNodes,
         edges: changedEdge
           ? Database.use((db) => db.select().from(WorkflowEdgeTable).where(eq(WorkflowEdgeTable.workflow_id, input.workflowID)).all()).map(fromEdgeRow)
@@ -768,7 +1057,7 @@ export namespace Workflow {
               db.select().from(WorkflowCheckpointTable).where(eq(WorkflowCheckpointTable.workflow_id, input.workflowID)).all(),
             ).map(fromCheckpointRow)
           : [],
-        events: events.map(fromEventRow),
+        events: feed,
         cursor: events.at(-1)?.id ?? input.cursor ?? 0,
       }
     },
@@ -812,6 +1101,7 @@ export namespace Workflow {
         .optional(),
     }),
     async (input) => {
+      await state()
       const row = Database.transaction((tx) => {
         const found = tx.select().from(WorkflowNodeTable).where(eq(WorkflowNodeTable.id, input.nodeID)).get()
         if (!found) throw new NotFoundError({ message: `Workflow node not found: ${input.nodeID}` })
@@ -886,23 +1176,21 @@ export namespace Workflow {
       })
       Database.effect(async () => {
         await Bus.publish(Event.NodeUpdated, { info: row })
-        if (input.event) {
-          await writeEvent({
-            workflowID: row.workflow_id,
-            nodeID: row.id,
-            sessionID: row.session_id,
-            target_node_id: input.event.target_node_id,
-            source: input.source,
-            kind: input.event.kind,
-            payload: {
-              ...input.event.payload,
-              status: row.status,
-              result_status: row.result_status,
-              action_count: row.action_count,
-              attempt: row.attempt,
-            },
-          })
-        }
+        await writeEvent({
+          workflowID: row.workflow_id,
+          nodeID: row.id,
+          sessionID: row.session_id,
+          target_node_id: input.event?.target_node_id,
+          source: input.source,
+          kind: input.event?.kind ?? "node.updated",
+          payload: {
+            ...(input.event?.payload ?? {}),
+            status: row.status,
+            result_status: row.result_status,
+            action_count: row.action_count,
+            attempt: row.attempt,
+          },
+        })
         if (row.action_count >= row.max_actions) {
           await writeEvent({
             workflowID: row.workflow_id,
@@ -946,6 +1234,7 @@ export namespace Workflow {
       payload: z.record(z.string(), z.any()).optional(),
     }),
     async (input) => {
+      await state()
       await getNode(input.nodeID)
       await writeEvent({
         workflowID: input.workflowID,
@@ -968,6 +1257,7 @@ export namespace Workflow {
       cursor: z.number().int().nonnegative().optional(),
     }),
     async (input) => {
+      await state()
       const node = await getNode(input.nodeID)
       const rows = Database.use((db) =>
         db
@@ -983,6 +1273,17 @@ export namespace Workflow {
           .orderBy(WorkflowEventTable.id)
           .all(),
       )
+      await writeEvent({
+        workflowID: node.workflow_id,
+        nodeID: node.id,
+        sessionID: node.session_id,
+        source: "node",
+        kind: "node.pulled",
+        payload: {
+          cursor: input.cursor ?? 0,
+          pending: rows.length,
+        },
+      })
       return {
         node,
         cursor: rows.at(-1)?.id ?? input.cursor ?? 0,
@@ -998,6 +1299,7 @@ export namespace Workflow {
       result_json: z.record(z.string(), z.any()).optional(),
     }),
     async (input) => {
+      await state()
       const row = Database.use((db) =>
         db
           .update(WorkflowCheckpointTable)
@@ -1031,12 +1333,13 @@ export namespace Workflow {
   )
 
   export const diff = fn(z.string(), async (workflowID) => {
+    await state()
     const snapshot = await get(workflowID)
     const byFile = new Map<string, Awaited<ReturnType<typeof Session.diff>>[number]>()
 
     for (const sessionID of [snapshot.workflow.session_id, ...snapshot.nodes.map((node) => node.session_id).filter(Boolean)]) {
       if (!sessionID) continue
-      const diffs = await Session.diff(sessionID)
+      const diffs = await Session.diff(SessionID.make(sessionID))
       for (const diff of diffs) {
         const existing = byFile.get(diff.file)
         if (!existing) {

@@ -98,6 +98,8 @@ const EXAMPLES = [
 ] as const
 
 const NON_EMPTY_TEXT = /[^\s\u200B]/
+const asList = <T,>(value: T[] | Record<string, T> | undefined) =>
+  Array.isArray(value) ? value : Object.values(value ?? {})
 
 export const PromptInput: Component<PromptInputProps> = (props) => {
   const sdk = useSDK()
@@ -522,7 +524,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   }
 
   const agentList = createMemo(() =>
-    sync.data.agent
+    asList(sync.data.agent)
       .filter((agent) => !agent.hidden && agent.mode !== "primary")
       .map((agent): AtOption => ({ type: "agent", name: agent.name, display: agent.name })),
   )

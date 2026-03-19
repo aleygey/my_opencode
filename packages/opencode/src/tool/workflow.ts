@@ -3,6 +3,8 @@ import z from "zod"
 import { Workflow } from "@/workflow"
 import { Session } from "@/session"
 import { SessionPrompt } from "@/session/prompt"
+import { SessionID } from "@/session/schema"
+import { ModelID, ProviderID } from "@/provider/schema"
 
 const model = z
   .object({
@@ -45,6 +47,68 @@ const nodePatch = z.object({
 
 const format = (value: unknown) => JSON.stringify(value, null, 2)
 
+const confirm = /(^|\b)(confirm|confirmed|approve|approved|go ahead|proceed|start now|execute now|run it|ship it)(\b|$)|确认执行|确认开始|开始执行|可以执行|开始吧|执行吧|继续执行|请开始/iu
+
+const last = async (sessionID: string) => {
+  const msgs = await Session.messages({ sessionID: SessionID.make(sessionID), limit: 40 })
+  return msgs
+    .toReversed()
+    .find((msg) => msg.info.role === "user" && msg.parts.some((part) => !("synthetic" in part) || !part.synthetic))
+}
+
+const text = async (sessionID: string) =>
+  (await last(sessionID))?.parts
+    .flatMap((part) => (part.type === "text" && (!("synthetic" in part) || !part.synthetic) ? [part.text] : []))
+    .join("\n")
+    .trim() ?? ""
+
+const assertConfirmed = async (sessionID: string) => {
+  if (confirm.test(await text(sessionID))) return
+  throw new Error("workflow_create is blocked until the user explicitly confirms execution in the root orchestrator session.")
+}
+
+const assertNodeSession = (node: Awaited<ReturnType<typeof Workflow.getNode>>, sessionID: string) => {
+  if (!node.session_id) throw new Error(`Workflow node ${node.id} has no active subagent session.`)
+  if (node.session_id === sessionID) return
+  throw new Error(`Workflow node ${node.id} must be operated from its bound subagent session ${node.session_id}.`)
+}
+
+const prompt = (input: {
+  workflowID: string
+  nodeID: string
+  agent: string
+  sessionID: string
+  model?: {
+    providerID?: string
+    modelID?: string
+    variant?: string
+  }
+  text: string
+}) =>
+  SessionPrompt.prompt({
+    sessionID: SessionID.make(input.sessionID),
+    agent: input.agent,
+    model: input.model?.providerID && input.model.modelID
+      ? {
+          providerID: ProviderID.make(input.model.providerID),
+          modelID: ModelID.make(input.model.modelID),
+        }
+      : undefined,
+    variant: input.model?.variant,
+    parts: [
+      {
+        type: "text",
+        text: [
+          `You are executing workflow node ${input.nodeID} in workflow ${input.workflowID}.`,
+          "Do the work in this subagent session, not in the root orchestrator session.",
+          "Call workflow_pull immediately, follow runtime commands, report progress with workflow_update, and continue until you complete or block.",
+          "",
+          input.text,
+        ].join("\n"),
+      },
+    ],
+  })
+
 export const WorkflowCreateTool = Tool.define("workflow_create", {
   description: "Create a workflow runtime with nodes, edges, checkpoints, and a root orchestrator session.",
   parameters: z.object({
@@ -57,6 +121,7 @@ export const WorkflowCreateTool = Tool.define("workflow_create", {
     checkpoints: Workflow.create.schema.shape.checkpoints,
   }),
   async execute(input, ctx) {
+    await assertConfirmed(input.session_id ?? ctx.sessionID)
     const info = await Workflow.create({
       session_id: input.session_id ?? ctx.sessionID,
       title: input.title,
@@ -121,13 +186,13 @@ export const WorkflowNodeCreateTool = Tool.define("workflow_node_create", {
         agent: input.agent,
         model: input.model?.providerID && input.model.modelID
           ? {
-              providerID: input.model.providerID,
-              modelID: input.model.modelID,
+              providerID: ProviderID.make(input.model.providerID),
+              modelID: ModelID.make(input.model.modelID),
             }
           : undefined,
         variant: input.model?.variant,
         parts: [{ type: "text", text: input.initial_prompt }],
-      })
+      }).catch(() => undefined)
     }
 
     return {
@@ -152,12 +217,12 @@ export const WorkflowNodeStartTool = Tool.define("workflow_node_start", {
     title: z.string().optional(),
     model,
     status: z.enum(["ready", "running", "waiting"]).optional(),
-    initial_prompt: z.string().optional(),
+    initial_prompt: z.string(),
   }),
   async execute(input, ctx) {
     const current = await Workflow.getNode(input.node_id)
     const session = current.session_id
-      ? await Session.get(current.session_id)
+      ? await Session.get(SessionID.make(current.session_id))
       : await Session.create({
           parentID: ctx.sessionID,
           title: input.title ?? `${current.title} (@${current.agent} node)`,
@@ -181,25 +246,24 @@ export const WorkflowNodeStartTool = Tool.define("workflow_node_start", {
           },
         })
 
-    if (input.initial_prompt) {
-      void SessionPrompt.prompt({
-        sessionID: session.id,
-        agent: node.agent,
-        model: input.model?.providerID && input.model.modelID
-          ? {
-              providerID: input.model.providerID,
-              modelID: input.model.modelID,
-            }
-          : node.model?.providerID && node.model.modelID
-            ? {
-                providerID: node.model.providerID,
-                modelID: node.model.modelID,
-              }
-            : undefined,
-        variant: input.model?.variant ?? node.model?.variant,
-        parts: [{ type: "text", text: input.initial_prompt }],
-      })
-    }
+    await Workflow.control({
+      workflowID: node.workflow_id,
+      nodeID: node.id,
+      source: "orchestrator",
+      command: "continue",
+      payload: {
+        reason: "node_started",
+      },
+    })
+
+    void prompt({
+      workflowID: node.workflow_id,
+      nodeID: node.id,
+      agent: node.agent,
+      sessionID: session.id,
+      model: input.model ?? node.model,
+      text: input.initial_prompt,
+    }).catch(() => undefined)
 
     return {
       title: node.title,
@@ -312,6 +376,23 @@ export const WorkflowControlTool = Tool.define("workflow_control", {
       command: input.command,
       payload: input.payload,
     })
+    const node = await Workflow.getNode(input.node_id)
+    if (node.session_id) {
+      void prompt({
+        workflowID: input.workflow_id,
+        nodeID: input.node_id,
+        agent: node.agent,
+        sessionID: node.session_id,
+        model: node.model,
+        text: [
+          `Runtime command: ${input.command}`,
+          input.payload ? JSON.stringify(input.payload, null, 2) : "",
+          "Call workflow_pull now, apply the command, and continue execution in this node session.",
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+      }).catch(() => undefined)
+    }
     return {
       title: "workflow control",
       metadata: {
@@ -336,6 +417,7 @@ export const WorkflowUpdateTool = Tool.define("workflow_update", {
   }),
   async execute(input, ctx) {
     const node = input.node_id ? await Workflow.getNode(input.node_id) : await Workflow.nodeBySession(ctx.sessionID)
+    assertNodeSession(node, ctx.sessionID)
     const updated = await Workflow.patchNode({
       nodeID: node.id,
       source: "node",
@@ -366,6 +448,7 @@ export const WorkflowPullTool = Tool.define("workflow_pull", {
   }),
   async execute(input, ctx) {
     const node = input.node_id ? await Workflow.getNode(input.node_id) : await Workflow.nodeBySession(ctx.sessionID)
+    assertNodeSession(node, ctx.sessionID)
     const result = await Workflow.pull({
       nodeID: node.id,
       cursor: input.cursor,

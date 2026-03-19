@@ -3,12 +3,10 @@ import { Hono } from "hono"
 import z from "zod"
 import { Workflow } from "@/workflow"
 import { errors } from "../error"
-import { SessionProxyMiddleware } from "@/control-plane/session-proxy-middleware"
 import { Snapshot } from "@/snapshot"
 
 export function WorkflowRoutes() {
   return new Hono()
-    .use(SessionProxyMiddleware)
     .get(
       "/session/:sessionID",
       describeRoute({

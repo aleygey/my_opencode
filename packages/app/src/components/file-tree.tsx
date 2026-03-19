@@ -21,6 +21,8 @@ import { Dynamic } from "solid-js/web"
 import type { FileNode } from "@opencode-ai/sdk/v2"
 
 const MAX_DEPTH = 128
+const asList = <T,>(value: readonly T[] | Record<string, T> | undefined) =>
+  Array.isArray(value) ? value : Object.values(value ?? {})
 
 function pathToFileUrl(filepath: string): string {
   return `file://${encodeFilePath(filepath)}`
@@ -218,13 +220,13 @@ export default function FileTree(props: {
       .normalize(p)
       .replace(/[\\/]+$/, "")
       .replaceAll("\\", "/")
-  const chain = props._chain ? [...props._chain, key(props.path)] : [key(props.path)]
+  const chain = props._chain ? [...asList(props._chain), key(props.path)] : [key(props.path)]
 
   const filter = createMemo(() => {
     if (props._filter) return props._filter
 
-    const allowed = props.allowed
-    if (!allowed) return
+    const allowed = asList(props.allowed)
+    if (allowed.length === 0) return
 
     const files = new Set(allowed)
     const dirs = new Set<string>()
@@ -245,7 +247,7 @@ export default function FileTree(props: {
     if (props._marks) return props._marks
 
     const out = new Set<string>()
-    for (const item of props.modified ?? []) out.add(item)
+    for (const item of asList(props.modified)) out.add(item)
     for (const item of props.kinds?.keys() ?? []) out.add(item)
     if (out.size === 0) return
     return out
