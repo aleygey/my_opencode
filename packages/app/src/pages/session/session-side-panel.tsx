@@ -30,6 +30,7 @@ const asList = <T,>(value: readonly T[] | Record<string, T> | undefined) =>
   Array.isArray(value) ? value : Object.values(value ?? {})
 
 export function SessionSidePanel(props: {
+  hide?: () => boolean
   reviewPanel: () => JSX.Element
   activeDiff?: string
   focusReviewDiff: (path: string) => void
@@ -49,9 +50,10 @@ export function SessionSidePanel(props: {
   const { params, sessionKey, tabs, view } = useSessionLayout()
 
   const isDesktop = createMediaQuery("(min-width: 768px)")
+  const hide = createMemo(() => props.hide?.() ?? false)
 
-  const reviewOpen = createMemo(() => isDesktop() && view().reviewPanel.opened())
-  const fileOpen = createMemo(() => isDesktop() && layout.fileTree.opened())
+  const reviewOpen = createMemo(() => isDesktop() && !hide() && view().reviewPanel.opened())
+  const fileOpen = createMemo(() => isDesktop() && !hide() && layout.fileTree.opened())
   const open = createMemo(() => reviewOpen() || fileOpen())
   const reviewTab = createMemo(() => isDesktop())
   const panelWidth = createMemo(() => {

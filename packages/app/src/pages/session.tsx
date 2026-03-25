@@ -388,15 +388,6 @@ export default function Page() {
 
   const isDesktop = createMediaQuery("(min-width: 768px)")
   const size = createSizing()
-  const desktopReviewOpen = createMemo(() => isDesktop() && view().reviewPanel.opened())
-  const desktopFileTreeOpen = createMemo(() => isDesktop() && layout.fileTree.opened())
-  const desktopSidePanelOpen = createMemo(() => desktopReviewOpen() || desktopFileTreeOpen())
-  const sessionPanelWidth = createMemo(() => {
-    if (!desktopSidePanelOpen()) return "100%"
-    if (desktopReviewOpen()) return `${layout.session.width()}px`
-    return `calc(100% - ${layout.fileTree.width()}px)`
-  })
-  const centered = createMemo(() => isDesktop() && !desktopReviewOpen())
 
   function normalizeTab(tab: string) {
     if (!tab.startsWith("file://")) return tab
@@ -589,6 +580,17 @@ export default function Page() {
       { id: string; prompt: FollowupDraft["prompt"]; context: FollowupDraft["context"] } | undefined
     >,
   })
+
+  const graph = createMemo(() => workflowRootSelected() && store.workflow === "graph")
+  const desktopReviewOpen = createMemo(() => isDesktop() && !graph() && view().reviewPanel.opened())
+  const desktopFileTreeOpen = createMemo(() => isDesktop() && !graph() && layout.fileTree.opened())
+  const desktopSidePanelOpen = createMemo(() => desktopReviewOpen() || desktopFileTreeOpen())
+  const sessionPanelWidth = createMemo(() => {
+    if (!desktopSidePanelOpen()) return "100%"
+    if (desktopReviewOpen()) return `${layout.session.width()}px`
+    return `calc(100% - ${layout.fileTree.width()}px)`
+  })
+  const centered = createMemo(() => isDesktop() && !desktopReviewOpen())
 
   createComputed((prev) => {
     const key = sessionKey()
@@ -1998,6 +2000,7 @@ export default function Page() {
         </div>
 
         <SessionSidePanel
+          hide={graph}
           reviewPanel={reviewPanel}
           activeDiff={tree.activeDiff}
           focusReviewDiff={focusReviewDiff}

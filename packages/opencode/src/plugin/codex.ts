@@ -357,6 +357,10 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
       async loader(getAuth, provider) {
         const auth = await getAuth()
         if (auth.type !== "oauth") return {}
+        if (!provider?.models) {
+          log.warn("skipping codex oauth model filter for provider without models")
+          return {}
+        }
 
         // Filter models to only allowed Codex models for OAuth
         const allowedModels = new Set([
