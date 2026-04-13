@@ -1,0 +1,13 @@
+Run a sand table exercise where a planner agent and an evaluator agent iterate on a workflow plan.
+
+The planner generates a detailed plan based on the topic and context. The evaluator reviews it critically and either approves or requests revisions. This loop continues until the plan is approved or max rounds are reached.
+
+Both agents use different models when available to maximize diversity of perspective.
+
+Parameters:
+- topic: The planning question or goal to discuss
+- context: Additional context from the current session (optional)
+- max_rounds: Maximum iteration rounds, 1-5, default 3
+- models: Override model assignment for planner/evaluator roles (optional; auto-detected from available providers if omitted)
+
+After completion, you can use `msg_read` to review the full discussion history and `msg_write` to inject additional user context into an active discussion.

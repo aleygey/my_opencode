@@ -25,6 +25,20 @@ import { Flag } from "@/flag/flag"
 import { Log } from "@/util/log"
 import { LspTool } from "./lsp"
 import { Truncate } from "./truncate"
+import { SandTableTool, MsgReadTool, MsgWriteTool } from "./sand-table"
+import {
+  WorkflowCheckpointCreateTool,
+  WorkflowControlTool,
+  WorkflowCreateTool,
+  WorkflowEdgeCreateTool,
+  WorkflowNodeAbortTool,
+  WorkflowNodeCreateTool,
+  WorkflowNodePauseTool,
+  WorkflowNodeStartTool,
+  WorkflowPullTool,
+  WorkflowReadTool,
+  WorkflowUpdateTool,
+} from "./workflow"
 import { ApplyPatchTool } from "./apply_patch"
 import { Glob } from "../util/glob"
 import path from "path"

@@ -104,6 +104,25 @@ export const { use: useGlobalSDK, provider: GlobalSDKProvider } = createSimpleCo
     let streamErrorLogged = false
     const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
     const aborted = (error: unknown) => abortError.safeParse(error).success
+    const ready = () => {
+      if (typeof document === "undefined" || typeof window === "undefined") return Promise.resolve()
+      if (document.readyState === "complete") return Promise.resolve()
+      return new Promise<void>((resolve) => {
+        const done = () => {
+          window.removeEventListener("load", done)
+          resolve()
+        }
+        window.addEventListener("load", done, { once: true })
+        abort.signal.addEventListener(
+          "abort",
+          () => {
+            window.removeEventListener("load", done)
+            resolve()
+          },
+          { once: true },
+        )
+      })
+    }
 
     let attempt: AbortController | undefined
     let run: Promise<void> | undefined
@@ -128,6 +147,8 @@ export const { use: useGlobalSDK, provider: GlobalSDKProvider } = createSimpleCo
       if (started) return run
       started = true
       run = (async () => {
+        await ready()
+        if (abort.signal.aborted || !started) return
         while (!abort.signal.aborted && started) {
           attempt = new AbortController()
           lastEventAt = Date.now()
@@ -142,7 +163,7 @@ export const { use: useGlobalSDK, provider: GlobalSDKProvider } = createSimpleCo
                 if (aborted(error)) return
                 if (streamErrorLogged) return
                 streamErrorLogged = true
-                console.error("[global-sdk] event stream error", {
+                console.error("[global-sdk] event stream failed", {
                   url: currentServer.http.url,
                   fetch: eventFetch ? "platform" : "webview",
                   error,

@@ -4,6 +4,8 @@ const defaults: Record<string, string> = {
   docs: "var(--icon-agent-docs-base)",
   plan: "var(--icon-agent-plan-base)",
 }
+const asList = <T,>(value: readonly T[] | Record<string, T> | undefined) =>
+  Array.isArray(value) ? value : Object.values(value ?? {})
 
 const palette = [
   "var(--icon-agent-ask-base)",
@@ -33,12 +35,13 @@ export function agentColor(name: string, custom?: string) {
 
 export function messageAgentColor(
   list: readonly { role: string; agent?: string }[] | undefined,
-  agents: readonly { name: string; color?: string }[],
+  agents: readonly { name: string; color?: string }[] | Record<string, { name: string; color?: string }>,
 ) {
   if (!list) return undefined
+  const items = asList(agents)
   for (let i = list.length - 1; i >= 0; i--) {
     const item = list[i]
     if (item.role !== "user" || !item.agent) continue
-    return agentColor(item.agent, agents.find((agent) => agent.name === item.agent)?.color)
+    return agentColor(item.agent, items.find((agent) => agent.name === item.agent)?.color)
   }
 }

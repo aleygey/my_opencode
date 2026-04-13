@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs"
 import solidPlugin from "vite-plugin-solid"
+import reactPlugin from "@vitejs/plugin-react"
 import tailwindcss from "@tailwindcss/vite"
 import { fileURLToPath } from "url"
 
@@ -34,5 +35,10 @@ export default [
     },
   },
   tailwindcss(),
-  solidPlugin(),
+  reactPlugin({
+    include: [/src\/react-workflow\/.*\.[jt]sx?$/],
+  }),
+  solidPlugin({
+    exclude: [/src\/react-workflow\/.*\.[jt]sx?$/],
+  }),
 ]

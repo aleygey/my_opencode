@@ -41,6 +41,9 @@ function merge<T extends { id: string }>(a: readonly T[], b: readonly T[]) {
   return [...map.values()].sort((x, y) => cmp(x.id, y.id))
 }
 
+const asList = <T,>(value: readonly T[] | Record<string, T> | undefined) =>
+  Array.isArray(value) ? value : Object.values(value ?? {})
+
 type OptimisticStore = {
   message: Record<string, Message[] | undefined>
   part: Record<string, Part[] | undefined>
@@ -510,7 +513,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           return runInflight(inflightDiff, key, () =>
             retry(() => client.session.diff({ sessionID })).then((diff) => {
               if (!tracked(directory, sessionID)) return
-              setStore("session_diff", sessionID, reconcile(list(diff.data), { key: "file" }))
+              setStore("session_diff", sessionID, reconcile(asList(diff.data), { key: "file" }))
             }),
           )
         },

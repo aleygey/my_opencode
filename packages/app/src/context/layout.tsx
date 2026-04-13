@@ -265,6 +265,9 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
 
     const MAX_SESSION_KEYS = 50
     const PENDING_MESSAGE_TTL_MS = 2 * 60 * 1000
+    const [mode, setMode] = createStore({
+      immersive: false,
+    })
     const usage = {
       active: undefined as string | undefined,
       pruned: false,
@@ -622,6 +625,13 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         toggleWorkspaces(directory: string) {
           const current = store.sidebar.workspaces[directory] ?? store.sidebar.workspacesDefault ?? false
           setStore("sidebar", "workspaces", directory, !current)
+        },
+      },
+      immersive: {
+        active: createMemo(() => mode.immersive),
+        set(value: boolean) {
+          if (mode.immersive === value) return
+          setMode("immersive", value)
         },
       },
       terminal: {

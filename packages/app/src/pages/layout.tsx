@@ -114,6 +114,7 @@ export default function Layout(props: ParentProps) {
   const globalSync = useGlobalSync()
   const layout = useLayout()
   const layoutReady = createMemo(() => layout.ready())
+  const immersive = createMemo(() => layout.immersive.active())
   const platform = usePlatform()
   const settings = useSettings()
   const server = useServer()
@@ -990,8 +991,8 @@ export default function Layout(props: ParentProps) {
     const nextSession = sessions[index + 1] ?? sessions[index - 1]
 
     await globalSDK.client.session.update({
-      directory: session.directory,
       sessionID: session.id,
+      body_directory: session.directory,
       time: { archived: Date.now() },
     })
     setStore(
@@ -1587,7 +1588,7 @@ export default function Layout(props: ParentProps) {
           globalSDK.client.session
             .update({
               sessionID: session.id,
-              directory: session.directory,
+              body_directory: session.directory,
               time: { archived: archivedAt },
             })
             .catch(() => undefined),
@@ -2363,7 +2364,7 @@ export default function Layout(props: ParentProps) {
               aria-label={language.t("sidebar.nav.projectsAndSessions")}
               data-component="sidebar-nav-desktop"
               classList={{
-                "hidden xl:block": true,
+                "hidden xl:block": !immersive(),
                 "absolute inset-y-0 left-0": true,
                 "z-10": true,
               }}
@@ -2407,6 +2408,9 @@ export default function Layout(props: ParentProps) {
 
             <div
               class="hidden xl:block pointer-events-none absolute top-0 right-0 z-0 border-t border-border-weaker-base"
+              classList={{
+                hidden: immersive(),
+              }}
               style={{ left: "calc(4rem + 12px)" }}
             />
 
@@ -2444,12 +2448,13 @@ export default function Layout(props: ParentProps) {
                   !state.sizing,
               }}
               style={{
-                "--main-left": layout.sidebar.opened() ? `${side()}px` : "4rem",
+                "--main-left": immersive() ? "0px" : layout.sidebar.opened() ? `${Math.max(layout.sidebar.width(), 244)}px` : "4rem",
               }}
             >
               <main
                 classList={{
-                  "size-full overflow-x-hidden flex flex-col items-start contain-strict border-t border-border-weak-base bg-background-base xl:border-l xl:rounded-tl-[12px]": true,
+                  "size-full overflow-x-hidden flex flex-col items-start contain-strict bg-background-base": true,
+                  "border-t border-border-weak-base xl:border-l xl:rounded-tl-[12px]": !immersive(),
                 }}
               >
                 <Show when={!autoselecting.loading} fallback={<div class="size-full" />}>
@@ -2460,7 +2465,7 @@ export default function Layout(props: ParentProps) {
 
             <div
               classList={{
-                "hidden xl:flex absolute inset-y-0 left-16 z-30": true,
+                "hidden xl:flex absolute inset-y-0 left-16 z-30": !immersive(),
                 "opacity-100 translate-x-0 pointer-events-auto": state.peeked && !layout.sidebar.opened(),
                 "opacity-0 -translate-x-2 pointer-events-none": !state.peeked || layout.sidebar.opened(),
                 "transition-[opacity,transform] motion-reduce:transition-none": true,
@@ -2484,7 +2489,7 @@ export default function Layout(props: ParentProps) {
 
             <div
               classList={{
-                "hidden xl:block pointer-events-none absolute inset-y-0 right-0 z-25 overflow-hidden": true,
+                "hidden xl:block pointer-events-none absolute inset-y-0 right-0 z-25 overflow-hidden": !immersive(),
                 "opacity-100 translate-x-0": state.peeked && !layout.sidebar.opened(),
                 "opacity-0 -translate-x-2": !state.peeked || layout.sidebar.opened(),
                 "transition-[opacity,transform] motion-reduce:transition-none": true,

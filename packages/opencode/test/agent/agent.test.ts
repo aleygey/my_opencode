@@ -592,13 +592,13 @@ description: Permission skill.
   }
 })
 
-test("defaultAgent returns build when no default_agent config", async () => {
+test("defaultAgent returns orchestrator when no default_agent config", async () => {
   await using tmp = await tmpdir()
   await Instance.provide({
     directory: tmp.path,
     fn: async () => {
       const agent = await Agent.defaultAgent()
-      expect(agent).toBe("build")
+      expect(agent).toBe("orchestrator")
     },
   })
 })
@@ -680,7 +680,7 @@ test("defaultAgent throws when default_agent points to non-existent agent", asyn
   })
 })
 
-test("defaultAgent returns plan when build is disabled and default_agent not set", async () => {
+test("defaultAgent returns orchestrator when build is disabled and default_agent not set", async () => {
   await using tmp = await tmpdir({
     config: {
       agent: {
@@ -692,8 +692,7 @@ test("defaultAgent returns plan when build is disabled and default_agent not set
     directory: tmp.path,
     fn: async () => {
       const agent = await Agent.defaultAgent()
-      // build is disabled, so it should return plan (next primary agent)
-      expect(agent).toBe("plan")
+      expect(agent).toBe("orchestrator")
     },
   })
 })
@@ -702,6 +701,7 @@ test("defaultAgent throws when all primary agents are disabled", async () => {
   await using tmp = await tmpdir({
     config: {
       agent: {
+        orchestrator: { disable: true },
         build: { disable: true },
         plan: { disable: true },
       },

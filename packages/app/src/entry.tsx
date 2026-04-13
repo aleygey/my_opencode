@@ -1,7 +1,7 @@
 // @refresh reload
 
 import { render } from "solid-js/web"
-import { AppBaseProviders, AppInterface } from "@/app"
+import { AppBaseProviders, AppInterface, WorkflowInterface } from "@/app"
 import { type Platform, PlatformProvider } from "@/context/platform"
 import { dict as en } from "@/i18n/en"
 import { dict as zh } from "@/i18n/zh"
@@ -98,9 +98,13 @@ if (!(root instanceof HTMLElement) && import.meta.env.DEV) {
 }
 
 const getCurrentUrl = () => {
+  const host = location.hostname || "localhost"
+  if (import.meta.env.VITE_OPENCODE_SERVER_HOST || import.meta.env.VITE_OPENCODE_SERVER_PORT) {
+    return `http://${import.meta.env.VITE_OPENCODE_SERVER_HOST ?? host}:${import.meta.env.VITE_OPENCODE_SERVER_PORT ?? "4096"}`
+  }
   if (location.hostname.includes("opencode.ai")) return "http://localhost:4096"
   if (import.meta.env.DEV)
-    return `http://${import.meta.env.VITE_OPENCODE_SERVER_HOST ?? "localhost"}:${import.meta.env.VITE_OPENCODE_SERVER_PORT ?? "4096"}`
+    return `http://${import.meta.env.VITE_OPENCODE_SERVER_HOST ?? host}:${import.meta.env.VITE_OPENCODE_SERVER_PORT ?? "4096"}`
   return location.origin
 }
 
@@ -127,11 +131,12 @@ const platform: Platform = {
 
 if (root instanceof HTMLElement) {
   const server: ServerConnection.Http = { type: "http", http: { url: getCurrentUrl() } }
+  const Legacy = location.pathname.startsWith("/legacy") ? AppInterface : WorkflowInterface
   render(
     () => (
       <PlatformProvider value={platform}>
         <AppBaseProviders>
-          <AppInterface
+          <Legacy
             defaultServer={ServerConnection.Key.make(getDefaultUrl())}
             servers={[server]}
             disableHealthCheck

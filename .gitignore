@@ -29,3 +29,10 @@ UPCOMING_CHANGELOG.md
 logs/
 *.bun-build
 tsconfig.tsbuildinfo
+output/playwright/*.png
+屏幕截图 *.png
+g6-*.tgz
+elkjs-*.tgz
+nix/hello*
+nix/serial_*.py
+nix/serial_proxy/
