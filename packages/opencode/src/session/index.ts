@@ -472,6 +472,21 @@ export namespace Session {
               time: Date.now(),
             }),
           )
+          if (part.type === "text" && !part.synthetic && !part.ignored) {
+            void Instance.bind(async () => {
+              const { Refiner } = await import("@/refiner")
+              await Refiner.observeUserMessage({
+                sessionID: part.sessionID,
+                messageID: part.messageID,
+              })
+            })().catch((error) => {
+              log.warn("failed to observe session part with refiner", {
+                sessionID: part.sessionID,
+                messageID: part.messageID,
+                error,
+              })
+            })
+          }
           return part
         }).pipe(Effect.withSpan("Session.updatePart"))
 

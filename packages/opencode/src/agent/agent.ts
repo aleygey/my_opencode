@@ -11,6 +11,7 @@ import { ProviderTransform } from "../provider/transform"
 import PROMPT_GENERATE from "./generate.txt"
 import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
+import PROMPT_REFINER from "./prompt/refiner.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
 import { Permission } from "@/permission"
@@ -230,6 +231,21 @@ export namespace Agent {
                 user,
               ),
               prompt: PROMPT_SUMMARY,
+            },
+            refiner: {
+              name: "refiner",
+              mode: "primary",
+              options: {},
+              native: true,
+              hidden: true,
+              permission: Permission.merge(
+                defaults,
+                Permission.fromConfig({
+                  "*": "deny",
+                }),
+                user,
+              ),
+              prompt: PROMPT_REFINER,
             },
             sandtable: {
               name: "sandtable",

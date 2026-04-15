@@ -1179,6 +1179,17 @@ export namespace Workflow {
     if (!row) throw new Error("Failed to create workflow event")
     const info = fromEventRow(row)
     Database.effect(() => Bus.publish(Event.EventCreated, { info }))
+    void Instance.bind(async () => {
+      const { Refiner } = await import("@/refiner")
+      await Refiner.observeWorkflowEvent(info)
+    })().catch((error) => {
+      log.warn("failed to observe workflow event with refiner", {
+        workflowID: input.workflowID,
+        eventID: info.id,
+        kind: info.kind,
+        error,
+      })
+    })
     return info
   }
 

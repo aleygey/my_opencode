@@ -1081,6 +1081,16 @@ export namespace Config {
         .object({
           disable_paste_summary: z.boolean().optional(),
           batch_tool: z.boolean().optional().describe("Enable the batch tool"),
+          refiner: z
+            .object({
+              enabled: z.boolean().optional().describe("Enable the background refiner agent"),
+              directory: z.string().optional().describe("Directory for persisted refiner memory artifacts"),
+              model_assisted: z
+                .boolean()
+                .optional()
+                .describe("Enable model-assisted refinement before heuristic fallback"),
+            })
+            .optional(),
           openTelemetry: z
             .boolean()
             .optional()
