@@ -490,24 +490,6 @@ function relevantNode(snapshot: Awaited<ReturnType<typeof Workflow.get>>, nodeID
   )
 }
 
-function pruneSnapshot(snapshot: Awaited<ReturnType<typeof Workflow.get>>) {
-  return {
-    workflow: snapshot.workflow,
-    runtime: snapshot.runtime,
-    nodes: snapshot.nodes.map((node) => ({
-      id: node.id,
-      title: node.title,
-      agent: node.agent,
-      status: node.status,
-      result_status: node.result_status,
-      fail_reason: node.fail_reason,
-      attempt: node.attempt,
-      action_count: node.action_count,
-    })),
-    events: snapshot.events.slice(-8),
-  }
-}
-
 function fingerprint(record: {
   classification: Exclude<Classification, "noise">
   taskType: string
@@ -532,42 +514,90 @@ function pendingKey(workflowID: string, nodeID?: string) {
   return `${workflowID}:${nodeID ?? "root"}`
 }
 
+function compactText(text: string) {
+  return text.replace(/\s+/g, " ").trim()
+}
+
+function clipText(text: string, size = 180) {
+  const value = compactText(text)
+  if (value.length <= size) return value
+  return `${value.slice(0, size - 1).trimEnd()}…`
+}
+
+function renderQuote(text: string, maxLines = 6) {
+  const items = text
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, maxLines)
+  if (!items.length) return "> (empty)"
+  return items.map((item) => `> ${item}`).join("\n")
+}
+
+function renderList(items: string[], fallback: string, max = 6) {
+  const values = uniq(items).slice(0, max).map((item) => `- ${clipText(item, 160)}`)
+  return values.length ? values.join("\n") : `- ${fallback}`
+}
+
+function renderMeta(label: string, value?: string | number | boolean) {
+  if (value === undefined || value === null || value === "") return ""
+  return `- ${label}: ${value}`
+}
+
+function recentSignals(snapshot: Awaited<ReturnType<typeof Workflow.get>>) {
+  return snapshot.events
+    .slice(-3)
+    .map((event) =>
+      [event.kind, event.node_id ? `node ${event.node_id}` : undefined, nowISO(event.time_created)].filter(Boolean).join(" / "),
+    )
+}
+
 function renderExperience(record: ExperienceRecord) {
   return [
     "# Workflow Experience",
     "",
     "## Summary",
-    record.know_how.summary,
+    clipText(record.know_how.summary || record.problem_or_requirement.summary, 220),
     "",
-    "## Workflow Context",
-    `- Task type: ${record.task_type}`,
-    `- Phase: ${record.workflow_context.phase}`,
-    record.workflow_context.node_agent ? `- Node agent: ${record.workflow_context.node_agent}` : "",
-    record.workflow_context.execution_scene ? `- Execution scene: ${record.workflow_context.execution_scene}` : "",
-    record.workflow_context.prerequisites.length ? `- Prerequisites: ${record.workflow_context.prerequisites.join("; ")}` : "",
-    record.workflow_context.environment.length ? `- Environment: ${record.workflow_context.environment.join("; ")}` : "",
+    "## Applies When",
+    renderMeta("Task type", record.task_type),
+    renderMeta("Classification", record.classification),
+    renderMeta("Phase", record.workflow_context.phase),
+    renderMeta("Node agent", record.workflow_context.node_agent),
+    renderMeta("Execution scene", record.workflow_context.execution_scene),
+    renderMeta("Scope", record.reusability.scope),
+    record.workflow_context.prerequisites.length
+      ? `- Preconditions: ${record.workflow_context.prerequisites.map((item) => clipText(item, 100)).join("; ")}`
+      : "",
+    record.workflow_context.environment.length
+      ? `- Environment: ${record.workflow_context.environment.map((item) => clipText(item, 100)).join("; ")}`
+      : "",
     "",
-    "## Problem Or Requirement",
-    record.problem_or_requirement.summary,
-    record.problem_or_requirement.original_gap ? `Original gap: ${record.problem_or_requirement.original_gap}` : "",
+    "## Problem",
+    clipText(record.problem_or_requirement.summary, 260),
+    record.problem_or_requirement.original_gap
+      ? `- Original signal: ${clipText(record.problem_or_requirement.original_gap, 260)}`
+      : "",
     "",
-    "## Know How",
-    record.know_how.recommended_actions.length
-      ? record.know_how.recommended_actions.map((item) => `- ${item}`).join("\n")
-      : "- No action list extracted",
-    record.know_how.tool_hints.length ? `Tool hints: ${record.know_how.tool_hints.join(", ")}` : "",
-    record.know_how.skill_hints.length ? `Skill hints: ${record.know_how.skill_hints.join(", ")}` : "",
-    record.know_how.acceptance_hints.length ? `Acceptance hints: ${record.know_how.acceptance_hints.join(", ")}` : "",
+    "## Recommended Handling",
+    renderList(record.know_how.recommended_actions, clipText(record.know_how.summary, 160)),
+    renderMeta("Tools", uniq(record.know_how.tool_hints).join(", ")),
+    renderMeta("Skills", uniq(record.know_how.skill_hints).join(", ")),
+    renderMeta("Platforms", uniq(record.know_how.platform_hints).join(", ")),
+    renderMeta("Acceptance", uniq(record.know_how.acceptance_hints).join("; ")),
     "",
     "## Evidence",
-    `- Evidence count: ${record.evidence.count}`,
-    `- Success count: ${record.evidence.success_count}`,
-    `- Failure count: ${record.evidence.failure_count}`,
+    `- Cases: ${record.evidence.count}`,
+    `- Successes: ${record.evidence.success_count}`,
+    `- Failures: ${record.evidence.failure_count}`,
+    `- Repeated: ${record.evidence.repeated}`,
+    `- Merge candidate: ${record.reusability.merge_candidate}`,
+    `- Skill candidate: ${record.reusability.skill_candidate}`,
     record.evidence.items
       .slice(-5)
       .map(
         (item) =>
-          `- ${item.trigger_kind} at ${nowISO(item.observed_at)} on workflow ${item.workflow_id}${item.node_id ? ` / node ${item.node_id}` : ""} (${item.recovery_status})`,
+          `- ${item.trigger_kind} / ${item.source_type} / ${nowISO(item.observed_at)}${item.node_id ? ` / node ${item.node_id}` : ""} / ${item.recovery_status}`,
       )
       .join("\n"),
     "",
@@ -582,29 +612,52 @@ function renderInbox(input: {
   snapshot: Awaited<ReturnType<typeof Workflow.get>>
   decision: AgentDecision
 }) {
+  const node = relevantNode(input.snapshot, input.candidate.node_id)
+  const hints = [
+    renderMeta("Tools", uniq(input.decision.know_how.tool_hints).join(", ")),
+    renderMeta("Skills", uniq(input.decision.know_how.skill_hints).join(", ")),
+    renderMeta("Platforms", uniq(input.decision.know_how.platform_hints).join(", ")),
+    renderMeta("Acceptance", uniq(input.decision.know_how.acceptance_hints).join("; ")),
+  ].filter(Boolean)
   return [
     "# Refiner Inbox",
     "",
-    "## Candidate",
-    input.candidate.text || "(empty)",
+    "## Observation",
+    renderMeta("Source", input.record.source_type),
+    renderMeta("Trigger", input.record.trigger_kind),
+    renderMeta("Workflow", input.record.workflow_id),
+    renderMeta("Workflow title", input.snapshot.workflow.title),
+    renderMeta("Runtime phase", input.snapshot.runtime.phase),
+    renderMeta("Node", input.candidate.node_id),
+    renderMeta("Node agent", node?.agent),
+    "",
+    renderQuote(input.candidate.text),
     "",
     "## Decision",
-    `- Related: ${input.record.related}`,
-    `- Classification: ${input.record.classification}`,
-    `- Long-term value: ${input.record.long_term_value}`,
-    `- Reason: ${input.record.reason}`,
+    renderMeta("Related", input.record.related),
+    renderMeta("Classification", input.record.classification),
+    renderMeta("Long-term value", input.record.long_term_value),
+    renderMeta("Task type", input.decision.task_type),
+    renderMeta("Experience", input.record.experience_path),
+    renderMeta("Reason", clipText(input.record.reason, 180)),
     "",
-    "## Workflow Snapshot",
-    "```json",
-    JSON.stringify(pruneSnapshot(input.snapshot), null, 2),
-    "```",
+    "## Extracted Experience",
+    renderMeta("Phase", input.decision.workflow_context.phase),
+    renderMeta("Execution scene", input.decision.workflow_context.execution_scene),
+    renderMeta("Problem", clipText(input.decision.problem_or_requirement.summary, 200)),
+    renderMeta("Know-how", clipText(input.decision.know_how.summary, 200)),
+    renderMeta("Scope", input.decision.reusability.scope),
     "",
-    "## Extracted Know How",
-    "```json",
-    JSON.stringify(input.decision, null, 2),
-    "```",
+    "### Recommended Handling",
+    renderList(input.decision.know_how.recommended_actions, clipText(input.decision.know_how.summary, 160)),
     "",
-  ].join("\n")
+    ...(hints.length ? ["### Hints", ...hints, ""] : []),
+    "### Runtime Signals",
+    renderList(recentSignals(input.snapshot), "No recent runtime signal"),
+    "",
+  ]
+    .filter(Boolean)
+    .join("\n")
 }
 
 async function readMatter(filepath: string) {

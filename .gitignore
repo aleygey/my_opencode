@@ -23,6 +23,11 @@ target
 .scripts
 .direnv/
 
+# Local runtime / agent state
+.claude/
+.local/
+.opencode/refiner-memory/
+
 # Local dev files
 opencode-dev
 UPCOMING_CHANGELOG.md

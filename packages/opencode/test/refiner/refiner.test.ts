@@ -84,6 +84,10 @@ describe("Refiner", () => {
         expect(inbox.length).toBeGreaterThan(0)
         expect(experiences.length).toBeGreaterThan(0)
 
+        const inboxText = await Filesystem.readText(inbox[0]!)
+        expect(inboxText.includes("## Observation")).toBe(true)
+        expect(inboxText.includes("```json")).toBe(false)
+
         const experienceDoc = matter(await Filesystem.readText(experiences[0]!))
         expect(experienceDoc.data.kind).toBe("workflow_experience")
         expect(experienceDoc.data.long_term_value).toBe(true)
@@ -91,6 +95,10 @@ describe("Refiner", () => {
           experienceDoc.data.classification,
         )
         expect(experienceDoc.data.task_type).toBe("coding")
+
+        const experienceText = await Filesystem.readText(experiences[0]!)
+        expect(experienceText.includes("## Applies When")).toBe(true)
+        expect(experienceText.includes("```json")).toBe(false)
       },
     })
   })
