@@ -28,7 +28,7 @@ export interface ToolCall {
   input?: Record<string, unknown>
 }
 
-interface Msg {
+export interface Msg {
   id: string
   role: Role
   content: string
@@ -70,7 +70,7 @@ interface Props {
   onNewSession?: () => void
   onModelPickerOpen?: () => void
   /** Plan card callbacks */
-  onPlanRun?: () => void
+  onPlanRun?: (plan: WorkflowPlan) => void
   onPlanEdit?: (context: string) => void
   /** Session control */
   isRunning?: boolean
@@ -285,18 +285,29 @@ export function ThinkingCard(props: { content: string; status: 'running' | 'comp
 /* ── Reasoning card ── */
 function ReasoningCard({ text, time }: { text: string; time?: { start: number; end?: number } }) {
   const duration = time?.end && time?.start ? `${((time.end - time.start) / 1000).toFixed(1)}s` : undefined
+  const [open, setOpen] = useState(false)
   return (
-    <div className="wf-tool-call wf-tool-call--completed">
-      <div className="wf-tool-call-header">
-        <div className="wf-tool-call-icon wf-tool-call-icon--completed" style={{ background: 'rgba(138,116,193,0.08)', color: '#8a74c1' }}>
+    <div className="wf-reasoning-card">
+      <button
+        type="button"
+        className="wf-reasoning-header"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <div className="wf-reasoning-icon">
           <Brain className="h-3.5 w-3.5" strokeWidth={2} />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="wf-tool-call-name">Reasoning</div>
-          <div className="wf-tool-call-meta">{duration ? `${duration}` : 'Internal reasoning'}</div>
+          <div className="wf-reasoning-title">Reasoning</div>
+          <div className="wf-reasoning-meta">{duration ? duration : 'Internal reasoning'}</div>
         </div>
-      </div>
-      <div className="wf-tool-call-output whitespace-pre-wrap break-all">{text}</div>
+        {open
+          ? <ChevronDown className="h-3.5 w-3.5 flex-shrink-0 opacity-60" strokeWidth={2} />
+          : <ChevronRight className="h-3.5 w-3.5 flex-shrink-0 opacity-60" strokeWidth={2} />
+        }
+      </button>
+      {open && (
+        <div className="wf-reasoning-body whitespace-pre-wrap break-all">{text}</div>
+      )}
     </div>
   )
 }
@@ -474,6 +485,7 @@ export function ChatPanel(props: Props) {
   const [msg, setMsg] = useState('')
   const [modelOpen, setModelOpen] = useState(false)
   const [visibleCount, setVisibleCount] = useState(MSG_PAGE_SIZE)
+  const composingRef = useRef(false)
   const end = useRef<HTMLDivElement>(null)
   const messagesRef = useRef<HTMLDivElement>(null)
   const dropRef = useRef<HTMLDivElement>(null)
@@ -549,6 +561,10 @@ export function ChatPanel(props: Props) {
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    const native = e.nativeEvent as KeyboardEvent & { isComposing?: boolean; keyCode?: number }
+    if (composingRef.current || native.isComposing || native.keyCode === 229) {
+      return
+    }
     if (slash.popoverOpen) {
       const consumed = slash.handleKeyDown(e.key)
       if (consumed) {
@@ -589,7 +605,7 @@ export function ChatPanel(props: Props) {
           <span className="text-[14px] font-bold tracking-[-0.01em] text-[var(--wf-ink)]">Agent Chat</span>
 
           {/* Model selector — in header */}
-          <div style={{ position: 'relative' }} ref={dropRef}>
+          <div style={{ position: 'relative', zIndex: 70 }} ref={dropRef}>
             <div
               role="button"
               tabIndex={0}
@@ -602,7 +618,7 @@ export function ChatPanel(props: Props) {
               <ChevronDown className={`h-2.5 w-2.5 flex-shrink-0 transition-transform duration-200 ${modelOpen ? 'rotate-180' : ''}`} strokeWidth={2.5} />
             </div>
             {modelOpen && (
-              <div className="wf-chat-model-dropdown wf-fade-in" style={{ top: '100%', marginTop: 4 }}>
+              <div className="wf-chat-model-dropdown wf-fade-in">
                 {modelList.map((m) => (
                   <div
                     key={m}
@@ -947,6 +963,12 @@ export function ChatPanel(props: Props) {
             value={msg}
             rows={1}
             onChange={handleChange}
+            onCompositionStart={() => {
+              composingRef.current = true
+            }}
+            onCompositionEnd={() => {
+              composingRef.current = false
+            }}
             onKeyDown={handleKeyDown}
             onBlur={() => {
               // Delay so click on slash popover item fires before blur closes it

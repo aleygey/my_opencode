@@ -53,7 +53,7 @@ function agentColor(agent: string): string {
 
 interface PlanCardProps {
   plan: WorkflowPlan
-  onRun?: () => void
+  onRun?: (plan: WorkflowPlan) => void
   onEdit?: (context: string) => void
 }
 
@@ -189,10 +189,10 @@ export function PlanCard({ plan, onRun, onEdit }: PlanCardProps) {
         <button
           type="button"
           className="wf-plan-btn wf-plan-btn--run"
-          onClick={onRun}
+          onClick={() => onRun?.(plan)}
         >
           <Play className="h-3.5 w-3.5" strokeWidth={2} style={{ fill: 'currentColor' }} />
-          Run
+          Create Graph
         </button>
       </div>
     </div>

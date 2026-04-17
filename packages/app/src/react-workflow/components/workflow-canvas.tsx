@@ -11,6 +11,7 @@ interface Node {
   status: NodeStatus
   session: string
   progress?: number
+  summary?: string[]
 }
 
 interface CanvasChain {
@@ -542,7 +543,7 @@ export function WorkflowCanvas({ root, chains, selectedNodeId, onNodeSelect, onN
           willChange: 'transform',
         }}
       >
-        <div className={isMulti ? 'w-full max-w-[960px]' : 'w-full max-w-[520px]'}>
+        <div className={isMulti ? 'w-full max-w-[760px]' : 'w-full max-w-[420px]'}>
           {/* Root agent orchestrator */}
           {root && (
             <>

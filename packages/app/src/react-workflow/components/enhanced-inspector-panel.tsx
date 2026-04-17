@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import { useState } from 'react'
-import { Check, ChevronDown, BrainCircuit, Activity, Crosshair, Timer, Cpu, Terminal, Layers, Sparkles } from 'lucide-react'
+import { Pencil, BrainCircuit, Activity, Crosshair, Timer, Cpu, Terminal, Layers, Sparkles } from 'lucide-react'
 import type { Detail } from '../app'
 import { Spin } from './spin'
 
@@ -14,24 +14,15 @@ interface Agent {
   name: string
   model: string
   role: string
+  nodeIDs?: string[]
 }
 
 interface Props {
   nodeDetails: Detail | null
   workflowContext: Flow
   agents: Agent[]
-  onModelClick?: () => void
+  onModelClick?: (nodeIDs?: string[]) => void
 }
-
-const models = [
-  'GPT-5.4',
-  'GPT-5.4-turbo',
-  'GPT-4',
-  'GPT-4-turbo',
-  'Claude-3.5-Sonnet',
-  'Claude-3-Opus',
-  'Gemini-Pro',
-]
 
 const agentColors = [
   { bg: 'rgba(117, 120, 197, 0.07)', ring: 'rgba(117, 120, 197, 0.15)', icon: '#7578c5' },
@@ -50,85 +41,173 @@ function Metric({ label, value, icon: Icon, accent }: {
 }) {
   return (
     <div className="wf-inspector-metric group">
-      <div className="flex items-center gap-2">
-        <Icon className="h-3.5 w-3.5 text-[var(--wf-dim)] transition group-hover:text-[var(--wf-ink-soft)]" strokeWidth={1.6} />
-        <span className="text-[11px] font-medium uppercase tracking-[0.05em] text-[var(--wf-dim)]">{label}</span>
+      <div className="flex items-center gap-1.5">
+        <Icon className="h-3 w-3 text-[var(--wf-dim)] transition group-hover:text-[var(--wf-ink-soft)]" strokeWidth={1.6} />
+        <span className="text-[10px] font-medium uppercase tracking-[0.05em] text-[var(--wf-dim)]">{label}</span>
       </div>
-      <div className={`mt-2 break-words text-[15px] font-semibold tabular-nums tracking-[-0.02em] ${accent ? 'text-[var(--wf-ok)]' : 'text-[var(--wf-ink)]'}`}>
+      <div className={`mt-1 break-words text-[12.5px] font-semibold tabular-nums tracking-[-0.01em] ${accent ? 'text-[var(--wf-ok)]' : 'text-[var(--wf-ink)]'}`}>
         {value}
       </div>
     </div>
   )
 }
 
-/* ── Agent card ── */
-function AgentCard({ item, index, onModelClick }: { item: Agent; index: number; onModelClick?: () => void }) {
-  const [open, setOpen] = useState(false)
-  const [pick, setPick] = useState(item.model)
-  const color = agentColors[index % agentColors.length]
+/* ── Event line: humanise `kind · summary` into a friendlier row ── */
+function humaniseEventKind(kind: string): string {
+  const map: Record<string, string> = {
+    'node.created': 'Created',
+    'node.started': 'Started',
+    'node.completed': 'Completed',
+    'node.failed': 'Failed',
+    'node.paused': 'Paused',
+    'node.resumed': 'Resumed',
+    'node.routed': 'Model routed',
+    'node.updated': 'Updated',
+    'node.control': 'Control',
+    'node.pulled': 'Pulled',
+    'workflow.started': 'Workflow started',
+    'workflow.completed': 'Workflow completed',
+    'workflow.failed': 'Workflow failed',
+  }
+  return map[kind] ?? kind.replace(/^[a-z]+\./, '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+function EventRow({ text, index }: { text: string; index: number }) {
+  // `text` has the shape `kind · summary` (see workflow-panel.ts `eventNote`).
+  const sep = text.indexOf(' · ')
+  const kind = sep >= 0 ? text.slice(0, sep) : text
+  const summary = sep >= 0 ? text.slice(sep + 3) : ''
+  const label = humaniseEventKind(kind)
+  const tone =
+    kind.endsWith('.failed') ? 'bad' :
+    kind.endsWith('.completed') ? 'ok' :
+    kind.endsWith('.started') || kind.endsWith('.resumed') ? 'active' :
+    'dim'
 
   return (
-    <div className="wf-inspector-agent group relative overflow-visible">
-      <div className="flex items-start gap-3.5">
+    <div className="wf-inspector-event">
+      <span className={`wf-inspector-event-dot wf-inspector-event-dot--${tone}`} />
+      <span className="wf-inspector-event-num">{String(index + 1).padStart(2, '0')}</span>
+      <span className="wf-inspector-event-label">{label}</span>
+      {summary && <span className="wf-inspector-event-summary">{summary}</span>}
+    </div>
+  )
+}
+
+/* ── State key-value list: only readable primitives, with raw JSON toggle ── */
+function prettyKey(key: string): string {
+  return key
+    .replace(/_/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+function isRenderableValue(v: unknown): boolean {
+  if (v == null || v === '') return false
+  if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return true
+  if (Array.isArray(v)) return v.length > 0 && v.every((x) => typeof x === 'string' || typeof x === 'number' || typeof x === 'boolean')
+  return false
+}
+
+function formatValue(v: unknown): string {
+  if (typeof v === 'string') return v
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
+  if (Array.isArray(v)) return v.join(', ')
+  return ''
+}
+
+function StatePanel({ json }: { json: Record<string, unknown> }) {
+  const [raw, setRaw] = useState(false)
+  const entries = Object.entries(json).filter(([, v]) => isRenderableValue(v))
+
+  if (entries.length === 0 && !raw) {
+    // Nothing displayable and user hasn't opened raw view — offer just the toggle.
+    return (
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] italic text-[var(--wf-dim)]">No readable state fields</span>
+        <button className="wf-inspector-raw-toggle" onClick={() => setRaw(true)}>Raw JSON</button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-end">
+        <button className="wf-inspector-raw-toggle" onClick={() => setRaw((v) => !v)}>
+          {raw ? 'Formatted' : 'Raw JSON'}
+        </button>
+      </div>
+      {raw ? (
+        <div className="wf-inspector-code">
+          <pre>{JSON.stringify(json, null, 2)}</pre>
+        </div>
+      ) : (
+        <div className="wf-inspector-kv">
+          {entries.map(([k, v]) => (
+            <div key={k} className="wf-inspector-kv-row">
+              <span className="wf-inspector-kv-key">{prettyKey(k)}</span>
+              <span className="wf-inspector-kv-val">{formatValue(v)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ── Agent card ── */
+function AgentCard({
+  item,
+  index,
+  onModelClick,
+}: {
+  item: Agent
+  index: number
+  onModelClick?: (nodeIDs?: string[]) => void
+}) {
+  const color = agentColors[index % agentColors.length]
+  const unset = !item.model || item.model === 'route required' || item.model === 'No model configured'
+  const label = item.model || 'No model configured'
+  const openPicker = () => onModelClick?.(item.nodeIDs)
+
+  return (
+    <div className="wf-inspector-agent group relative">
+      <div className="flex items-start gap-2.5">
         {/* Colored avatar */}
         <div
-          className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-[10px] transition group-hover:scale-[1.04]"
+          className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-[8px] transition group-hover:scale-[1.04]"
           style={{ background: color.bg, boxShadow: `0 0 0 1px ${color.ring}` }}
         >
-          <BrainCircuit className="h-4 w-4" strokeWidth={1.7} style={{ color: color.icon }} />
+          <BrainCircuit className="h-[14px] w-[14px]" strokeWidth={1.7} style={{ color: color.icon }} />
         </div>
 
         <div className="min-w-0 flex-1">
-          <span className="text-[13px] font-semibold tracking-[-0.01em] text-[var(--wf-ink)]">{item.name}</span>
-          <div className="mt-1 text-[11px] leading-[1.55] text-[var(--wf-dim)]">{item.role}</div>
+          <div className="flex items-baseline gap-2">
+            <span className="truncate text-[12px] font-semibold tracking-[-0.01em] text-[var(--wf-ink)]">{item.name}</span>
+            <span className="truncate text-[10.5px] text-[var(--wf-dim)]">{item.role}</span>
+          </div>
 
-          {/* Model selector — uses inline padding to bypass button reset */}
+          {/* Model pill — clicking opens the native model picker directly */}
           <div
             role="button"
             tabIndex={0}
-            onClick={() => setOpen((v) => !v)}
-            onKeyDown={(e) => { if (e.key === 'Enter') setOpen((v) => !v) }}
+            onClick={openPicker}
+            onKeyDown={(e) => { if (e.key === 'Enter') openPicker() }}
             className="wf-model-trigger"
+            data-unset={unset ? 'true' : 'false'}
+            title="Select model"
           >
             <Cpu className="h-3 w-3 flex-shrink-0 text-[var(--wf-dim)]" strokeWidth={1.8} />
-            <span className="min-w-0 flex-1 break-all font-mono font-medium text-[var(--wf-ink-soft)]">{pick}</span>
-            <ChevronDown className={`h-3 w-3 flex-shrink-0 text-[var(--wf-dim)] transition-transform duration-200 ${open ? 'rotate-180' : ''}`} strokeWidth={2} />
+            <span
+              className="min-w-0 flex-1 truncate font-mono font-medium"
+              style={{ color: unset ? 'var(--wf-bad, #c96b6b)' : 'var(--wf-ink-soft)' }}
+            >
+              {label}
+            </span>
+            <Pencil className="h-3 w-3 flex-shrink-0 text-[var(--wf-dim)]" strokeWidth={1.8} />
           </div>
         </div>
       </div>
-
-      {/* Dropdown */}
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div
-            className="wf-model-dropdown wf-fade-in"
-            style={{ position: 'absolute', left: 0, right: 0, top: '100%', marginTop: 6, zIndex: 50 }}
-          >
-            <div style={{ padding: '8px 16px 4px' }}>
-              <span style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--wf-dim)' }}>Select model</span>
-            </div>
-            {models.map((m) => (
-              <div
-                key={m}
-                role="button"
-                tabIndex={0}
-                onClick={() => { setPick(m); setOpen(false); onModelClick?.() }}
-                onKeyDown={(e) => { if (e.key === 'Enter') { setPick(m); setOpen(false); onModelClick?.() } }}
-                className="wf-model-item"
-                style={{
-                  padding: '10px 20px',
-                  background: pick === m ? 'var(--wf-ok-soft)' : undefined,
-                  color: pick === m ? 'var(--wf-ok-strong)' : 'var(--wf-ink)',
-                }}
-              >
-                <span className="font-mono" style={{ fontSize: 12.5, fontWeight: 500 }}>{m}</span>
-                {pick === m && <Check className="h-3.5 w-3.5 text-[var(--wf-ok)]" strokeWidth={2.5} />}
-              </div>
-            ))}
-          </div>
-        </>
-      )}
     </div>
   )
 }
@@ -166,20 +245,20 @@ function StatusIndicator({ status }: { status: string }) {
 
   if (run) {
     return (
-      <div className="relative flex h-10 w-10 flex-shrink-0 items-center justify-center">
-        <div className="absolute inset-0 rounded-xl bg-[var(--wf-ok-soft)] wf-pulse" />
-        <Spin size={22} tone="var(--wf-ok)" line={2} />
+      <div className="relative flex h-7 w-7 flex-shrink-0 items-center justify-center">
+        <div className="absolute inset-0 rounded-lg bg-[var(--wf-ok-soft)] wf-pulse" />
+        <Spin size={15} tone="var(--wf-ok)" line={1.8} />
       </div>
     )
   }
 
   return (
-    <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl ${
+    <div className={`flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg ${
       done ? 'bg-[var(--wf-ok-soft)]' :
       fail ? 'bg-[rgba(239,68,68,0.08)]' :
       'bg-[var(--wf-chip)]'
     }`}>
-      <div className={`h-2.5 w-2.5 rounded-full ${
+      <div className={`h-2 w-2 rounded-full ${
         done ? 'bg-[var(--wf-ok)]' :
         fail ? 'bg-[var(--wf-bad)]' :
         'bg-[var(--wf-dim)]'
@@ -215,39 +294,39 @@ export function EnhancedInspectorPanel(props: Props) {
 
       {/* ─── Scrollable body ─── */}
       <div className="wf-inspector-body">
-        <div className="space-y-6 p-5">
+        <div className="space-y-4 px-4 py-4">
 
           {/* ── Workflow Context ── */}
-          <section className="space-y-3 wf-slide-up" style={{ animationDelay: '0ms' }}>
+          <section className="space-y-2 wf-slide-up" style={{ animationDelay: '0ms' }}>
             <SectionLabel>Workflow</SectionLabel>
 
             <div className="wf-inspector-context-card">
               {/* Accent bar */}
-              <div className={`absolute left-0 top-4 bottom-4 w-[3px] rounded-r-full ${
+              <div className={`absolute left-0 top-2.5 bottom-2.5 w-[2px] rounded-r-full ${
                 run ? 'bg-[var(--wf-ok)] wf-pulse' :
                 props.workflowContext.overallStatus === 'completed' ? 'bg-[var(--wf-ok)]' :
                 props.workflowContext.overallStatus === 'failed' ? 'bg-[var(--wf-bad)]' :
                 'bg-[var(--wf-dim)]'
               }`} />
 
-              <div className="flex items-start gap-3.5 pl-3">
+              <div className="flex items-start gap-2.5 pl-2.5">
                 <StatusIndicator status={props.workflowContext.overallStatus} />
-                <div className="min-w-0 flex-1 pt-0.5">
-                  <div className="flex items-center gap-2.5">
-                    <span className="text-[14px] font-bold tracking-[-0.02em] text-[var(--wf-ink)]">{statusLabel}</span>
+                <div className="min-w-0 flex-1 pt-px">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[12.5px] font-bold tracking-[-0.01em] text-[var(--wf-ink)]">{statusLabel}</span>
                     {run && (
-                      <span className="inline-flex items-center gap-2 rounded-full bg-[var(--wf-ok-soft)] px-4 py-1.5 text-[10.5px] font-bold uppercase tracking-[0.05em] text-[var(--wf-ok-strong)]">
-                        <Sparkles className="h-3 w-3" strokeWidth={2} />
+                      <span className="inline-flex items-center gap-1 rounded-full bg-[var(--wf-ok-soft)] px-1.5 py-[1px] text-[9px] font-bold uppercase tracking-[0.05em] text-[var(--wf-ok-strong)]">
+                        <Sparkles className="h-2.5 w-2.5" strokeWidth={2} />
                         live
                       </span>
                     )}
                   </div>
-                  <div className="mt-1 text-[12px] font-medium text-[var(--wf-ink-soft)]">{props.workflowContext.phase}</div>
+                  <div className="mt-0.5 text-[11px] text-[var(--wf-ink-soft)]">{props.workflowContext.phase}</div>
                 </div>
               </div>
 
-              <div className="mt-4 border-t border-dashed border-[var(--wf-line)] pl-3 pt-3.5">
-                <p className="text-[12px] leading-[1.7] text-[var(--wf-ink-soft)]">{props.workflowContext.goal}</p>
+              <div className="mt-2 border-t border-dashed border-[var(--wf-line)] pl-2.5 pt-2">
+                <p className="text-[11.5px] leading-[1.55] text-[var(--wf-ink-soft)] line-clamp-3">{props.workflowContext.goal}</p>
               </div>
             </div>
           </section>
@@ -255,11 +334,16 @@ export function EnhancedInspectorPanel(props: Props) {
           <Divider />
 
           {/* ── Agents ── */}
-          <section className="space-y-3 wf-slide-up" style={{ animationDelay: '50ms' }}>
+          <section className="space-y-2 wf-slide-up" style={{ animationDelay: '50ms' }}>
             <SectionLabel count={props.agents.length}>Agents</SectionLabel>
-            <div className="space-y-1">
+            <div className="space-y-0.5">
               {props.agents.map((item, i) => (
-                <AgentCard key={item.name} item={item} index={i} onModelClick={props.onModelClick} />
+                <AgentCard
+                  key={item.name}
+                  item={item}
+                  index={i}
+                  onModelClick={props.onModelClick}
+                />
               ))}
             </div>
           </section>
@@ -269,21 +353,21 @@ export function EnhancedInspectorPanel(props: Props) {
             <>
               <Divider />
 
-              <section className="space-y-4 wf-slide-up" style={{ animationDelay: '100ms' }}>
+              <section className="space-y-3 wf-slide-up" style={{ animationDelay: '100ms' }}>
                 <SectionLabel>Node Detail</SectionLabel>
 
                 {/* Node header */}
                 <div className="wf-inspector-node-header">
-                  <div className="flex items-center gap-3">
-                    <div className={`h-2.5 w-2.5 flex-shrink-0 rounded-full ${
+                  <div className="flex items-center gap-2">
+                    <div className={`h-2 w-2 flex-shrink-0 rounded-full ${
                       d.status === 'completed' ? 'bg-[var(--wf-ok)]' :
                       d.status === 'running' ? 'bg-[var(--wf-ok)] wf-pulse' :
                       d.status === 'failed' ? 'bg-[var(--wf-bad)]' :
                       'bg-[var(--wf-dim)]'
                     }`} />
-                    <span className="text-[14px] font-bold tracking-[-0.02em] text-[var(--wf-ink)]">{d.title}</span>
+                    <span className="truncate text-[12.5px] font-bold tracking-[-0.01em] text-[var(--wf-ink)]">{d.title}</span>
                   </div>
-                  <div className="mt-3 flex flex-wrap items-center gap-2.5 pl-[22px]">
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5 pl-4">
                     <span data-wf-badge="">{d.type}</span>
                     <span data-wf-badge="" className="capitalize">{d.status}</span>
                     {d.duration && (
@@ -296,7 +380,7 @@ export function EnhancedInspectorPanel(props: Props) {
                 </div>
 
                 {/* Metrics grid */}
-                <div className="grid grid-cols-2 gap-2.5">
+                <div className="grid grid-cols-2 gap-1.5">
                   <Metric
                     icon={Crosshair}
                     label="Result"
@@ -308,28 +392,23 @@ export function EnhancedInspectorPanel(props: Props) {
                   <Metric icon={Terminal} label="Actions" value={d.actions} />
                 </div>
 
-                {/* Execution log */}
+                {/* Execution log — humanised event list */}
                 {d.executionLog && d.executionLog.length > 0 && (
-                  <div className="space-y-2.5">
-                    <SectionLabel count={d.executionLog.length}>Execution Log</SectionLabel>
-                    <div className="wf-inspector-terminal">
+                  <div className="space-y-2">
+                    <SectionLabel count={d.executionLog.length}>Recent Events</SectionLabel>
+                    <div className="wf-inspector-events">
                       {d.executionLog.map((line, i) => (
-                        <div key={i} className="wf-inspector-log-line">
-                          <span className="wf-inspector-log-num">{String(i + 1).padStart(2, '0')}</span>
-                          <span className="wf-inspector-log-text">{line.replace(/^\[\d+\]\s*/, '')}</span>
-                        </div>
+                        <EventRow key={i} text={line.replace(/^\[\d+\]\s*/, '')} index={i} />
                       ))}
                     </div>
                   </div>
                 )}
 
-                {/* State JSON */}
+                {/* State — readable key/value list with Raw JSON toggle */}
                 {d.stateJson && Object.keys(d.stateJson).length > 0 && (
-                  <div className="space-y-2.5">
+                  <div className="space-y-2">
                     <SectionLabel>State</SectionLabel>
-                    <div className="wf-inspector-code">
-                      <pre>{JSON.stringify(d.stateJson, null, 2)}</pre>
-                    </div>
+                    <StatePanel json={d.stateJson} />
                   </div>
                 )}
               </section>
@@ -337,7 +416,7 @@ export function EnhancedInspectorPanel(props: Props) {
           )}
 
           {/* Bottom breathing room */}
-          <div className="h-6" />
+          <div className="h-4" />
         </div>
       </div>
     </div>

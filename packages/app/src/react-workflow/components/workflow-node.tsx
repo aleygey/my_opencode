@@ -1,9 +1,9 @@
 /** @jsxImportSource react */
-import { Check, Code2, Cpu, FlaskConical, Pause, Rocket, X } from 'lucide-react'
+import { BrainCircuit, Check, Code2, Cpu, FlaskConical, Pause, Rocket, X } from 'lucide-react'
 import { Spin } from './spin'
 
 export type NodeStatus = 'pending' | 'running' | 'completed' | 'failed' | 'paused'
-export type NodeType = 'coding' | 'build-flash' | 'debug' | 'deploy'
+export type NodeType = 'coding' | 'build-flash' | 'debug' | 'deploy' | 'plan'
 
 interface WorkflowNodeProps {
   id: string
@@ -12,6 +12,7 @@ interface WorkflowNodeProps {
   status: NodeStatus
   session: string
   progress?: number
+  summary?: string[]
   isSelected: boolean
   onClick: () => void
   onDoubleClick?: () => void
@@ -23,6 +24,7 @@ const typeConfig: Record<NodeType, { label: string; icon: typeof Code2; color: s
   'build-flash': { label: 'Build',  icon: Cpu,         color: '#c9943e' },
   debug:         { label: 'Test',   icon: FlaskConical, color: '#6088c1' },
   deploy:        { label: 'Deploy', icon: Rocket,      color: '#4d9e8a' },
+  plan:          { label: 'Plan',   icon: BrainCircuit, color: '#8b6ad9' },
 }
 
 const statusAccent: Record<NodeStatus, string> = {
@@ -33,7 +35,7 @@ const statusAccent: Record<NodeStatus, string> = {
   paused:    'var(--wf-warn)',
 }
 
-export function WorkflowNode({ title, type, status, progress, isSelected, onClick, onDoubleClick, onArrowClick }: WorkflowNodeProps) {
+export function WorkflowNode({ title, type, status, progress, summary, isSelected, onClick, onDoubleClick, onArrowClick }: WorkflowNodeProps) {
   const run = status === 'running'
   const done = status === 'completed'
   const fail = status === 'failed'
@@ -59,13 +61,13 @@ export function WorkflowNode({ title, type, status, progress, isSelected, onClic
       {/* Running pulse overlay */}
       {run && <div className="wf-node-pulse" />}
 
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2.5">
         {/* Type icon (compact, color-coded) */}
         <div
           className="wf-node-icon"
           style={{ background: `${cfg.color}0d`, color: cfg.color }}
         >
-          <TypeIcon className="h-3.5 w-3.5" strokeWidth={1.8} />
+          <TypeIcon className="h-3 w-3" strokeWidth={1.8} />
         </div>
 
         {/* Content */}
@@ -105,6 +107,22 @@ export function WorkflowNode({ title, type, status, progress, isSelected, onClic
                 {status}
               </span>
             </span>
+            {summary && summary.length > 0 && (
+              <>
+                <span className="text-[var(--wf-line-strong)]">&middot;</span>
+                <div className="flex min-w-0 flex-wrap items-center gap-1">
+                  {summary.slice(0, 3).map((item) => (
+                    <span
+                      key={item}
+                      className="inline-flex max-w-[92px] truncate rounded-full bg-[var(--wf-chip)] px-1.5 py-0.5 text-[9.5px] font-medium text-[var(--wf-ink-soft)]"
+                      title={item}
+                    >
+                      {item}
+                    </span>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         </div>
 
@@ -122,15 +140,16 @@ export function WorkflowNode({ title, type, status, progress, isSelected, onClic
           </div>
         )}
 
-        {/* Arrow — clickable, opens session */}
+        {/* Arrow — clickable, opens node detail view */}
         <div
           role="button"
           tabIndex={0}
+          title="Open node detail"
           onClick={(e) => { e.stopPropagation(); onArrowClick?.() }}
           onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onArrowClick?.() } }}
-          className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md opacity-0 transition group-hover:opacity-100 hover:!bg-[var(--wf-chip)] cursor-pointer"
+          className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-md opacity-60 transition group-hover:opacity-100 hover:!bg-[var(--wf-chip)] cursor-pointer"
         >
-          <svg className="h-3.5 w-3.5 text-[var(--wf-dim)]" viewBox="0 0 16 16" fill="none">
+          <svg className="h-3 w-3 text-[var(--wf-dim)]" viewBox="0 0 16 16" fill="none">
             <path d="M6 4L10 8L6 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </div>

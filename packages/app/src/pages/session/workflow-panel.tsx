@@ -12,6 +12,8 @@ import { DialogSelectProvider } from "@/components/dialog-select-provider"
 import { useProviders } from "@/hooks/use-providers"
 import { useLocal } from "@/context/local"
 import { WorkflowApp, type WorkflowAppProps } from "@/react-workflow/app"
+import type { WorkflowPlan } from "@/react-workflow/components/plan-card"
+import type { SandTableDiscussion } from "@/react-workflow/components/sand-table-session-view"
 import { Identifier } from "@/utils/id"
 import { extractPromptFromParts } from "@/utils/prompt"
 import { createElement } from "react"
@@ -158,6 +160,7 @@ type Row = {
   stepFinish?: { reason: string; cost: number; tokens: { input: number; output: number } }
   retry?: { attempt: number; error: string }
   agent?: { name: string }
+  plan?: WorkflowPlan
   sandTable?: unknown
   question?: unknown
   permission?: unknown
@@ -226,10 +229,12 @@ const clip = (value: string, size = 320) => (value.length <= size ? value : `${v
 const duration = (start?: number, end?: number) =>
   typeof start === "number" && typeof end === "number" ? `${((end - start) / 1000).toFixed(1)}s` : undefined
 
+const modelReady = (node: WorkflowNode) => !!node.model?.providerID && !!node.model?.modelID
+
 const modelLabel = (node: WorkflowNode) => {
   const id = node.model?.modelID
   const provider = node.model?.providerID
-  if (!id && !provider) return "pending"
+  if (!id && !provider) return "route required"
   if (!provider) return id!
   if (!id) return provider
   return `${provider}/${id}`
@@ -266,7 +271,7 @@ const workflowIDFromEvent = (event: WorkflowBusEvent) => {
 }
 
 const controlText = {
-  run: "Models are confirmed. Start executing the approved workflow plan now. Keep the root orchestrator in control of all child nodes.",
+  run: "Execution routing is confirmed. Use the workflow graph and the configured node models already stored in runtime. Start only nodes that are dependency-ready and fully routed, and do not start any unrouted node.",
   restart:
     "Restart the whole task from the approved plan. Re-run the workflow from the beginning and refresh any child execution that needs to be recreated.",
   stop: "Abort the current workflow execution. Cancel running work and do not continue unless the user explicitly starts again.",
@@ -350,6 +355,158 @@ const wakePrompt = (parts: Part[]) =>
       (part.metadata?.workflow_wake === true || part.text.startsWith("Workflow wake event:")),
   )
 
+const isWorkflowPlan = (value: unknown): value is WorkflowPlan => {
+  if (!value || typeof value !== "object") return false
+  const plan = value as Record<string, unknown>
+  return (
+    typeof plan.objective === "string" &&
+    Array.isArray(plan.nodes) &&
+    Array.isArray(plan.checkpoints)
+  )
+}
+
+const parsePlanCandidate = (raw: string) => {
+  try {
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== "object") return
+    const plan = (parsed as Record<string, unknown>).plan
+    if (!isWorkflowPlan(plan)) return
+    return plan
+  } catch {
+    return
+  }
+}
+
+const splitPlanFromBody = (body: string): { text: string; plan?: WorkflowPlan } => {
+  const trimmed = body.trim()
+  if (!trimmed) return { text: body }
+
+  const whole = parsePlanCandidate(trimmed)
+  if (whole) return { text: "", plan: whole }
+
+  const fenced = [...trimmed.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)]
+  for (let idx = fenced.length - 1; idx >= 0; idx -= 1) {
+    const match = fenced[idx]
+    const plan = parsePlanCandidate(match[1].trim())
+    if (!plan) continue
+    const text = `${trimmed.slice(0, match.index).trim()}\n\n${trimmed.slice((match.index ?? 0) + match[0].length).trim()}`
+      .trim()
+    return { text, plan }
+  }
+
+  const start = trimmed.lastIndexOf('{"plan"')
+  if (start >= 0) {
+    const candidate = trimmed.slice(start).trim()
+    const plan = parsePlanCandidate(candidate)
+    if (plan) return { text: trimmed.slice(0, start).trim(), plan }
+  }
+
+  return { text: body }
+}
+
+type SandTableMessage = {
+  role?: string
+  model?: string
+  content?: string
+  round?: number
+}
+
+type SandTableOutput = {
+  sand_table_id?: string
+  status?: string
+  rounds?: number
+  final_plan?: string
+  last_evaluation?: string
+  history?: SandTableMessage[]
+}
+
+const parseSandTableOutput = (raw?: string) => {
+  if (!raw) return
+  try {
+    const parsed = JSON.parse(raw) as SandTableOutput
+    return parsed && typeof parsed === "object" ? parsed : undefined
+  } catch {
+    return
+  }
+}
+
+const sandTableSummary = (messages: Message[], parts: Record<string, Part[] | undefined>) => {
+  let latest:
+    | {
+        message: Message
+        part: ToolPart
+        output?: SandTableOutput
+      }
+    | undefined
+
+  for (const message of messages) {
+    for (const part of parts[message.id] ?? []) {
+      if (part.type !== "tool" || part.tool !== "sand_table") continue
+      latest = {
+        message,
+        part,
+        output:
+          part.state.status === "completed"
+            ? parseSandTableOutput(typeof part.state.output === "string" ? part.state.output : undefined)
+            : undefined,
+      }
+    }
+  }
+
+  if (!latest) return
+
+  const input =
+    latest.part.state.status !== "pending" &&
+    latest.part.state.input &&
+    typeof latest.part.state.input === "object"
+      ? (latest.part.state.input as Record<string, unknown>)
+      : undefined
+  const topic = typeof input?.topic === "string" ? input.topic.trim() : ""
+  const title = topic ? clip(`Plan · ${topic}`, 48) : "Plan via Sand Table"
+  const status =
+    latest.part.state.status === "error"
+      ? "failed"
+      : latest.part.state.status === "running"
+        ? "running"
+        : latest.part.state.status === "pending"
+          ? "pending"
+        : latest.output?.status === "failed"
+          ? "failed"
+          : "completed"
+
+  const output = latest.output
+  const history = Array.isArray(output?.history) ? output.history : []
+  return {
+    id: output?.sand_table_id ?? latest.part.id,
+    title,
+    topic: topic || "Planning discussion",
+    status: status as "pending" | "running" | "completed" | "failed",
+    rounds: typeof output?.rounds === "number" ? output.rounds : 0,
+    finalPlan: output?.final_plan,
+    lastEvaluation: output?.last_evaluation,
+    history,
+    sessionID: latest.message.sessionID,
+  }
+}
+
+const sandPlanBadges = (plan: NonNullable<ReturnType<typeof sandTableSummary>>) => {
+  const badges: string[] = []
+  if (plan.rounds > 0) badges.push(`${plan.rounds} round${plan.rounds > 1 ? "s" : ""}`)
+  if (plan.history.length > 0) badges.push(`${plan.history.length} msgs`)
+  if (plan.status === "completed") {
+    badges.push(plan.finalPlan ? "plan ready" : "complete")
+  } else if (plan.status === "failed") {
+    badges.push("failed")
+  } else if (plan.lastEvaluation && /approve/i.test(plan.lastEvaluation)) {
+    badges.push("approved")
+  } else if (plan.lastEvaluation && /revise/i.test(plan.lastEvaluation)) {
+    badges.push("revise")
+  } else if (plan.status === "running") {
+    badges.push("discussing")
+  }
+  return badges.slice(0, 3)
+}
+
 const buildRows = (input: {
   dir: string
   messages: Message[]
@@ -383,6 +540,7 @@ const buildRows = (input: {
     }
     const body = pickText(parts)
     const reasoning = pickReasoning(parts)
+    const parsedPlan = body ? splitPlanFromBody(body) : { text: "" }
     const thinking = parts.some((part) => part.type === "step-start")
     const done = parts.some((part) => part.type === "step-finish") || !!msg.time.completed
     if (thinking && (!body || reasoning)) {
@@ -395,15 +553,6 @@ const buildRows = (input: {
         thinking: {
           status: done ? "completed" : "running",
         },
-      })
-    }
-    if (body) {
-      rows.push({
-        id: `${msg.id}:assistant`,
-        role: "assistant",
-        label: "Assistant",
-        time: fmt(msg.time.created),
-        body,
       })
     }
     parts
@@ -539,9 +688,33 @@ const buildRows = (input: {
           agent: { name: ap.name },
         }),
       )
+    // Plan card (rendered before final assistant text)
+    if (parsedPlan.plan) {
+      rows.push({
+        id: `${msg.id}:plan`,
+        role: "assistant",
+        label: "Plan",
+        time: fmt(msg.time.created),
+        body: "",
+        plan: parsedPlan.plan,
+      })
+    }
+    // Assistant's final reply — rendered last so it appears at the end of the turn,
+    // after thinking, tool calls, reasoning, files, patches, subtasks, etc.
+    if (parsedPlan.text) {
+      rows.push({
+        id: `${msg.id}:assistant`,
+        role: "assistant",
+        label: "Assistant",
+        time: fmt(msg.time.created),
+        body: parsedPlan.text,
+      })
+    }
   }
   return rows
 }
+
+let workflowPanelComposing = false
 
 const currentNode = (snap: WorkflowSnapshot) => {
   const pick = [snap.runtime.active_node_id, snap.workflow.selected_node_id, snap.workflow.current_node_id].find(Boolean)
@@ -934,7 +1107,14 @@ function Chat(props: {
           <input
             value={props.text}
             onInput={(event) => props.onText(event.currentTarget.value)}
+            onCompositionStart={() => {
+              workflowPanelComposing = true
+            }}
+            onCompositionEnd={() => {
+              workflowPanelComposing = false
+            }}
             onKeyDown={(event) => {
+              if (workflowPanelComposing || (event as KeyboardEvent).isComposing || (event as any).keyCode === 229) return
               if (event.key !== "Enter" || event.shiftKey) return
               event.preventDefault()
               props.onSend()
@@ -1259,6 +1439,7 @@ export function WorkflowRuntimePanel(props: {
   const platform = usePlatform()
   const [state, setState] = createStore({
     diff: {} as Record<string, FileDiff[] | undefined>,
+    sand: {} as Record<string, SandTableDiscussion | undefined>,
   })
   let el: HTMLDivElement | undefined
   let root: Root | undefined
@@ -1358,6 +1539,7 @@ export function WorkflowRuntimePanel(props: {
             stepFinish: row.stepFinish,
             retry: row.retry,
             agent: row.agent,
+            plan: row.plan,
             sandTable: row.sandTable,
             question: row.question,
             permission: row.permission,
@@ -1469,18 +1651,146 @@ export function WorkflowRuntimePanel(props: {
       }),
     ),
   )
+  const sandPlan = createMemo(() => sandTableSummary(sync.data.message[rootID()] ?? [], sync.data.part))
+  const fetchSandTable = async (discussionID: string) => {
+    const result = await request<SandTableDiscussion>(`/workflow/sand_table/${discussionID}`)
+    setState("sand", discussionID, result)
+    return result
+  }
+  createEffect(() => {
+    const plan = sandPlan()
+    if (!plan?.id) return
+    void fetchSandTable(plan.id).catch(() => undefined)
+    if (plan.status !== "running") return
+    const timer = setInterval(() => {
+      void fetchSandTable(plan.id).catch(() => undefined)
+    }, 2000)
+    onCleanup(() => clearInterval(timer))
+  })
+  const chainData = createMemo<WorkflowAppProps["chains"] | undefined>(() => {
+    const execution = nodes().map((node) => ({
+      id: node.id,
+      title: node.title,
+      type: nodeKind(node) === "build" ? "build-flash" : (nodeKind(node) as "coding" | "debug" | "deploy"),
+      status: tone(node.status),
+      session: node.session_id ?? props.snapshot.workflow.session_id,
+    }))
+    const plan = sandPlan()
+    if (!plan) return undefined
+    return [
+      {
+        id: "planning",
+        label: "Plan",
+        color: "#8b6ad9",
+        nodes: [
+          {
+            id: `sand-table:${plan.id}`,
+            title: plan.title,
+            type: "plan",
+            status: plan.status,
+            session: rootID(),
+            summary: sandPlanBadges(plan),
+          },
+        ],
+      },
+      {
+        id: "execution",
+        label: "Execution",
+        color: "#7578c5",
+        nodes: execution,
+      },
+    ]
+  })
+  const detailsWithPlan = createMemo<WorkflowAppProps["details"]>(() => {
+    const base = details()
+    const plan = sandPlan()
+    if (!plan) return base
+    return {
+      ...base,
+      [`sand-table:${plan.id}`]: {
+        id: `sand-table:${plan.id}`,
+        title: plan.title,
+        type: "plan",
+        status: plan.status,
+        result:
+          plan.status === "completed"
+            ? plan.finalPlan
+              ? "Plan ready"
+              : "Discussion complete"
+            : plan.status === "failed"
+              ? "Planning failed"
+              : "Planning in progress",
+        model:
+          [...new Set(plan.history.map((item) => item.model).filter((item): item is string => !!item))]
+            .slice(0, 2)
+            .join(" / ") || "multi-agent",
+        attempt: `${Math.max(plan.rounds, 0)}`,
+        actions: `${plan.history.length} messages`,
+        sessionId: plan.sessionID,
+        pendingCommands: 0,
+        lastControl: "n/a",
+        lastPull: "n/a",
+        lastUpdate: "n/a",
+        stateJson: {
+          sand_table_id: plan.id,
+          topic: plan.topic,
+          rounds: plan.rounds,
+          status: plan.status,
+          final_plan: plan.finalPlan,
+          last_evaluation: plan.lastEvaluation,
+        },
+        executionLog: plan.history.map((item) => {
+          const role = item.role ? cap(item.role) : "Message"
+          return `${role}${item.round ? ` · round ${item.round}` : ""} · ${clip(item.content ?? "", 140)}`
+        }),
+      },
+    }
+  })
+  const sandTables = createMemo<WorkflowAppProps["sandTables"]>(() => {
+    const plan = sandPlan()
+    if (!plan) return {}
+    return {
+      [`sand-table:${plan.id}`]: state.sand[plan.id] ?? {
+        id: plan.id,
+        topic: plan.topic,
+        context: "",
+        round: plan.rounds,
+        max_rounds: Math.max(plan.rounds, 3),
+        status: plan.status,
+        participants: [],
+        current_plan: plan.finalPlan,
+        last_evaluation: plan.lastEvaluation,
+        messages: plan.history.map((item) => ({
+          role: (item.role === "planner" || item.role === "evaluator" || item.role === "orchestrator"
+            ? item.role
+            : "orchestrator") as "planner" | "evaluator" | "orchestrator",
+          model: item.model ?? "",
+          content: item.content ?? "",
+          round: item.round ?? 1,
+          timestamp: Date.now(),
+        })),
+      },
+    }
+  })
   const flow = createMemo<WorkflowAppProps["flow"]>(() => ({
     goal: goal(props.snapshot),
     phase: cap(props.snapshot.runtime.phase),
     overallStatus: status(),
   }))
-  const agents = createMemo<WorkflowAppProps["agents"]>(() =>
-    agentRows(props.snapshot).map((node) => ({
+  const agents = createMemo<WorkflowAppProps["agents"]>(() => {
+    const byAgent = new Map<string, WorkflowNode[]>()
+    sortNodes(props.snapshot.nodes).forEach((node) => {
+      const list = byAgent.get(node.agent)
+      if (list) list.push(node)
+      else byAgent.set(node.agent, [node])
+    })
+    return agentRows(props.snapshot).map((node) => ({
       name: node.agent,
       model: modelLabel(node),
       role: node.title,
-    })),
-  )
+      nodeIDs: (byAgent.get(node.agent) ?? [node]).map((n) => n.id),
+    }))
+  })
   const canvas = createMemo<WorkflowAppProps["nodes"]>(() =>
     nodes().map((node) => ({
       id: node.id,
@@ -1488,16 +1798,84 @@ export function WorkflowRuntimePanel(props: {
       type: nodeKind(node) === "build" ? "build-flash" : (nodeKind(node) as "coding" | "debug" | "deploy"),
       status: tone(node.status),
       session: node.session_id ?? props.snapshot.workflow.session_id,
+      summary: modelReady(node) ? [modelLabel(node)] : ["route model"],
     })),
   )
 
-  const pickModel = () => {
+  const unroutedNodes = createMemo(() => nodes().filter((node) => !modelReady(node)))
+
+  // Target nodeIDs that should receive the model the user picks from the native dialog.
+  // Set when the user clicks a specific agent's model pill, consumed after local.model changes.
+  let pendingRouteTargets: string[] | null = null
+
+  const pickModel = (targetNodeIDs?: string[]) => {
+    pendingRouteTargets = targetNodeIDs && targetNodeIDs.length > 0 ? [...targetNodeIDs] : null
+    // Clear pending targets AFTER the reactive effect for `local.model` has a chance to
+    // consume them. Without this, a later non-node-scoped model change (e.g. chat panel
+    // picker) would accidentally re-route stale targets.
+    // Deferred via double-microtask/setTimeout so it runs after SolidJS's effect queue.
+    const onClose = () => {
+      setTimeout(() => {
+        pendingRouteTargets = null
+      }, 0)
+    }
     if (providers.connected().length > 0) {
-      dialog.show(() => <DialogSelectModel />)
+      dialog.show(() => <DialogSelectModel />, onClose)
       return
     }
-    dialog.show(() => <DialogSelectProvider />)
+    dialog.show(() => <DialogSelectProvider />, onClose)
   }
+
+  // Force-route specific nodes to the current local.model (unlike routeNodesToCurrentModel,
+  // this overwrites already-routed nodes too — used for user-driven re-routing via the agent pill).
+  const forceRouteNodes = async (nodeIDs: string[]) => {
+    const current = local.model.current()
+    if (!current || nodeIDs.length === 0) return
+    const variant = local.model.variant.selected() ?? undefined
+    await Promise.all(
+      nodeIDs.map((id) =>
+        request<WorkflowNode>(`/workflow/node/${id}`, {
+          method: "PATCH",
+          body: {
+            source: "ui",
+            patch: {
+              model: {
+                providerID: current.provider.id,
+                modelID: current.id,
+                variant,
+              },
+            },
+            event: {
+              kind: "node.routed",
+              payload: {
+                providerID: current.provider.id,
+                modelID: current.id,
+                variant,
+                source: "workflow_panel",
+              },
+            },
+          },
+        }),
+      ),
+    )
+  }
+
+  // When the user picks a model from the native dialog, route the pending target nodes.
+  createEffect(
+    on(
+      () => {
+        const m = local.model.current()
+        return m ? `${m.provider.id}/${m.id}` : null
+      },
+      (_key, prev) => {
+        if (prev === undefined) return // skip initial run
+        const targets = pendingRouteTargets
+        if (!targets) return
+        pendingRouteTargets = null
+        void forceRouteNodes(targets).catch(() => undefined)
+      },
+    ),
+  )
 
   const sessionID = (node?: string) =>
     props.snapshot.nodes.find((item) => item.id === node)?.session_id ?? rootID()
@@ -1669,6 +2047,121 @@ export function WorkflowRuntimePanel(props: {
     )
   }
 
+  const runApprovedPlan = (plan: WorkflowPlan) => {
+    const payload = JSON.stringify({ plan }, null, 2)
+    send(
+      [
+        "The user approved this workflow plan for graph creation.",
+        "Create or update the workflow runtime from this exact approved plan.",
+        "Do not invent a new plan or skip graph creation.",
+        "Materialize workflow nodes, edges, and checkpoints from the JSON below.",
+        "Do not call workflow_node_start yet.",
+        "Do not create child execution sessions yet.",
+        "Leave node models unset unless the plan explicitly includes routing.",
+        "After the graph is created, stop and wait for the user to confirm model routing before execution.",
+        "",
+        "```json",
+        payload,
+        "```",
+      ].join("\n"),
+    )
+  }
+
+  const routeNodesToCurrentModel = async (nodeIDs?: string[]) => {
+    const current = local.model.current()
+    if (!current) {
+      pickModel()
+      return false
+    }
+    const variant = local.model.variant.selected() ?? undefined
+    const targets = (nodeIDs?.length
+      ? nodes().filter((node) => nodeIDs.includes(node.id) && !modelReady(node))
+      : unroutedNodes())
+    if (targets.length === 0) return true
+    await Promise.all(
+      targets.map((node) =>
+        request<WorkflowNode>(`/workflow/node/${node.id}`, {
+          method: "PATCH",
+          body: {
+            source: "ui",
+            patch: {
+              model: {
+                providerID: current.provider.id,
+                modelID: current.id,
+                variant,
+              },
+            },
+            event: {
+              kind: "node.routed",
+              payload: {
+                providerID: current.provider.id,
+                modelID: current.id,
+                variant,
+                source: "workflow_panel",
+              },
+            },
+          },
+        }),
+      ),
+    )
+    return true
+  }
+
+  const executeWorkflow = (nodeID?: string) => {
+    const run = async () => {
+      if (!nodeID && nodes().length === 0) {
+        send(
+          [
+            "Create the workflow graph from the latest approved plan first.",
+            "Do not start execution yet.",
+            "After graph creation, wait for user model routing confirmation before calling workflow_node_start.",
+          ].join("\n"),
+        )
+        return
+      }
+      const routed = await routeNodesToCurrentModel(nodeID ? [nodeID] : undefined)
+      if (!routed) return
+      if (nodeID) {
+        const node = nodes().find((item) => item.id === nodeID)
+        if (!node) return
+        send(
+          [
+            `Execution routing is confirmed for workflow node ${node.title} (${node.id}).`,
+            "Use the workflow runtime as the source of truth.",
+            "Do not rebuild the graph.",
+            "Start only this node when its providerID and modelID are configured, and leave all other nodes unchanged unless dependencies require action.",
+          ].join("\n"),
+        )
+        return
+      }
+      send(controlText.run)
+    }
+    void run().catch(() => undefined)
+  }
+
+  const revisePlanWithContext = (context: string) => {
+    const extra = context.trim()
+    if (!extra) return
+    send(
+      `Revise the current workflow plan using this additional context before execution:\n\n${extra}`,
+    )
+  }
+  const sendSandTable = async (nodeID: string, text: string) => {
+    const detail = detailsWithPlan()[nodeID]
+    const discussionID =
+      typeof detail?.stateJson?.sand_table_id === "string" ? detail.stateJson.sand_table_id : undefined
+    const body = text.trim()
+    if (!discussionID || !body) return
+    const result = await request<SandTableDiscussion>(`/workflow/sand_table/${discussionID}/message`, {
+      method: "POST",
+      body: {
+        content: body,
+        role: "orchestrator",
+      },
+    })
+    setState("sand", discussionID, result)
+  }
+
   // ── Question & Permission polling ──────────────────────────────────
 
   const [pendingQuestions, setPendingQuestions] = createStore<any[]>([])
@@ -1813,10 +2306,12 @@ export function WorkflowRuntimePanel(props: {
         activeTaskId: props.activeTaskId,
         pick: pick(),
         nodes: canvas(),
-        details: details(),
+        chains: chainData(),
+        details: detailsWithPlan(),
         flow: flow(),
         agents: agents(),
         chats: chatsWithDialogs(),
+        sandTables: sandTables(),
         onSession: openSession,
         onTaskSelect: props.onTaskSelect,
         onModel: pickModel,
@@ -1824,14 +2319,19 @@ export function WorkflowRuntimePanel(props: {
         onWorkspaceClick: props.onWorkspaceClick,
         onNewTask: props.onNewTask,
         onDeleteTask: props.onDeleteTask,
-        onRun: () => control("run"),
+        onRun: (nodeID) => executeWorkflow(nodeID),
         onRestart: () => control("restart"),
         onStop: () => hardControl("abort"),
         onPause: () => hardControl("pause"),
         onSend: send,
+        onPlanRun: runApprovedPlan,
+        onPlanEdit: revisePlanWithContext,
         onQuestionReply: replyQuestion,
         onQuestionReject: rejectQuestion,
         onPermissionReply: replyPermission,
+        onSandTableSend: (nodeID, text) => {
+          void sendSandTable(nodeID, text).catch(() => undefined)
+        },
       }),
     )
   })
