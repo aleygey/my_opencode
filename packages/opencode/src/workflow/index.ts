@@ -562,6 +562,10 @@ export namespace Workflow {
   }
 
   async function sendWake(wake: Wake) {
+    const hint =
+      wake.kind === "node.completed"
+        ? "If downstream nodes are now unblocked, start the next ready node only when its model is fully configured."
+        : "Then decide whether to continue, inject context, retry, replan, or ask the user."
     await writeEvent({
       workflowID: wake.workflowID,
       sessionID: wake.sessionID,
@@ -595,7 +599,7 @@ export namespace Workflow {
             `Trigger event ID: ${wake.eventID}`,
             "",
             `Call workflow_read with workflow_id="${wake.workflowID}" and cursor=${Math.max(0, wake.eventID - 1)} first.`,
-            "Then decide whether to continue, inject context, retry, replan, or ask the user.",
+            hint,
           ]
             .filter(Boolean)
             .join("\n"),

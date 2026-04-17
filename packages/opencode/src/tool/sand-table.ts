@@ -56,9 +56,91 @@ interface DiscussionState {
   evaluation?: string
 }
 
+export const SandTableParticipantSchema = z.object({
+  role: z.enum(["planner", "evaluator"]),
+  sessionID: z.string(),
+  model: z.object({
+    providerID: z.string(),
+    modelID: z.string(),
+  }),
+})
+
+export const SandTableMessageSchema = z.object({
+  role: z.enum(["planner", "evaluator", "orchestrator"]),
+  model: z.string(),
+  content: z.string(),
+  round: z.number(),
+  timestamp: z.number(),
+})
+
+export const SandTableDiscussionSchema = z.object({
+  id: z.string(),
+  topic: z.string(),
+  context: z.string(),
+  round: z.number(),
+  max_rounds: z.number(),
+  status: z.enum(["running", "approved", "completed", "failed"]),
+  participants: SandTableParticipantSchema.array(),
+  current_plan: z.string().optional(),
+  last_evaluation: z.string().optional(),
+  messages: SandTableMessageSchema.array(),
+})
+
 // ── In-memory state ────────────────────────────────────────────────────────
 
 const discussions = new Map<string, DiscussionState>()
+
+function serialize(state: DiscussionState) {
+  return {
+    id: state.id,
+    topic: state.topic,
+    context: state.context,
+    round: state.round,
+    max_rounds: state.maxRounds,
+    status: state.status,
+    participants: state.participants.map((item) => ({
+      role: item.role,
+      sessionID: item.sessionID,
+      model: {
+        providerID: item.model.providerID,
+        modelID: item.model.modelID,
+      },
+    })),
+    current_plan: state.currentPlan,
+    last_evaluation: state.evaluation,
+    messages: state.messages,
+  }
+}
+
+export function discussionGet(id: string) {
+  const state = discussions.get(id)
+  if (!state) return
+  return serialize(state)
+}
+
+export async function discussionWrite(input: {
+  discussionID: string
+  content: string
+  role?: DiscussionRole
+}) {
+  const state = discussions.get(input.discussionID)
+  if (!state) return
+  state.messages.push({
+    role: input.role ?? "orchestrator",
+    model: "orchestrator",
+    content: input.content,
+    round: state.round,
+    timestamp: Date.now(),
+  })
+
+  await Bus.publish(SandTableMessageEvent, {
+    discussionID: state.id,
+    role: input.role ?? "orchestrator",
+    round: state.round,
+  })
+
+  return serialize(state)
+}
 
 // ── Model resolution ───────────────────────────────────────────────────────
 
@@ -74,54 +156,21 @@ async function resolveModels(
   planner: { providerID: ProviderID; modelID: ModelID }
   evaluator: { providerID: ProviderID; modelID: ModelID }
 }> {
-  if (overrides?.planner && overrides?.evaluator) {
-    return {
-      planner: {
+  const planner = overrides?.planner
+    ? {
         providerID: ProviderID.make(overrides.planner.providerID),
         modelID: ModelID.make(overrides.planner.modelID),
-      },
-      evaluator: {
+      }
+    : currentModel ?? (await Provider.defaultModel())
+
+  const evaluator = overrides?.evaluator
+    ? {
         providerID: ProviderID.make(overrides.evaluator.providerID),
         modelID: ModelID.make(overrides.evaluator.modelID),
-      },
-    }
-  }
+      }
+    : planner
 
-  const providers = await Provider.list()
-  const providerEntries = Object.entries(providers)
-
-  // Collect all available models across providers
-  const allModels: Array<{ providerID: ProviderID; modelID: ModelID }> = []
-  for (const [pid, provider] of providerEntries) {
-    for (const mid of Object.keys(provider.models)) {
-      allModels.push({
-        providerID: ProviderID.make(pid),
-        modelID: ModelID.make(mid),
-      })
-    }
-  }
-
-  if (allModels.length === 0) {
-    const fallback = currentModel ?? (await Provider.defaultModel())
-    return { planner: fallback, evaluator: fallback }
-  }
-
-  if (allModels.length === 1) {
-    return { planner: allModels[0], evaluator: allModels[0] }
-  }
-
-  // Try to pick two different models, preferring different providers
-  const plannerModel = overrides?.planner
-    ? { providerID: ProviderID.make(overrides.planner.providerID), modelID: ModelID.make(overrides.planner.modelID) }
-    : currentModel ?? allModels[0]
-
-  const evaluatorModel = overrides?.evaluator
-    ? { providerID: ProviderID.make(overrides.evaluator.providerID), modelID: ModelID.make(overrides.evaluator.modelID) }
-    : allModels.find(
-        (m) => m.providerID !== plannerModel.providerID || m.modelID !== plannerModel.modelID,
-      ) ?? allModels[0]
-
-  return { planner: plannerModel, evaluator: evaluatorModel }
+  return { planner, evaluator }
 }
 
 // ── Prompts ────────────────────────────────────────────────────────────────

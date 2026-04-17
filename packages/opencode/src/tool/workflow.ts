@@ -73,6 +73,12 @@ const assertNodeSession = (node: Awaited<ReturnType<typeof Workflow.getNode>>, s
   throw new Error(`Workflow node ${node.id} must be operated from its bound subagent session ${node.session_id}.`)
 }
 
+const configured = (value?: {
+  providerID?: string
+  modelID?: string
+  variant?: string
+} | null) => !!value?.providerID && !!value?.modelID
+
 const prompt = (input: {
   workflowID: string
   nodeID: string
@@ -158,7 +164,7 @@ export const WorkflowNodeCreateTool = Tool.define("workflow_node_create", {
     max_attempts: z.number().int().positive().optional(),
     max_actions: z.number().int().positive().optional(),
     position: z.number().int().nonnegative().optional(),
-    create_session: z.boolean().optional().default(true),
+    create_session: z.boolean().optional().default(false),
     initial_prompt: z.string().optional(),
   }),
   async execute(input, ctx) {
@@ -179,21 +185,6 @@ export const WorkflowNodeCreateTool = Tool.define("workflow_node_create", {
       max_actions: input.max_actions,
       position: input.position,
     })
-
-    if (session && input.initial_prompt) {
-      void SessionPrompt.prompt({
-        sessionID: session.id,
-        agent: input.agent,
-        model: input.model?.providerID && input.model.modelID
-          ? {
-              providerID: ProviderID.make(input.model.providerID),
-              modelID: ModelID.make(input.model.modelID),
-            }
-          : undefined,
-        variant: input.model?.variant,
-        parts: [{ type: "text", text: input.initial_prompt }],
-      }).catch(() => undefined)
-    }
 
     return {
       title: input.title,
@@ -224,6 +215,12 @@ export const WorkflowNodeStartTool = Tool.define("workflow_node_start", {
     if (current.status === "cancelled") {
       throw new Error(`Workflow node ${current.id} is cancelled and cannot be started again.`)
     }
+    const picked = input.model ?? current.model
+    if (!configured(picked)) {
+      throw new Error(
+        `Workflow node ${current.id} cannot start until a providerID and modelID are configured.`,
+      )
+    }
     const session = current.session_id
       ? await Session.get(SessionID.make(current.session_id))
       : await Session.create({
@@ -239,7 +236,7 @@ export const WorkflowNodeStartTool = Tool.define("workflow_node_start", {
           patch: {
             session_id: session.id,
             status: input.status ?? "running",
-            model: input.model ?? current.model,
+            model: picked,
           },
           event: {
             kind: "node.started",
@@ -264,7 +261,7 @@ export const WorkflowNodeStartTool = Tool.define("workflow_node_start", {
       nodeID: node.id,
       agent: node.agent,
       sessionID: session.id,
-      model: input.model ?? node.model,
+      model: picked,
       text: input.initial_prompt,
     }).catch(() => undefined)
 

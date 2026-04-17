@@ -11,6 +11,7 @@ export namespace Identifier {
     user: "usr",
     part: "prt",
     pty: "pty",
+    serial: "srl",
     tool: "tool",
     workspace: "wrk",
   } as const

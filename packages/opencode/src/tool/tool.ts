@@ -37,7 +37,10 @@ export namespace Tool {
     id: string
     description: string
     parameters: Parameters
-    execute(args: z.infer<Parameters>, ctx: Context): Effect.Effect<ExecuteResult<M>>
+    execute(
+      args: z.infer<Parameters>,
+      ctx: Context,
+    ): Effect.Effect<ExecuteResult<M>> | Promise<ExecuteResult<M>> | ExecuteResult<M>
     formatValidationError?(error: z.ZodError): string
   }
   export type DefWithoutID<Parameters extends z.ZodType = z.ZodType, M extends Metadata = Metadata> = Omit<
@@ -50,9 +53,16 @@ export namespace Tool {
     init: () => Effect.Effect<DefWithoutID<Parameters, M>>
   }
 
+  type AsyncDef<T> = T | Promise<T> | Effect.Effect<T>
   type Init<Parameters extends z.ZodType, M extends Metadata> =
     | DefWithoutID<Parameters, M>
-    | (() => Effect.Effect<DefWithoutID<Parameters, M>>)
+    | (() => AsyncDef<DefWithoutID<Parameters, M>>)
+
+  function resolve<T>(value: AsyncDef<T>): Effect.Effect<T> {
+    if (Effect.isEffect(value)) return value
+    if (value instanceof Promise) return Effect.promise(() => value)
+    return Effect.succeed(value)
+  }
 
   export type InferParameters<T> =
     T extends Info<infer P, any>
@@ -78,7 +88,7 @@ export namespace Tool {
   ) {
     return () =>
       Effect.gen(function* () {
-        const toolInfo = init instanceof Function ? { ...(yield* init()) } : { ...init }
+        const toolInfo = init instanceof Function ? { ...(yield* resolve(init())) } : { ...init }
         const execute = toolInfo.execute
         toolInfo.execute = (args, ctx) =>
           Effect.gen(function* () {
@@ -94,7 +104,7 @@ export namespace Tool {
                 )
               },
             })
-            const result = yield* execute(args, ctx)
+            const result = yield* resolve(execute(args, ctx))
             if (result.metadata.truncated !== undefined) {
               return result
             }
@@ -116,11 +126,11 @@ export namespace Tool {
 
   export function define<Parameters extends z.ZodType, Result extends Metadata, R, ID extends string = string>(
     id: ID,
-    init: Effect.Effect<Init<Parameters, Result>, never, R>,
+    init: Effect.Effect<Init<Parameters, Result>, never, R> | Init<Parameters, Result>,
   ): Effect.Effect<Info<Parameters, Result>, never, R | Truncate.Service | Agent.Service> & { id: ID } {
     return Object.assign(
       Effect.gen(function* () {
-        const resolved = yield* init
+        const resolved = yield* resolve(init)
         const truncate = yield* Truncate.Service
         const agents = yield* Agent.Service
         return { id, init: wrap(id, resolved, truncate, agents) }

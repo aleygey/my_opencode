@@ -33,6 +33,11 @@
       "node": "./src/pty/pty.node.ts",
       "default": "./src/pty/pty.bun.ts"
     },
+    "#serial": {
+      "bun": "./src/serial/serial.bun.ts",
+      "node": "./src/serial/serial.node.ts",
+      "default": "./src/serial/serial.bun.ts"
+    },
     "#hono": {
       "bun": "./src/server/adapter.bun.ts",
       "node": "./src/server/adapter.node.ts",

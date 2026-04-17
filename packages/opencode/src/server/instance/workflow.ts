@@ -4,9 +4,75 @@ import z from "zod"
 import { Workflow } from "@/workflow"
 import { errors } from "../error"
 import { Snapshot } from "@/snapshot"
+import {
+  discussionGet,
+  discussionWrite,
+  SandTableDiscussionSchema,
+} from "@/tool/sand-table"
 
 export function WorkflowRoutes() {
   return new Hono()
+    .get(
+      "/sand_table/:discussionID",
+      describeRoute({
+        summary: "Get sand table discussion",
+        operationId: "workflow.sand_table.get",
+        responses: {
+          200: {
+            description: "Sand table discussion",
+            content: {
+              "application/json": {
+                schema: resolver(SandTableDiscussionSchema),
+              },
+            },
+          },
+          ...errors(404),
+        },
+      }),
+      validator("param", z.object({ discussionID: z.string() })),
+      async (c) => {
+        const result = discussionGet(c.req.valid("param").discussionID)
+        if (!result) return c.body(null, 404)
+        return c.json(result)
+      },
+    )
+    .post(
+      "/sand_table/:discussionID/message",
+      describeRoute({
+        summary: "Write sand table discussion message",
+        operationId: "workflow.sand_table.message",
+        responses: {
+          200: {
+            description: "Updated sand table discussion",
+            content: {
+              "application/json": {
+                schema: resolver(SandTableDiscussionSchema),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator("param", z.object({ discussionID: z.string() })),
+      validator(
+        "json",
+        z.object({
+          content: z.string().min(1),
+          role: z.enum(["planner", "evaluator", "orchestrator"]).optional(),
+        }),
+      ),
+      async (c) => {
+        const param = c.req.valid("param")
+        const body = c.req.valid("json")
+        const result = await discussionWrite({
+          discussionID: param.discussionID,
+          content: body.content,
+          role: body.role,
+        })
+        if (!result) return c.body(null, 404)
+        return c.json(result)
+      },
+    )
     .get(
       "/session/:sessionID",
       describeRoute({

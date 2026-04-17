@@ -136,6 +136,20 @@ export namespace ToolRegistry {
       const greptool = yield* GrepTool
       const patchtool = yield* ApplyPatchTool
       const skilltool = yield* SkillTool
+      const sandtable = yield* SandTableTool
+      const msgread = yield* MsgReadTool
+      const msgwrite = yield* MsgWriteTool
+      const workflowCreate = yield* WorkflowCreateTool
+      const workflowNodeCreate = yield* WorkflowNodeCreateTool
+      const workflowNodeStart = yield* WorkflowNodeStartTool
+      const workflowNodePause = yield* WorkflowNodePauseTool
+      const workflowNodeAbort = yield* WorkflowNodeAbortTool
+      const workflowEdgeCreate = yield* WorkflowEdgeCreateTool
+      const workflowCheckpointCreate = yield* WorkflowCheckpointCreateTool
+      const workflowRead = yield* WorkflowReadTool
+      const workflowControl = yield* WorkflowControlTool
+      const workflowUpdate = yield* WorkflowUpdateTool
+      const workflowPull = yield* WorkflowPullTool
 
       const state = yield* InstanceState.make<State>(
         Effect.fn("ToolRegistry.state")(function* (ctx) {
@@ -213,6 +227,20 @@ export namespace ToolRegistry {
             question: Tool.init(question),
             lsp: Tool.init(lsptool),
             plan: Tool.init(plan),
+            sandtable: Tool.init(sandtable),
+            msgread: Tool.init(msgread),
+            msgwrite: Tool.init(msgwrite),
+            workflowCreate: Tool.init(workflowCreate),
+            workflowNodeCreate: Tool.init(workflowNodeCreate),
+            workflowNodeStart: Tool.init(workflowNodeStart),
+            workflowNodePause: Tool.init(workflowNodePause),
+            workflowNodeAbort: Tool.init(workflowNodeAbort),
+            workflowEdgeCreate: Tool.init(workflowEdgeCreate),
+            workflowCheckpointCreate: Tool.init(workflowCheckpointCreate),
+            workflowRead: Tool.init(workflowRead),
+            workflowControl: Tool.init(workflowControl),
+            workflowUpdate: Tool.init(workflowUpdate),
+            workflowPull: Tool.init(workflowPull),
           })
 
           return {
@@ -233,6 +261,20 @@ export namespace ToolRegistry {
               tool.code,
               tool.skill,
               tool.patch,
+              tool.sandtable,
+              tool.msgread,
+              tool.msgwrite,
+              tool.workflowCreate,
+              tool.workflowNodeCreate,
+              tool.workflowNodeStart,
+              tool.workflowNodePause,
+              tool.workflowNodeAbort,
+              tool.workflowEdgeCreate,
+              tool.workflowCheckpointCreate,
+              tool.workflowRead,
+              tool.workflowControl,
+              tool.workflowUpdate,
+              tool.workflowPull,
               ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [tool.lsp] : []),
               ...(Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE && Flag.OPENCODE_CLIENT === "cli" ? [tool.plan] : []),
             ],
