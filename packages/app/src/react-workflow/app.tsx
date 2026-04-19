@@ -432,13 +432,8 @@ export function WorkflowApp(props: WorkflowAppProps) {
           nodeProgress={nodeProgress}
           tokenStats={props.tokenStats}
           onTaskSidebarToggle={() => setSidebar((v) => !v)}
-          onDetailClick={() => {
-            if (!pick) return
-            setSessionNode(pick)
-          }}
-          onSessionClick={() => props.onSession()}
-          onRefinerClick={() => props.onRefiner?.(node?.id)}
           onModelClick={props.onModel}
+          onRefinerClick={() => props.onRefiner?.(node?.id)}
           onRunClick={() => props.onRun(node?.id)}
           onRestartClick={() => props.onRestart(node?.id)}
           onStopClick={() => props.onStop(node?.id)}
