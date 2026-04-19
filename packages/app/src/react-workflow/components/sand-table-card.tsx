@@ -69,10 +69,10 @@ export function SandTableCard({ result }: SandTableCardProps) {
             <Layers className="h-3.5 w-3.5" strokeWidth={2} />
           </div>
           <span className="wf-sandtable-header-title">Sand Table</span>
-          <span className="wf-sandtable-rounds-badge">{result.rounds} rounds</span>
+          <span className="wf-sandtable-rounds-badge font-mono">{result.rounds} rounds</span>
         </div>
         <div className="wf-sandtable-header-right">
-          <span className="wf-sandtable-status-badge" style={{ color: statusColor }}>
+          <span className="wf-sandtable-status-badge font-mono" style={{ color: statusColor }}>
             {statusIcon}
             {statusLabel}
           </span>

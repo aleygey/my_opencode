@@ -1,517 +1,380 @@
 import path from "path"
+import { unlink } from "fs/promises"
 import matter from "gray-matter"
 import z from "zod"
-import { generateObject, streamObject, type ModelMessage } from "ai"
-import PROMPT_REFINER from "@/agent/prompt/refiner.txt"
+import { generateText, jsonSchema, stepCountIs, streamText, tool, type ModelMessage } from "ai"
+import { Agent } from "@/agent/agent"
 import { Auth } from "@/auth"
 import { Config } from "@/config/config"
 import { MessageV2 } from "@/session/message-v2"
 import { MessageID, SessionID } from "@/session/schema"
 import { Session } from "@/session"
 import { Provider } from "@/provider/provider"
+import { ProviderID, ModelID } from "@/provider/schema"
 import { ProviderTransform } from "@/provider/transform"
 import { Instance } from "@/project/instance"
 import { Workflow } from "@/workflow"
 import { Filesystem } from "@/util/filesystem"
+import { Glob } from "@/util/glob"
 import { Hash } from "@/util/hash"
 import { Log } from "@/util/log"
 
 const log = Log.create({ service: "refiner" })
 
-const Classification = z.enum([
-  "context_completion",
-  "tool_gap_completion",
-  "workflow_orchestration_completion",
+// -----------------------------------------------------------------------------
+// Taxonomy
+// -----------------------------------------------------------------------------
+
+const CORE_KINDS = [
+  "workflow_rule",
+  "workflow_gap",
+  "know_how",
   "constraint_or_policy",
-  "task_scope_change",
-  "noise",
-])
+  "domain_knowledge",
+  "preference_style",
+  "pitfall_or_caveat",
+] as const
+type CoreKind = (typeof CORE_KINDS)[number]
+type Kind = CoreKind | `custom:${string}`
+
+const KindSchema = z
+  .string()
+  .refine(
+    (val): val is Kind => {
+      if ((CORE_KINDS as readonly string[]).includes(val)) return true
+      if (val.startsWith("custom:") && val.length > "custom:".length) return true
+      return false
+    },
+    { message: "kind must be a core kind or 'custom:<slug>'" },
+  ) as z.ZodType<Kind>
+
+const KIND_PATTERN = `^(${CORE_KINDS.join("|")}|custom:[a-z0-9-]+)$`
+const KIND_DESCRIPTION =
+  `Must be exactly one of: ${CORE_KINDS.join(", ")}; ` +
+  `or 'custom:<slug>' where <slug> is lowercase letters, digits or hyphens only.`
+
+/**
+ * z.toJSONSchema drops .refine() predicates, so the kind field would otherwise
+ * arrive at the LLM as an unconstrained string. Walk the JSON schema and inject
+ * a regex pattern + description on every 'kind' property so the LLM has explicit
+ * constraints in the tool schema.
+ */
+function applyKindConstraint<T>(schema: T): T {
+  const visit = (node: any): void => {
+    if (!node || typeof node !== "object") return
+    if (node.properties && typeof node.properties === "object") {
+      if (node.properties.kind && typeof node.properties.kind === "object") {
+        const prev = node.properties.kind
+        node.properties.kind = {
+          type: "string",
+          pattern: KIND_PATTERN,
+          description: prev.description
+            ? `${KIND_DESCRIPTION} ${prev.description}`
+            : KIND_DESCRIPTION,
+        }
+      }
+      for (const key of Object.keys(node.properties)) visit(node.properties[key])
+    }
+    for (const key of ["items", "additionalProperties", "anyOf", "oneOf", "allOf", "$defs", "definitions"]) {
+      const v = node[key]
+      if (Array.isArray(v)) v.forEach(visit)
+      else if (v && typeof v === "object") visit(v)
+    }
+  }
+  visit(schema)
+  return schema
+}
+
+const CORE_KIND_DESCRIPTIONS: Record<CoreKind, string> = {
+  workflow_rule: "流程规则（顺序/因果）：一定要先做 A 再做 B；某事必须发生在某事之后",
+  workflow_gap: "流程缺口：slave agent 或当前流程缺少的工具/资料/步骤，用户补齐了使其可复用",
+  know_how: "操作性指导（怎么做）：用户告诉 agent 某件事应当如何执行",
+  constraint_or_policy: "硬约束/禁令：永远不要做什么；合规、审批、命名等静态规则",
+  domain_knowledge: "领域/事实知识：是什么、叫什么、属于什么；业务概念、环境事实",
+  preference_style: "风格/偏好：代码/沟通/文档风格的个人或团队偏好",
+  pitfall_or_caveat: "常见坑/注意点：容易误判、容易遗漏、容易踩的陷阱",
+}
+
+// -----------------------------------------------------------------------------
+// Schemas
+// -----------------------------------------------------------------------------
 
 const Scope = z.enum(["workspace", "project", "repo", "user"])
+type Scope = z.infer<typeof Scope>
 
-const AgentDecision = z.object({
-  related: z.boolean(),
-  classification: Classification,
-  long_term_value: z.boolean(),
-  reason: z.string(),
-  task_type: z.string().min(1),
-  workflow_context: z.object({
-    phase: z.string(),
-    node_agent: z.string().optional(),
-    execution_scene: z.string().optional(),
-    prerequisites: z.array(z.string()).optional(),
-    environment: z.array(z.string()).optional(),
-  }),
-  problem_or_requirement: z.object({
-    summary: z.string(),
-    original_gap: z.string().optional(),
-  }),
-  know_how: z.object({
-    summary: z.string(),
-    recommended_actions: z.array(z.string()).optional(),
-    tool_hints: z.array(z.string()).optional(),
-    skill_hints: z.array(z.string()).optional(),
-    platform_hints: z.array(z.string()).optional(),
-    acceptance_hints: z.array(z.string()).optional(),
-  }),
-  reusability: z.object({
-    scope: Scope,
-    merge_candidate: z.boolean(),
-    skill_candidate: z.boolean(),
-  }),
+const HistoryEntry = z.object({
+  role: z.enum(["user", "assistant"]),
+  text: z.string(),
+  message_id: z.string(),
 })
 
-type Classification = z.infer<typeof Classification>
-type Scope = z.infer<typeof Scope>
-type AgentDecision = z.infer<typeof AgentDecision>
+const WorkflowSnapshot = z.object({
+  workflow_id: z.string(),
+  node_id: z.string().optional(),
+  phase: z.string().optional(),
+  recent_events: z.array(
+    z.object({
+      kind: z.string(),
+      at: z.number(),
+      summary: z.string(),
+    }),
+  ),
+})
 
-type CandidateSourceType = "user" | "master" | "slave"
+const ObservationSchema = z.object({
+  id: z.string(),
+  observed_at: z.number(),
+  session_id: z.string(),
+  message_id: z.string(),
+  user_text: z.string(),
+  // Where this observation came from.
+  // "session"        – captured from a live user message (default)
+  // "manual_augment" – user added context under an existing experience
+  // "ingest"         – batch-ingested from an older session
+  source: z.enum(["session", "manual_augment", "ingest"]).optional(),
+  note: z.string().optional(),
+  agent_context: z.object({
+    session_history_excerpt: z.array(HistoryEntry),
+    workflow_snapshot: WorkflowSnapshot.optional(),
+  }),
+})
+type Observation = z.infer<typeof ObservationSchema>
 
-type Candidate = {
-  source_type: CandidateSourceType
-  workflow_id: string
-  session_id?: string
-  node_id?: string
-  trigger_kind: string
-  observed_at: number
-  text: string
-  event_payload?: Record<string, unknown>
-}
+const RefinementSnapshot = z.object({
+  title: z.string(),
+  abstract: z.string(),
+  statement: z.string().optional(),
+  trigger_condition: z.string().optional(),
+  task_type: z.string().optional(),
+  scope: Scope.optional(),
+  kind: KindSchema.optional(),
+  categories: z.array(z.string()).optional(),
+})
+type RefinementSnapshot = z.infer<typeof RefinementSnapshot>
 
-type EvidenceItem = {
-  workflow_id: string
-  node_id?: string
-  source_type: CandidateSourceType
-  trigger_kind: string
-  observed_at: number
-  recovery_status: "pending" | "success" | "fail"
-  inbox_path?: string
-  note?: string
-}
+const RefinementEntry = z.object({
+  at: z.number(),
+  trigger_observation_id: z.string(),
+  // Legacy field kept optional for forward-compat; new entries also populate prev_snapshot.
+  prev_abstract_digest: z.string().optional(),
+  prev_snapshot: RefinementSnapshot.optional(),
+  // "auto" | "manual_augment" | "manual_edit" | "merge" | "undo" | "re_refine"
+  kind: z
+    .enum(["auto", "manual_augment", "manual_edit", "merge", "undo", "re_refine"])
+    .optional(),
+  // Which observation IDs or merge-source IDs triggered this entry.
+  source_ids: z.array(z.string()).optional(),
+  model: z.string(),
+})
+type RefinementEntry = z.infer<typeof RefinementEntry>
 
-type ExperienceRecord = {
-  kind: "workflow_experience"
+const ExperienceSchema = z.object({
+  id: z.string(),
+  kind: KindSchema,
+  title: z.string(),
+  abstract: z.string(),
+  statement: z.string().optional(),
+  trigger_condition: z.string().optional(),
+  task_type: z.string().optional(),
+  scope: Scope,
+  categories: z.array(z.string()).default([]),
+  observations: z.array(ObservationSchema),
+  related_experience_ids: z.array(z.string()),
+  conflicts_with: z.array(z.string()).default([]),
+  refinement_history: z.array(RefinementEntry),
+  archived: z.boolean().default(false),
+  archived_at: z.number().optional(),
+  created_at: z.number(),
+  last_refined_at: z.number(),
+})
+type Experience = z.infer<typeof ExperienceSchema>
+
+type ExperienceWithPath = Experience & { path: string }
+
+type ExperienceSummary = {
   id: string
-  created_at: string
-  updated_at: string
-  task_type: string
-  classification: Exclude<Classification, "noise">
-  related: true
-  long_term_value: true
-  workflow_context: {
-    phase: string
-    node_agent?: string
-    execution_scene?: string
-    prerequisites: string[]
-    environment: string[]
+  kind: Kind
+  title: string
+  abstract: string
+  task_type?: string
+  observation_count: number
+  last_refined_at: number
+}
+
+// Flat object schema so that provider adapters that require `type: "object"` at
+// the function tool root (e.g., Azure OpenAI) accept it. Branch invariants are
+// enforced at parse time via refine(), not via discriminated union.
+const RouteAction = z.enum(["attach", "new", "noise"])
+const RouteDecisionWireSchema = z.object({
+  action: RouteAction,
+  reason: z.string(),
+  experience_id: z.string().optional(),
+  kind: KindSchema.optional(),
+  title: z.string().max(60).optional(),
+  abstract: z.string().optional(),
+  statement: z.string().optional(),
+  trigger_condition: z.string().optional(),
+  task_type: z.string().optional(),
+  scope: Scope.optional(),
+  categories: z.array(z.string()).optional(),
+  conflicts_with: z.array(z.string()).optional(),
+})
+type RouteDecisionWire = z.infer<typeof RouteDecisionWireSchema>
+
+type RouteDecision =
+  | {
+      action: "attach"
+      experience_id: string
+      reason: string
+      categories?: string[]
+      conflicts_with?: string[]
+    }
+  | {
+      action: "new"
+      reason: string
+      kind: Kind
+      title: string
+      abstract: string
+      statement?: string
+      trigger_condition?: string
+      task_type?: string
+      scope: Scope
+      categories?: string[]
+      conflicts_with?: string[]
+    }
+  | { action: "noise"; reason: string }
+
+function normalizeRouteDecision(wire: RouteDecisionWire): RouteDecision | { error: string } {
+  if (wire.action === "attach") {
+    if (!wire.experience_id) return { error: "attach missing experience_id" }
+    return {
+      action: "attach",
+      experience_id: wire.experience_id,
+      reason: wire.reason,
+      categories: wire.categories,
+      conflicts_with: wire.conflicts_with,
+    }
   }
-  problem_or_requirement: {
-    summary: string
-    original_gap?: string
+  if (wire.action === "noise") {
+    return { action: "noise", reason: wire.reason }
   }
-  know_how: {
-    summary: string
-    recommended_actions: string[]
-    tool_hints: string[]
-    skill_hints: string[]
-    platform_hints: string[]
-    acceptance_hints: string[]
-  }
-  reusability: {
-    scope: Scope
-    merge_candidate: boolean
-    skill_candidate: boolean
-  }
-  evidence: {
-    count: number
-    success_count: number
-    failure_count: number
-    repeated: boolean
-    items: EvidenceItem[]
+  // new
+  if (!wire.kind) return { error: "new missing kind" }
+  if (!wire.title) return { error: "new missing title" }
+  if (!wire.abstract) return { error: "new missing abstract" }
+  if (!wire.scope) return { error: "new missing scope" }
+  return {
+    action: "new",
+    reason: wire.reason,
+    kind: wire.kind,
+    title: wire.title,
+    abstract: wire.abstract,
+    statement: wire.statement,
+    trigger_condition: wire.trigger_condition,
+    task_type: wire.task_type,
+    scope: wire.scope,
+    categories: wire.categories,
+    conflicts_with: wire.conflicts_with,
   }
 }
 
-type InboxRecord = {
-  kind: "refiner_inbox"
+const RefineOutputSchema = z.object({
+  kind: KindSchema.describe("必填。7 个核心 kind 之一，或 custom:<slug>"),
+  title: z
+    .string()
+    .min(1)
+    .max(60)
+    .describe("必填。10–30 字简体中文名词短语，概括该 experience 主题；不得留空或用占位符"),
+  abstract: z
+    .string()
+    .min(1)
+    .describe(
+      "必填。1–3 句简体中文归纳，必须覆盖所有 observations 的共同含义；不得复述用户原文，不得输出英文占位符或诸如 'not used' / 'ignore' / 'placeholder' 之类的字符串",
+    ),
+  statement: z
+    .string()
+    .optional()
+    .describe("可选。机器可读的简短陈述，如 'after:commit => require:lint'。不确定时请省略，不要提交空串"),
+  trigger_condition: z
+    .string()
+    .optional()
+    .describe("可选。简体中文描述何时应被触发。不确定时请省略，不要提交空串"),
+  task_type: z
+    .string()
+    .optional()
+    .describe(
+      "可选。任务域 slug，如 coding / delivery / review / docs / ops 等。不确定时请**省略**该字段而不是提交空串",
+    ),
+  scope: Scope.describe("必填。workspace | project | repo | user 中之一"),
+  categories: z
+    .array(z.string())
+    .optional()
+    .describe("可选。0–4 个 kebab-case 标签 slug，优先复用已存在的"),
+  conflicts_with: z
+    .array(z.string())
+    .optional()
+    .describe("可选。直接冲突的 experience id 列表；无冲突请省略或给空数组"),
+})
+type RefineOutput = z.infer<typeof RefineOutputSchema>
+
+// -----------------------------------------------------------------------------
+// Graph overview types (for HTTP endpoint)
+// -----------------------------------------------------------------------------
+
+type GraphNode = {
   id: string
-  created_at: string
-  workflow_id: string
-  node_id?: string
-  session_id?: string
-  source_type: CandidateSourceType
-  trigger_kind: string
-  classification: Classification
-  related: boolean
-  long_term_value: boolean
-  reason: string
-  task_type: string
-  workflow_phase: string
-  node_agent?: string
-  experience_id?: string
-  experience_path?: string
+  type: "experience" | "observation"
+  label: string
+  secondary?: string
+  kind?: Kind
+  path?: string
 }
+
+type GraphEdge = {
+  from: string
+  to: string
+  kind: "has_observation" | "related"
+}
+
+type RefinerOverview = {
+  schema_version: 2
+  status: {
+    total_experiences: number
+    total_observations: number
+    latest_refined_at?: number
+  }
+  model?: { providerID: string; modelID: string }
+  experiences: ExperienceWithPath[]
+  graph: {
+    nodes: GraphNode[]
+    edges: GraphEdge[]
+  }
+}
+
+// -----------------------------------------------------------------------------
+// State & test overrides
+// -----------------------------------------------------------------------------
 
 const state = Instance.state(() => ({
   userSeen: {} as Record<string, string>,
-  eventSeen: {} as Record<string, true>,
-  pending: {} as Record<string, string[]>,
 }))
 
-function nowISO(ts = Date.now()) {
-  return new Date(ts).toISOString()
-}
+let testRouteOverride:
+  | ((observation: Observation, existing: ExperienceSummary[]) => Promise<RouteDecision | undefined>)
+  | undefined
+let testRefineOverride:
+  | ((
+      observation: Observation,
+      experience: Experience,
+    ) => Promise<RefineOutput | undefined>)
+  | undefined
 
-function rel(filepath: string) {
-  return path.relative(Instance.worktree, filepath) || filepath
-}
+// -----------------------------------------------------------------------------
+// Utilities
+// -----------------------------------------------------------------------------
 
-function slug(input: string, fallback = "record") {
-  const value = input
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 64)
-  return value || fallback
-}
-
-function uniq(items?: string[]) {
-  return [...new Set((items ?? []).map((item) => item.trim()).filter(Boolean))]
-}
-
-async function withTimeout<T>(promise: Promise<T>, ms: number) {
-  return await Promise.race([
-    promise,
-    new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), ms)),
-  ])
-}
-
-function first(items?: string[]) {
-  return uniq(items).at(0)
-}
-
-function lines(text: string) {
-  return text
-    .split(/\r?\n|[;；]/)
-    .map((item) => item.replace(/^[-*]\s*/, "").trim())
-    .filter(Boolean)
-}
-
-function keywords(text: string, values: string[]) {
-  const lower = text.toLowerCase()
-  return values.some((value) => lower.includes(value.toLowerCase()))
-}
-
-function defaultTaskType(text: string) {
-  if (keywords(text, ["code", "coding", "commit", "build", "test", "debug", "gerrit", "jenkins", "固件", "代码"])) {
-    return "coding"
-  }
-  if (keywords(text, ["report", "summary", "blog", "doc", "发布说明", "测试报告"])) return "documentation"
-  return "workflow_task"
-}
-
-function inferPhase(text: string, runtimePhase: string) {
-  if (keywords(text, ["commit", "push", "release", "deploy", "gerrit", "jenkins", "发布", "提交", "推送", "构建验证"])) {
-    return "deliver"
-  }
-  if (keywords(text, ["retry", "replan", "inject_context", "补充", "纠偏", "重试"])) return "retry"
-  if (runtimePhase === "planning") return "plan"
-  if (runtimePhase === "completed") return "deliver"
-  return "execute"
-}
-
-function inferScope(text: string): Scope {
-  if (keywords(text, ["后续", "以后", "默认", "每次", "习惯"])) return "user"
-  if (keywords(text, ["repo", "repository", "project", "workspace", "仓库", "项目"])) return "repo"
-  return "workspace"
-}
-
-function inferClassification(text: string): Classification {
-  if (keywords(text, ["还要", "另外", "新增", "追加", "顺便", "除了", "also need", "in addition"])) {
-    return "task_scope_change"
-  }
-  if (
-    keywords(text, [
-      "流程",
-      "步骤",
-      "然后",
-      "之后",
-      "后续",
-      "提交",
-      "推送",
-      "触发",
-      "构建",
-      "验证",
-      "发布",
-      "交付",
-      "workflow",
-    ])
-  ) {
-    return "workflow_orchestration_completion"
-  }
-  if (
-    keywords(text, [
-      "gerrit",
-      "jenkins",
-      "api",
-      "platform",
-      "cli",
-      "sdk",
-      "internal tool",
-      "内部平台",
-      "工具",
-      "命令",
-      "平台",
-    ])
-  ) {
-    return "tool_gap_completion"
-  }
-  if (
-    keywords(text, [
-      "格式",
-      "规范",
-      "必须",
-      "禁止",
-      "规则",
-      "按照",
-      "约束",
-      "policy",
-      "constraint",
-      "approval",
-      "commit message",
-    ])
-  ) {
-    return "constraint_or_policy"
-  }
-  if (
-    keywords(text, [
-      "need",
-      "needs",
-      "missing",
-      "required",
-      "blocked",
-      "waiting for",
-      "缺少",
-      "需要",
-      "阻塞",
-      "环境",
-      "目录",
-      "参数",
-      "验收",
-      "规则",
-    ])
-  ) {
-    return "context_completion"
-  }
-  return "noise"
-}
-
-function inferNoise(text: string) {
-  return keywords(text, [
-    "thanks",
-    "thank you",
-    "hello",
-    "hi",
-    "在吗",
-    "谢谢",
-    "继续",
-    "快点",
-    "催一下",
-    "ok",
-    "好的",
-  ])
-}
-
-function heuristicDecision(input: {
-  candidate: Candidate
-  runtimePhase: string
-  nodeAgent?: string
-}): AgentDecision {
-  const text = input.candidate.text.trim()
-  const classification = inferClassification(text)
-  const related = classification !== "noise" && !inferNoise(text)
-  const longTerm =
-    related &&
-    (classification === "tool_gap_completion" ||
-      classification === "workflow_orchestration_completion" ||
-      classification === "constraint_or_policy" ||
-      keywords(text, ["后续", "以后", "默认", "每次", "统一", "长期", "仓库", "项目", "团队"]))
-
-  const actions = lines(text).slice(0, 6)
-  const toolHints = uniq(
-    [
-      ...(/gerrit/gi.test(text) ? ["gerrit"] : []),
-      ...(/jenkins/gi.test(text) ? ["jenkins"] : []),
-      ...(/git/gi.test(text) ? ["git"] : []),
-    ].filter(Boolean),
-  )
-
-  return {
-    related,
-    classification: related ? classification : "noise",
-    long_term_value: longTerm,
-    reason: related ? "Matched reusable workflow signals from the candidate content" : "No durable workflow signal detected",
-    task_type: defaultTaskType(text),
-    workflow_context: {
-      phase: inferPhase(text, input.runtimePhase),
-      node_agent: input.nodeAgent,
-      execution_scene: input.runtimePhase,
-      prerequisites: uniq(
-        keywords(text, ["权限", "permission", "credential", "token"]) ? ["Required access or credential must exist"] : [],
-      ),
-      environment: uniq(
-        keywords(text, ["环境", "env", "目录", "workspace", "repo", "仓库"]) ? ["Environment-specific setup may apply"] : [],
-      ),
-    },
-    problem_or_requirement: {
-      summary: first(actions) ?? text.slice(0, 240),
-      original_gap: classification === "context_completion" || classification === "tool_gap_completion" ? text.slice(0, 240) : undefined,
-    },
-    know_how: {
-      summary: related ? (first(actions) ?? text.slice(0, 240)) : "No reusable know-how extracted",
-      recommended_actions: classification === "noise" ? [] : actions,
-      tool_hints: toolHints,
-      skill_hints: uniq(toolHints.map((item) => `${item}-skill`)),
-      platform_hints: toolHints,
-      acceptance_hints: uniq(
-        keywords(text, ["build", "compile", "构建", "编译"]) ? ["Build or compilation succeeds"] : [],
-      ),
-    },
-    reusability: {
-      scope: inferScope(text),
-      merge_candidate: longTerm,
-      skill_candidate: longTerm && ["tool_gap_completion", "workflow_orchestration_completion"].includes(classification),
-    },
-  }
-}
-
-async function chooseModel() {
-  const chosen = await withTimeout(Provider.defaultModel().catch(() => undefined), 300)
-  if (!chosen) return
-  return (
-    (await withTimeout(Provider.getSmallModel(chosen.providerID).catch(() => undefined), 300)) ??
-    (await withTimeout(Provider.getModel(chosen.providerID, chosen.modelID).catch(() => undefined), 300))
-  )
-}
-
-async function refineWithAgent(input: {
-  candidate: Candidate
-  snapshot: Awaited<ReturnType<typeof Workflow.get>>
-  nodeAgent?: string
-}) {
-  const model = await chooseModel()
-  if (!model) return
-  const language = await Provider.getLanguage(model).catch(() => undefined)
-  if (!language) return
-  const auth = await Auth.get(model.providerID).catch(() => undefined)
-  const cfg = await Config.get().catch(() => undefined)
-  const isOpenaiOauth = model.providerID === "openai" && auth?.type === "oauth"
-  const system = [PROMPT_REFINER]
-  const messages = [
-    ...(isOpenaiOauth
-      ? []
-      : system.map(
-          (item): ModelMessage => ({
-            role: "system",
-            content: item,
-          }),
-        )),
-    {
-      role: "user" as const,
-      content: JSON.stringify(
-        {
-          candidate: input.candidate,
-          workflow: {
-            id: input.snapshot.workflow.id,
-            title: input.snapshot.workflow.title,
-            status: input.snapshot.workflow.status,
-            phase: input.snapshot.runtime.phase,
-            active_node_id: input.snapshot.runtime.active_node_id,
-            waiting_node_ids: input.snapshot.runtime.waiting_node_ids,
-            failed_node_ids: input.snapshot.runtime.failed_node_ids,
-          },
-          node: input.snapshot.nodes.find((node) => node.id === input.candidate.node_id),
-          recent_events: input.snapshot.events.slice(-8),
-          node_agent_hint: input.nodeAgent,
-        },
-        null,
-        2,
-      ),
-    },
-  ]
-
-  const params = {
-    experimental_telemetry: {
-      isEnabled: cfg?.experimental?.openTelemetry,
-      metadata: {
-        userId: cfg?.username ?? "unknown",
-      },
-    },
-    temperature: 0.1,
-    messages,
-    model: language,
-    schema: AgentDecision,
-  } satisfies Parameters<typeof generateObject>[0]
-
-  if (isOpenaiOauth) {
-    const result = streamObject({
-      ...params,
-      providerOptions: ProviderTransform.providerOptions(model, {
-        instructions: system.join("\n"),
-        store: false,
-      }),
-      onError: () => {},
-    })
-    for await (const part of result.fullStream) {
-      if (part.type === "error") throw part.error
-    }
-    return result.object
-  }
-
-  return (await generateObject(params)).object
-}
-
-async function settings() {
-  const cfg = await Config.get().catch(() => undefined)
-  const refiner = cfg?.experimental?.refiner
-  const enabled = refiner?.enabled ?? true
-  const modelAssisted = refiner?.model_assisted ?? false
-  const base = refiner?.directory
-    ? (path.isAbsolute(refiner.directory) ? refiner.directory : path.join(Instance.worktree, refiner.directory))
-    : path.join(Instance.worktree, ".opencode", "refiner-memory")
-  return { enabled, base, modelAssisted }
-}
-
-function relevantNode(snapshot: Awaited<ReturnType<typeof Workflow.get>>, nodeID?: string) {
-  return (
-    snapshot.nodes.find((node) => node.id === nodeID) ??
-    snapshot.nodes.find((node) => node.id === snapshot.runtime.active_node_id) ??
-    snapshot.nodes.find((node) => snapshot.runtime.failed_node_ids.includes(node.id)) ??
-    snapshot.nodes.find((node) => snapshot.runtime.waiting_node_ids.includes(node.id))
-  )
-}
-
-function fingerprint(record: {
-  classification: Exclude<Classification, "noise">
-  taskType: string
-  phase: string
-  nodeAgent?: string
-  summary: string
-  actions: string[]
-}) {
-  return Hash.fast(
-    JSON.stringify([
-      record.classification,
-      record.taskType,
-      record.phase,
-      record.nodeAgent ?? "",
-      record.summary.toLowerCase(),
-      record.actions.slice(0, 3).map((item) => item.toLowerCase()),
-    ]),
-  )
-}
-
-function pendingKey(workflowID: string, nodeID?: string) {
-  return `${workflowID}:${nodeID ?? "root"}`
+function nowMs() {
+  return Date.now()
 }
 
 function compactText(text: string) {
@@ -519,157 +382,46 @@ function compactText(text: string) {
 }
 
 function clipText(text: string, size = 180) {
-  const value = compactText(text)
-  if (value.length <= size) return value
-  return `${value.slice(0, size - 1).trimEnd()}…`
+  const v = compactText(text)
+  if (v.length <= size) return v
+  return `${v.slice(0, size - 1).trimEnd()}…`
 }
 
-function renderQuote(text: string, maxLines = 6) {
-  const items = text
-    .split(/\r?\n/)
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .slice(0, maxLines)
-  if (!items.length) return "> (empty)"
-  return items.map((item) => `> ${item}`).join("\n")
+function sha1Short(input: string, size = 12) {
+  return Hash.fast(input).slice(0, size)
 }
 
-function renderList(items: string[], fallback: string, max = 6) {
-  const values = uniq(items).slice(0, max).map((item) => `- ${clipText(item, 160)}`)
-  return values.length ? values.join("\n") : `- ${fallback}`
+function uniqueStrings(items: Array<string | undefined | null>): string[] {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const item of items) {
+    if (!item) continue
+    const s = item.trim()
+    if (!s) continue
+    if (seen.has(s)) continue
+    seen.add(s)
+    result.push(s)
+  }
+  return result
 }
 
-function renderMeta(label: string, value?: string | number | boolean) {
-  if (value === undefined || value === null || value === "") return ""
-  return `- ${label}: ${value}`
+// Normalize a free-form category label into a stable slug:
+// lowercase, whitespace collapsed, non-[a-z0-9-] stripped.
+function slugifyCategory(label: string): string {
+  return compactText(label)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48)
 }
 
-function recentSignals(snapshot: Awaited<ReturnType<typeof Workflow.get>>) {
-  return snapshot.events
-    .slice(-3)
-    .map((event) =>
-      [event.kind, event.node_id ? `node ${event.node_id}` : undefined, nowISO(event.time_created)].filter(Boolean).join(" / "),
-    )
-}
-
-function renderExperience(record: ExperienceRecord) {
-  return [
-    "# Workflow Experience",
-    "",
-    "## Summary",
-    clipText(record.know_how.summary || record.problem_or_requirement.summary, 220),
-    "",
-    "## Applies When",
-    renderMeta("Task type", record.task_type),
-    renderMeta("Classification", record.classification),
-    renderMeta("Phase", record.workflow_context.phase),
-    renderMeta("Node agent", record.workflow_context.node_agent),
-    renderMeta("Execution scene", record.workflow_context.execution_scene),
-    renderMeta("Scope", record.reusability.scope),
-    record.workflow_context.prerequisites.length
-      ? `- Preconditions: ${record.workflow_context.prerequisites.map((item) => clipText(item, 100)).join("; ")}`
-      : "",
-    record.workflow_context.environment.length
-      ? `- Environment: ${record.workflow_context.environment.map((item) => clipText(item, 100)).join("; ")}`
-      : "",
-    "",
-    "## Problem",
-    clipText(record.problem_or_requirement.summary, 260),
-    record.problem_or_requirement.original_gap
-      ? `- Original signal: ${clipText(record.problem_or_requirement.original_gap, 260)}`
-      : "",
-    "",
-    "## Recommended Handling",
-    renderList(record.know_how.recommended_actions, clipText(record.know_how.summary, 160)),
-    renderMeta("Tools", uniq(record.know_how.tool_hints).join(", ")),
-    renderMeta("Skills", uniq(record.know_how.skill_hints).join(", ")),
-    renderMeta("Platforms", uniq(record.know_how.platform_hints).join(", ")),
-    renderMeta("Acceptance", uniq(record.know_how.acceptance_hints).join("; ")),
-    "",
-    "## Evidence",
-    `- Cases: ${record.evidence.count}`,
-    `- Successes: ${record.evidence.success_count}`,
-    `- Failures: ${record.evidence.failure_count}`,
-    `- Repeated: ${record.evidence.repeated}`,
-    `- Merge candidate: ${record.reusability.merge_candidate}`,
-    `- Skill candidate: ${record.reusability.skill_candidate}`,
-    record.evidence.items
-      .slice(-5)
-      .map(
-        (item) =>
-          `- ${item.trigger_kind} / ${item.source_type} / ${nowISO(item.observed_at)}${item.node_id ? ` / node ${item.node_id}` : ""} / ${item.recovery_status}`,
-      )
-      .join("\n"),
-    "",
-  ]
-    .filter(Boolean)
-    .join("\n")
-}
-
-function renderInbox(input: {
-  record: InboxRecord
-  candidate: Candidate
-  snapshot: Awaited<ReturnType<typeof Workflow.get>>
-  decision: AgentDecision
-}) {
-  const node = relevantNode(input.snapshot, input.candidate.node_id)
-  const hints = [
-    renderMeta("Tools", uniq(input.decision.know_how.tool_hints).join(", ")),
-    renderMeta("Skills", uniq(input.decision.know_how.skill_hints).join(", ")),
-    renderMeta("Platforms", uniq(input.decision.know_how.platform_hints).join(", ")),
-    renderMeta("Acceptance", uniq(input.decision.know_how.acceptance_hints).join("; ")),
-  ].filter(Boolean)
-  return [
-    "# Refiner Inbox",
-    "",
-    "## Observation",
-    renderMeta("Source", input.record.source_type),
-    renderMeta("Trigger", input.record.trigger_kind),
-    renderMeta("Workflow", input.record.workflow_id),
-    renderMeta("Workflow title", input.snapshot.workflow.title),
-    renderMeta("Runtime phase", input.snapshot.runtime.phase),
-    renderMeta("Node", input.candidate.node_id),
-    renderMeta("Node agent", node?.agent),
-    "",
-    renderQuote(input.candidate.text),
-    "",
-    "## Decision",
-    renderMeta("Related", input.record.related),
-    renderMeta("Classification", input.record.classification),
-    renderMeta("Long-term value", input.record.long_term_value),
-    renderMeta("Task type", input.decision.task_type),
-    renderMeta("Experience", input.record.experience_path),
-    renderMeta("Reason", clipText(input.record.reason, 180)),
-    "",
-    "## Extracted Experience",
-    renderMeta("Phase", input.decision.workflow_context.phase),
-    renderMeta("Execution scene", input.decision.workflow_context.execution_scene),
-    renderMeta("Problem", clipText(input.decision.problem_or_requirement.summary, 200)),
-    renderMeta("Know-how", clipText(input.decision.know_how.summary, 200)),
-    renderMeta("Scope", input.decision.reusability.scope),
-    "",
-    "### Recommended Handling",
-    renderList(input.decision.know_how.recommended_actions, clipText(input.decision.know_how.summary, 160)),
-    "",
-    ...(hints.length ? ["### Hints", ...hints, ""] : []),
-    "### Runtime Signals",
-    renderList(recentSignals(input.snapshot), "No recent runtime signal"),
-    "",
-  ]
-    .filter(Boolean)
-    .join("\n")
-}
-
-async function readMatter(filepath: string) {
-  const raw = await Filesystem.readText(filepath)
-  return matter(raw)
+function rel(filepath: string) {
+  return path.relative(Instance.worktree, filepath) || filepath
 }
 
 function cleanUndefined<T>(value: T): T {
   if (Array.isArray(value)) {
-    return value
-      .filter((item) => item !== undefined)
-      .map((item) => cleanUndefined(item)) as T
+    return value.filter((item) => item !== undefined).map((item) => cleanUndefined(item)) as T
   }
   if (value && typeof value === "object") {
     return Object.fromEntries(
@@ -682,210 +434,279 @@ function cleanUndefined<T>(value: T): T {
   return value
 }
 
+async function withTimeout<T>(promise: Promise<T>, ms: number) {
+  return await Promise.race([
+    promise,
+    new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), ms)),
+  ])
+}
+
+async function settings() {
+  const cfg = await Config.get().catch(() => undefined)
+  const refiner = cfg?.experimental?.refiner
+  const enabled = refiner?.enabled ?? true
+  const base = refiner?.directory
+    ? path.isAbsolute(refiner.directory)
+      ? refiner.directory
+      : path.join(Instance.worktree, refiner.directory)
+    : path.join(Instance.worktree, ".opencode", "refiner-memory")
+  return { enabled, base }
+}
+
+async function readMatter(filepath: string) {
+  const raw = await Filesystem.readText(filepath)
+  return matter(raw)
+}
+
 async function writeMatter(filepath: string, data: Record<string, unknown>, content: string) {
   await Filesystem.write(filepath, matter.stringify(content, cleanUndefined(data)))
 }
 
-async function queuePendingExperience(workflowID: string, nodeID: string | undefined, filepath: string) {
-  const current = state()
-  const key = pendingKey(workflowID, nodeID)
-  current.pending[key] = uniq([...(current.pending[key] ?? []), filepath])
+function messageText(message: Awaited<ReturnType<typeof Session.messages>>[number]) {
+  return compactText(
+    message.parts
+      .flatMap((part) => {
+        if (part.type === "text" && !part.synthetic && !part.ignored) return [part.text.trim()]
+        if (part.type === "tool") return [`[tool:${part.tool}]`]
+        return []
+      })
+      .filter(Boolean)
+      .join("\n"),
+  )
 }
 
-async function markPendingSuccess(workflowID: string, nodeID: string | undefined, note: string) {
-  const current = state()
-  const keys = uniq([pendingKey(workflowID, nodeID), pendingKey(workflowID, undefined)])
-  for (const key of keys) {
-    const files = current.pending[key]
-    if (!files?.length) continue
-    delete current.pending[key]
-    for (const file of files) {
-      const doc = await readMatter(file).catch(() => undefined)
-      if (!doc) continue
-      const data = doc.data as ExperienceRecord
-      const items = Array.isArray(data.evidence?.items) ? (data.evidence.items as EvidenceItem[]) : []
-      let changed = false
-      const nextItems = items.map((item) => {
-        if (item.workflow_id !== workflowID) return item
-        if (nodeID && item.node_id && item.node_id !== nodeID) return item
-        if (item.recovery_status !== "pending") return item
-        changed = true
-        return {
-          ...item,
-          recovery_status: "success" as const,
-          note,
-        }
-      })
-      if (!changed) continue
-      const successCount = nextItems.filter((item) => item.recovery_status === "success").length
-      const failureCount = nextItems.filter((item) => item.recovery_status === "fail").length
-      const next = {
-        ...data,
-        updated_at: nowISO(),
-        evidence: {
-          ...data.evidence,
-          count: nextItems.length,
-          success_count: successCount,
-          failure_count: failureCount,
-          repeated: nextItems.length > 1,
-          items: nextItems.slice(-20),
-        },
-      } satisfies ExperienceRecord
-      await writeMatter(file, next as unknown as Record<string, unknown>, renderExperience(next))
+function eventText(event: Workflow.EventInfo) {
+  if (event.kind === "node.control") {
+    return `Runtime command: ${typeof event.payload?.command === "string" ? event.payload.command : "unknown"}`
+  }
+  if (event.kind === "node.attempt_reported") {
+    const bits: string[] = []
+    if (typeof event.payload?.summary === "string") bits.push(event.payload.summary)
+    if (Array.isArray(event.payload?.needs)) bits.push(...event.payload.needs.map(String))
+    if (Array.isArray(event.payload?.errors))
+      bits.push(
+        ...event.payload.errors.map((item) => {
+          if (!item || typeof item !== "object") return String(item)
+          return [(item as Record<string, unknown>).source, (item as Record<string, unknown>).reason]
+            .filter(Boolean)
+            .join(": ")
+        }),
+      )
+    return bits.filter(Boolean).join("\n")
+  }
+  if (event.kind === "node.updated") {
+    const status = typeof event.payload?.status === "string" ? event.payload.status : undefined
+    const result = typeof event.payload?.result_status === "string" ? event.payload.result_status : undefined
+    return [status ? `status=${status}` : "", result ? `result=${result}` : ""].filter(Boolean).join(" ")
+  }
+  return JSON.stringify(event.payload ?? {}, null, 0)
+}
+
+// -----------------------------------------------------------------------------
+// Disk rendering
+// -----------------------------------------------------------------------------
+
+function renderObservation(observation: Observation) {
+  const lines: string[] = [
+    "# Refiner Observation",
+    "",
+    `- session: ${observation.session_id}`,
+    `- message: ${observation.message_id}`,
+    `- observed_at: ${new Date(observation.observed_at).toISOString()}`,
+    "",
+    "## User Text",
+    "",
+    "> " + observation.user_text.replace(/\n/g, "\n> "),
+    "",
+  ]
+  const history = observation.agent_context.session_history_excerpt
+  if (history.length) {
+    lines.push("## Prior History (前 3 条)")
+    lines.push("")
+    for (const entry of history) {
+      lines.push(`- [${entry.role}] ${clipText(entry.text, 220)}`)
+    }
+    lines.push("")
+  }
+  const snapshot = observation.agent_context.workflow_snapshot
+  if (snapshot) {
+    lines.push("## Workflow Snapshot")
+    lines.push("")
+    lines.push(`- workflow: ${snapshot.workflow_id}`)
+    if (snapshot.phase) lines.push(`- phase: ${snapshot.phase}`)
+    if (snapshot.node_id) lines.push(`- node: ${snapshot.node_id}`)
+    if (snapshot.recent_events.length) {
+      lines.push("- recent_events:")
+      for (const event of snapshot.recent_events) {
+        lines.push(`  - ${event.kind} @ ${new Date(event.at).toISOString()}: ${clipText(event.summary, 140)}`)
+      }
+    }
+    lines.push("")
+  }
+  return lines.join("\n")
+}
+
+function renderExperience(exp: Experience) {
+  return [
+    `# ${exp.title}`,
+    "",
+    `- kind: ${exp.kind}`,
+    `- scope: ${exp.scope}`,
+    exp.task_type ? `- task_type: ${exp.task_type}` : "",
+    `- observations: ${exp.observations.length}`,
+    `- refined: ${exp.refinement_history.length} time(s)`,
+    `- created_at: ${new Date(exp.created_at).toISOString()}`,
+    `- last_refined_at: ${new Date(exp.last_refined_at).toISOString()}`,
+    "",
+    "## Abstract",
+    "",
+    exp.abstract,
+    "",
+    exp.statement ? "## Statement\n\n" + exp.statement + "\n" : "",
+    exp.trigger_condition ? "## Trigger Condition\n\n" + exp.trigger_condition + "\n" : "",
+    "## Observations",
+    "",
+    ...exp.observations.map(
+      (o) =>
+        `- ${new Date(o.observed_at).toISOString()} · session ${o.session_id} · msg ${o.message_id} · ${clipText(
+          o.user_text,
+          120,
+        )}`,
+    ),
+    "",
+  ]
+    .filter((line) => line !== "")
+    .join("\n")
+}
+
+// -----------------------------------------------------------------------------
+// Taxonomy persistence
+// -----------------------------------------------------------------------------
+
+type TaxonomyEntry = {
+  slug: string
+  count: number
+  first_seen_at: number
+  last_seen_at: number
+  sample_experience_ids: string[]
+}
+
+type CategoryEntry = {
+  slug: string
+  count: number
+  first_seen_at: number
+  last_seen_at: number
+  experience_ids: string[]
+}
+
+type TaxonomyFile = {
+  core: CoreKind[]
+  custom: Record<string, TaxonomyEntry>
+  categories: Record<string, CategoryEntry>
+}
+
+async function readTaxonomy(): Promise<TaxonomyFile> {
+  const cfg = await settings()
+  const filepath = path.join(cfg.base, "taxonomy.json")
+  const raw = await Filesystem.readText(filepath).catch(() => undefined)
+  if (!raw) return { core: [...CORE_KINDS], custom: {}, categories: {} }
+  try {
+    const parsed = JSON.parse(raw) as Partial<TaxonomyFile>
+    return {
+      core: [...CORE_KINDS],
+      custom: parsed.custom ?? {},
+      categories: parsed.categories ?? {},
+    }
+  } catch {
+    return { core: [...CORE_KINDS], custom: {}, categories: {} }
+  }
+}
+
+async function writeTaxonomy(data: TaxonomyFile) {
+  const cfg = await settings()
+  const filepath = path.join(cfg.base, "taxonomy.json")
+  await Filesystem.write(filepath, JSON.stringify(data, null, 2))
+}
+
+async function registerCustomKind(kind: Kind, experienceID: string) {
+  if (!kind.startsWith("custom:")) return
+  const slug = kind.slice("custom:".length)
+  const taxonomy = await readTaxonomy()
+  const existing = taxonomy.custom[slug]
+  const now = nowMs()
+  if (existing) {
+    existing.count += 1
+    existing.last_seen_at = now
+    existing.sample_experience_ids = [
+      ...new Set([...existing.sample_experience_ids, experienceID]),
+    ].slice(-5)
+  } else {
+    taxonomy.custom[slug] = {
+      slug,
+      count: 1,
+      first_seen_at: now,
+      last_seen_at: now,
+      sample_experience_ids: [experienceID],
     }
   }
+  await writeTaxonomy(taxonomy)
 }
 
-async function writeInbox(input: {
-  candidate: Candidate
-  snapshot: Awaited<ReturnType<typeof Workflow.get>>
-  decision: AgentDecision
-  experiencePath?: string
-  experienceID?: string
-}) {
-  const cfg = await settings()
-  const ts = input.candidate.observed_at
-  const stamp = nowISO(ts).replace(/[:.]/g, "-")
-  const id = `${stamp}-${Hash.fast(`${input.candidate.workflow_id}:${input.candidate.trigger_kind}:${input.candidate.text}`).slice(0, 8)}`
-  const filepath = path.join(cfg.base, "inbox", nowISO(ts).slice(0, 10), `${id}.md`)
-  const node = relevantNode(input.snapshot, input.candidate.node_id)
-  const record: InboxRecord = {
-    kind: "refiner_inbox",
-    id,
-    created_at: nowISO(ts),
-    workflow_id: input.candidate.workflow_id,
-    node_id: input.candidate.node_id,
-    session_id: input.candidate.session_id,
-    source_type: input.candidate.source_type,
-    trigger_kind: input.candidate.trigger_kind,
-    classification: input.decision.classification,
-    related: input.decision.related,
-    long_term_value: input.decision.long_term_value,
-    reason: input.decision.reason,
-    task_type: input.decision.task_type,
-    workflow_phase: input.decision.workflow_context.phase,
-    node_agent: node?.agent,
-    experience_id: input.experienceID,
-    experience_path: input.experiencePath ? rel(input.experiencePath) : undefined,
+async function listKinds() {
+  const taxonomy = await readTaxonomy()
+  return {
+    core: CORE_KINDS.map((k) => ({ slug: k, description: CORE_KIND_DESCRIPTIONS[k] })),
+    custom: Object.values(taxonomy.custom).sort((a, b) => b.count - a.count),
   }
-  await writeMatter(filepath, record as unknown as Record<string, unknown>, renderInbox({ record, candidate: input.candidate, snapshot: input.snapshot, decision: input.decision }))
+}
+
+async function registerCategory(rawSlug: string, experienceID: string) {
+  const slug = slugifyCategory(rawSlug)
+  if (!slug) return
+  const taxonomy = await readTaxonomy()
+  const existing = taxonomy.categories[slug]
+  const now = nowMs()
+  if (existing) {
+    existing.count += 1
+    existing.last_seen_at = now
+    existing.experience_ids = [...new Set([...existing.experience_ids, experienceID])]
+  } else {
+    taxonomy.categories[slug] = {
+      slug,
+      count: 1,
+      first_seen_at: now,
+      last_seen_at: now,
+      experience_ids: [experienceID],
+    }
+  }
+  await writeTaxonomy(taxonomy)
+}
+
+async function listCategories() {
+  const taxonomy = await readTaxonomy()
+  return {
+    categories: Object.values(taxonomy.categories).sort((a, b) => b.count - a.count),
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Observation I/O
+// -----------------------------------------------------------------------------
+
+function observationFilepath(base: string, observation: Observation) {
+  const safe = sha1Short(observation.id, 16)
+  return path.join(base, "observations", observation.session_id, `${safe}.md`)
+}
+
+async function writeObservation(observation: Observation) {
+  const cfg = await settings()
+  const filepath = observationFilepath(cfg.base, observation)
+  await writeMatter(
+    filepath,
+    observation as unknown as Record<string, unknown>,
+    renderObservation(observation),
+  )
   return filepath
-}
-
-async function upsertExperience(input: {
-  candidate: Candidate
-  snapshot: Awaited<ReturnType<typeof Workflow.get>>
-  decision: AgentDecision
-}) {
-  if (!input.decision.related || !input.decision.long_term_value || input.decision.classification === "noise") return
-  const cfg = await settings()
-  const node = relevantNode(input.snapshot, input.candidate.node_id)
-  const taskType = slug(input.decision.task_type, "workflow-task")
-  const phase = slug(input.decision.workflow_context.phase, "execute")
-  const summary = input.decision.problem_or_requirement.summary.trim()
-  const digest = fingerprint({
-    classification: input.decision.classification,
-    taskType,
-    phase,
-    nodeAgent: input.decision.workflow_context.node_agent ?? node?.agent,
-    summary,
-    actions: uniq(input.decision.know_how.recommended_actions),
-  })
-  const basename = `${slug(summary, "experience").slice(0, 40)}-${digest.slice(0, 8)}.md`
-  const filepath = path.join(cfg.base, "experiences", taskType, phase, basename)
-  const doc = await readMatter(filepath).catch(() => undefined)
-  const ts = input.candidate.observed_at
-  const evidence: EvidenceItem = {
-    workflow_id: input.candidate.workflow_id,
-    node_id: input.candidate.node_id,
-    source_type: input.candidate.source_type,
-    trigger_kind: input.candidate.trigger_kind,
-    observed_at: ts,
-    recovery_status:
-      input.candidate.trigger_kind === "node.completed" ||
-      (input.candidate.trigger_kind === "node.updated" && input.candidate.event_payload?.status === "completed")
-        ? "success"
-        : input.candidate.source_type === "slave"
-          ? "pending"
-          : "pending",
-  }
-
-  const existing = (doc?.data ?? {}) as Partial<ExperienceRecord>
-  const items = uniq(
-    [
-      ...((existing.evidence?.items as EvidenceItem[] | undefined) ?? []).map((item) => JSON.stringify(item)),
-      JSON.stringify(evidence),
-    ],
-  ).map((item) => JSON.parse(item) as EvidenceItem)
-
-  const next: ExperienceRecord = {
-    kind: "workflow_experience",
-    id: digest,
-    created_at: typeof existing.created_at === "string" ? existing.created_at : nowISO(ts),
-    updated_at: nowISO(),
-    task_type: input.decision.task_type,
-    classification: input.decision.classification,
-    related: true,
-    long_term_value: true,
-    workflow_context: {
-      phase: input.decision.workflow_context.phase,
-      node_agent: input.decision.workflow_context.node_agent ?? node?.agent,
-      execution_scene: input.decision.workflow_context.execution_scene ?? input.snapshot.runtime.phase,
-      prerequisites: uniq([
-        ...((existing.workflow_context?.prerequisites as string[] | undefined) ?? []),
-        ...uniq(input.decision.workflow_context.prerequisites),
-      ]),
-      environment: uniq([
-        ...((existing.workflow_context?.environment as string[] | undefined) ?? []),
-        ...uniq(input.decision.workflow_context.environment),
-      ]),
-    },
-    problem_or_requirement: {
-      summary,
-      original_gap:
-        input.decision.problem_or_requirement.original_gap ?? (existing.problem_or_requirement?.original_gap as string | undefined),
-    },
-    know_how: {
-      summary: input.decision.know_how.summary,
-      recommended_actions: uniq([
-        ...((existing.know_how?.recommended_actions as string[] | undefined) ?? []),
-        ...uniq(input.decision.know_how.recommended_actions),
-      ]),
-      tool_hints: uniq([
-        ...((existing.know_how?.tool_hints as string[] | undefined) ?? []),
-        ...uniq(input.decision.know_how.tool_hints),
-      ]),
-      skill_hints: uniq([
-        ...((existing.know_how?.skill_hints as string[] | undefined) ?? []),
-        ...uniq(input.decision.know_how.skill_hints),
-      ]),
-      platform_hints: uniq([
-        ...((existing.know_how?.platform_hints as string[] | undefined) ?? []),
-        ...uniq(input.decision.know_how.platform_hints),
-      ]),
-      acceptance_hints: uniq([
-        ...((existing.know_how?.acceptance_hints as string[] | undefined) ?? []),
-        ...uniq(input.decision.know_how.acceptance_hints),
-      ]),
-    },
-    reusability: {
-      scope: input.decision.reusability.scope,
-      merge_candidate: input.decision.reusability.merge_candidate || Boolean(existing.reusability?.merge_candidate),
-      skill_candidate: input.decision.reusability.skill_candidate || Boolean(existing.reusability?.skill_candidate),
-    },
-    evidence: {
-      count: items.length,
-      success_count: items.filter((item) => item.recovery_status === "success").length,
-      failure_count: items.filter((item) => item.recovery_status === "fail").length,
-      repeated: items.length > 1,
-      items: items.slice(-20),
-    },
-  }
-  await writeMatter(filepath, next as unknown as Record<string, unknown>, renderExperience(next))
-  if (input.candidate.trigger_kind !== "node.completed") {
-    await queuePendingExperience(input.candidate.workflow_id, input.candidate.node_id, filepath)
-  }
-  return { id: digest, filepath }
 }
 
 async function extractUserMessage(sessionID: SessionID, messageID: MessageID) {
@@ -901,171 +722,1646 @@ async function extractUserMessage(sessionID: SessionID, messageID: MessageID) {
   const current = state()
   if (current.userSeen[messageID] === signature) return
   current.userSeen[messageID] = signature
+  return { text, info: message.info }
+}
+
+async function captureObservation(input: {
+  sessionID: string
+  messageID: string
+  text: string
+  observedAt: number
+}): Promise<Observation> {
+  // Prior history (up to 3 messages before this one)
+  const allMessages = await Session.messages({
+    sessionID: SessionID.make(input.sessionID),
+    limit: 40,
+  }).catch(() => [])
+  const prior = allMessages
+    .filter((m) => m.info.id !== input.messageID && m.info.time.created < input.observedAt)
+    .sort((a, b) => a.info.time.created - b.info.time.created)
+    .slice(-3)
+    .map((m) => ({
+      role: m.info.role === "user" ? ("user" as const) : ("assistant" as const),
+      text: clipText(messageText(m), 320),
+      message_id: m.info.id,
+    }))
+
+  // Optional workflow snapshot
+  let workflowSnapshot: Observation["agent_context"]["workflow_snapshot"]
+  const byResult = await Workflow.bySession(SessionID.make(input.sessionID)).catch(() => undefined)
+  if (byResult) {
+    const snapshot = await Workflow.get(byResult.workflow.id).catch(() => undefined)
+    if (snapshot) {
+      workflowSnapshot = {
+        workflow_id: snapshot.workflow.id,
+        node_id: snapshot.runtime.active_node_id,
+        phase: snapshot.runtime.phase,
+        recent_events: snapshot.events.slice(-8).map((event) => ({
+          kind: event.kind,
+          at: event.time_created,
+          summary: clipText(eventText(event), 160),
+        })),
+      }
+    }
+  }
+
+  const observation: Observation = {
+    id: `${input.sessionID}:${input.messageID}:${input.observedAt}`,
+    observed_at: input.observedAt,
+    session_id: input.sessionID,
+    message_id: input.messageID,
+    user_text: input.text,
+    agent_context: {
+      session_history_excerpt: prior,
+      workflow_snapshot: workflowSnapshot,
+    },
+  }
+  await writeObservation(observation)
+  return observation
+}
+
+// -----------------------------------------------------------------------------
+// Experience I/O
+// -----------------------------------------------------------------------------
+
+function experienceFilepath(base: string, exp: Pick<Experience, "id" | "kind">) {
+  const kindDir = exp.kind.replace(":", "_")
+  return path.join(base, "experiences", kindDir, `${exp.id}.md`)
+}
+
+async function writeExperience(exp: Experience) {
+  const cfg = await settings()
+  const filepath = experienceFilepath(cfg.base, exp)
+  await writeMatter(filepath, exp as unknown as Record<string, unknown>, renderExperience(exp))
+  return filepath
+}
+
+async function listExperiences(): Promise<ExperienceWithPath[]> {
+  const cfg = await settings()
+  const files = (
+    await Glob.scan("experiences/**/*.md", { cwd: cfg.base, absolute: true, dot: true }).catch(() => [])
+  ).sort()
+  const result: ExperienceWithPath[] = []
+  for (const file of files) {
+    const doc = await readMatter(file).catch(() => undefined)
+    if (!doc) continue
+    const parsed = ExperienceSchema.safeParse(doc.data)
+    if (!parsed.success) {
+      log.warn("skipping experience with invalid schema", { file, error: parsed.error.message })
+      continue
+    }
+    result.push({ ...parsed.data, path: rel(file) })
+  }
+  return result
+}
+
+async function getExperienceByID(id: string): Promise<ExperienceWithPath | undefined> {
+  const all = await listExperiences()
+  return all.find((exp) => exp.id === id)
+}
+
+function summarizeExperience(exp: Experience): ExperienceSummary {
   return {
-    text,
-    info: message.info,
+    id: exp.id,
+    kind: exp.kind,
+    title: clipText(exp.title, 60),
+    abstract: clipText(exp.abstract, 200),
+    task_type: exp.task_type,
+    observation_count: exp.observations.length,
+    last_refined_at: exp.last_refined_at,
   }
 }
 
-function isInterestingEvent(event: Workflow.EventInfo) {
-  if (event.kind === "node.control") return true
-  if (["node.attempt_reported", "node.failed", "node.completed", "node.action_limit_reached", "node.attempt_limit_reached", "node.stalled"].includes(event.kind)) return true
-  if (event.kind === "node.updated") {
-    const status = typeof event.payload.status === "string" ? event.payload.status : undefined
-    const result = typeof event.payload.result_status === "string" ? event.payload.result_status : undefined
-    return ["waiting", "failed", "completed", "interrupted"].includes(status ?? "") || ["success", "fail", "partial"].includes(result ?? "")
+// -----------------------------------------------------------------------------
+// Rejected log
+// -----------------------------------------------------------------------------
+
+async function appendRejected(entry: {
+  at: number
+  reason: string
+  observation_id: string
+  session_id: string
+  message_id: string
+  excerpt: string
+  stage: "route" | "abstract_guard"
+}) {
+  const cfg = await settings()
+  const filepath = path.join(cfg.base, "rejected.ndjson")
+  const existing = (await Filesystem.readText(filepath).catch(() => "")) ?? ""
+  const line = JSON.stringify(entry) + "\n"
+  await Filesystem.write(filepath, existing + line)
+}
+
+// -----------------------------------------------------------------------------
+// Runtime config override (persisted at .opencode/refiner-memory/config.json)
+// -----------------------------------------------------------------------------
+
+const ConfigOverrideSchema = z.object({
+  model: z
+    .object({
+      providerID: z.string().min(1),
+      modelID: z.string().min(1),
+    })
+    .optional(),
+  temperature: z.number().min(0).max(2).optional(),
+})
+type ConfigOverride = z.infer<typeof ConfigOverrideSchema>
+
+async function configOverridePath() {
+  const cfg = await settings()
+  return path.join(cfg.base, "config.json")
+}
+
+async function readConfigOverride(): Promise<ConfigOverride | undefined> {
+  try {
+    const p = await configOverridePath()
+    if (!(await Filesystem.exists(p))) return undefined
+    const raw = await Filesystem.readJson<unknown>(p).catch(() => undefined)
+    if (!raw) return undefined
+    const parsed = ConfigOverrideSchema.safeParse(raw)
+    if (!parsed.success) {
+      log.warn("refiner config override invalid; ignoring", { error: parsed.error.message })
+      return undefined
+    }
+    return parsed.data
+  } catch {
+    return undefined
+  }
+}
+
+async function writeConfigOverride(next: ConfigOverride): Promise<void> {
+  const p = await configOverridePath()
+  await Filesystem.writeJson(p, next)
+}
+
+// -----------------------------------------------------------------------------
+// LLM model resolution
+// -----------------------------------------------------------------------------
+
+type ModelSource = "override" | "agent" | "default"
+
+async function resolveRefinerModel() {
+  const agent = await Agent.get("refiner").catch(() => undefined)
+  if (!agent) return
+
+  // 1. Runtime override (PUT /experimental/refiner/config) takes highest priority
+  const override = await readConfigOverride()
+  if (override?.model) {
+    const model = await withTimeout(
+      Provider.getModel(
+        ProviderID.make(override.model.providerID),
+        ModelID.make(override.model.modelID),
+      ).catch(() => undefined),
+      300,
+    )
+    if (model) return { agent, model, selected: override.model, source: "override" as ModelSource }
+    // override points to an unreachable model: fall through, but log once
+    log.warn("refiner override model unavailable; falling back", { override: override.model })
+  }
+
+  // 2. Static agent config (opencode.jsonc: agent.refiner.model)
+  if (agent.model) {
+    const model = await withTimeout(
+      Provider.getModel(agent.model.providerID, agent.model.modelID).catch(() => undefined),
+      300,
+    )
+    if (model) return { agent, model, selected: agent.model, source: "agent" as ModelSource }
+  }
+
+  // 3. Provider default + small-model fallback
+  const selected = await withTimeout(Provider.defaultModel().catch(() => undefined), 300)
+  if (!selected) return
+
+  const model =
+    (await withTimeout(Provider.getSmallModel(selected.providerID).catch(() => undefined), 300)) ??
+    (await withTimeout(Provider.getModel(selected.providerID, selected.modelID).catch(() => undefined), 300))
+  if (!model) return
+
+  return { agent, model, selected, source: "default" as ModelSource }
+}
+
+// -----------------------------------------------------------------------------
+// Read-only tools for refiner agent
+// -----------------------------------------------------------------------------
+
+function createRefinerTools(input: { observation: Observation }) {
+  return {
+    get_session_history: tool({
+      description: "Read more messages from the session if the inline history (前 3 条) is insufficient.",
+      inputSchema: z.object({
+        session_id: z.string().optional(),
+        limit: z.number().int().positive().max(40).optional(),
+      }),
+      execute: async ({ session_id, limit }) => {
+        const sessionID = session_id ?? input.observation.session_id
+        const messages = await Session.messages({
+          sessionID: SessionID.make(sessionID),
+          limit: limit ?? 20,
+        }).catch(() => [])
+        return messages.slice(-1 * (limit ?? 20)).map((message) => ({
+          id: message.info.id,
+          role: message.info.role,
+          created_at: message.info.time.created,
+          text: clipText(messageText(message), 320),
+        }))
+      },
+    }),
+    get_experience_detail: tool({
+      description:
+        "Fetch full detail (all observations and refinement history) of an existing experience by id, before deciding to attach or create new.",
+      inputSchema: z.object({ experience_id: z.string() }),
+      execute: async ({ experience_id }) => {
+        const exp = await getExperienceByID(experience_id)
+        if (!exp) return { found: false }
+        return {
+          found: true,
+          id: exp.id,
+          kind: exp.kind,
+          title: exp.title,
+          abstract: exp.abstract,
+          statement: exp.statement,
+          trigger_condition: exp.trigger_condition,
+          task_type: exp.task_type,
+          scope: exp.scope,
+          observation_count: exp.observations.length,
+          observation_excerpts: exp.observations.slice(-5).map((o) => clipText(o.user_text, 200)),
+        }
+      },
+    }),
+  }
+}
+
+// -----------------------------------------------------------------------------
+// StructuredOutput helper
+// -----------------------------------------------------------------------------
+
+function createStructuredOutputTool(input: {
+  schema: Record<string, unknown>
+  onSuccess: (output: unknown) => void
+}) {
+  const { $schema, ...toolSchema } = input.schema as Record<string, unknown>
+  void $schema
+  return tool({
+    description:
+      "Emit the final structured decision. Call exactly once after any optional retrieval, and do not call again.",
+    inputSchema: jsonSchema(toolSchema as Record<string, unknown>),
+    async execute(args) {
+      input.onSuccess(args)
+      return { output: "Structured decision captured." }
+    },
+  })
+}
+
+// -----------------------------------------------------------------------------
+// LLM call: route (attach | new | noise)
+// -----------------------------------------------------------------------------
+
+async function routeObservation(input: {
+  observation: Observation
+  existing: ExperienceSummary[]
+}): Promise<RouteDecision | undefined> {
+  if (testRouteOverride) {
+    try {
+      const override = await testRouteOverride(input.observation, input.existing)
+      if (override) return override
+    } catch (error) {
+      log.warn("route test override failed", { error })
+    }
+  }
+
+  const resolved = await resolveRefinerModel()
+  if (!resolved?.model) return
+  const language = await Provider.getLanguage(resolved.model).catch(() => undefined)
+  if (!language) return
+  const auth = await Auth.get(resolved.model.providerID).catch(() => undefined)
+  const cfg = await Config.get().catch(() => undefined)
+  const isOpenaiOauth = resolved.model.providerID === "openai" && auth?.type === "oauth"
+
+  const systemPrompt = resolved.agent.prompt
+  const kinds = await listKinds()
+  const categories = (await listCategories().catch(() => ({ categories: [] }))).categories
+  const userPayload = {
+    task: "route",
+    observation: input.observation,
+    existing_experiences: input.existing,
+    kinds,
+    categories,
+  }
+
+  const tools = createRefinerTools({ observation: input.observation })
+  let decision: RouteDecision | undefined
+  const schema = ProviderTransform.schema(
+    resolved.model,
+    applyKindConstraint(z.toJSONSchema(RouteDecisionWireSchema)),
+  ) as Record<string, unknown>
+
+  const messages: ModelMessage[] = [
+    ...(isOpenaiOauth || !systemPrompt
+      ? []
+      : ([{ role: "system", content: systemPrompt }] as ModelMessage[])),
+    { role: "user", content: JSON.stringify(userPayload, null, 2) },
+  ]
+
+  const params = {
+    experimental_telemetry: {
+      isEnabled: cfg?.experimental?.openTelemetry,
+      metadata: { userId: cfg?.username ?? "unknown" },
+    },
+    temperature: 0.1,
+    messages,
+    model: language,
+    tools: {
+      ...tools,
+      StructuredOutput: createStructuredOutputTool({
+        schema,
+        onSuccess(output) {
+          const parsed = RouteDecisionWireSchema.safeParse(output)
+          if (!parsed.success) {
+            log.warn("route output failed schema", {
+              error: parsed.error.message,
+              raw_kind: (output as any)?.kind,
+              raw_action: (output as any)?.action,
+            })
+            return
+          }
+          const normalized = normalizeRouteDecision(parsed.data)
+          if ("error" in normalized) {
+            log.warn("route output failed normalization", { error: normalized.error, output })
+            return
+          }
+          decision = normalized
+        },
+      }),
+    },
+    providerOptions: ProviderTransform.providerOptions(resolved.model, {
+      instructions: systemPrompt ?? "",
+      store: false,
+    }),
+    stopWhen: stepCountIs(6),
+  } satisfies Parameters<typeof generateText>[0]
+
+  try {
+    if (isOpenaiOauth) {
+      const result = streamText({ ...params, onError: () => {} })
+      for await (const part of result.fullStream) {
+        if (part.type === "error") throw part.error
+      }
+    } else {
+      await generateText(params)
+    }
+  } catch (error) {
+    log.warn("refiner route LLM failed", { error })
+    return
+  }
+
+  return decision
+}
+
+// -----------------------------------------------------------------------------
+// LLM call: refine (regenerate title/abstract/kind over all observations)
+// -----------------------------------------------------------------------------
+
+async function refineExperience(input: {
+  experience: Experience
+  triggerObservation: Observation
+}): Promise<RefineOutput | undefined> {
+  if (testRefineOverride) {
+    try {
+      const override = await testRefineOverride(input.triggerObservation, input.experience)
+      if (override) return override
+    } catch (error) {
+      log.warn("refine test override failed", { error })
+    }
+  }
+
+  const resolved = await resolveRefinerModel()
+  if (!resolved?.model) return
+  const language = await Provider.getLanguage(resolved.model).catch(() => undefined)
+  if (!language) return
+  const auth = await Auth.get(resolved.model.providerID).catch(() => undefined)
+  const cfg = await Config.get().catch(() => undefined)
+  const isOpenaiOauth = resolved.model.providerID === "openai" && auth?.type === "oauth"
+  const systemPrompt = resolved.agent.prompt
+
+  // Sample: most recent 8 + oldest 2 (with no dup)
+  const obs = input.experience.observations
+  const recent = obs.slice(-8)
+  const oldest = obs.slice(0, 2).filter((o) => !recent.includes(o))
+  const sampled = [...oldest, ...recent]
+
+  const payload = {
+    task: "refine",
+    current: {
+      id: input.experience.id,
+      kind: input.experience.kind,
+      title: input.experience.title,
+      abstract: input.experience.abstract,
+      statement: input.experience.statement,
+      trigger_condition: input.experience.trigger_condition,
+      task_type: input.experience.task_type,
+      scope: input.experience.scope,
+    },
+    observations: sampled.map((o) => ({
+      observed_at: o.observed_at,
+      user_text: o.user_text,
+      // Surface the user's manual note so refine can actually incorporate
+      // explicitly provided guidance. Previously this field was dropped and
+      // the LLM only saw user_text, leaving manual augments effectively
+      // invisible to refinement.
+      note: o.note,
+      source: o.source,
+      history: o.agent_context.session_history_excerpt,
+      workflow: o.agent_context.workflow_snapshot,
+    })),
+    kinds: await listKinds(),
+    categories: (await listCategories().catch(() => ({ categories: [] }))).categories,
+    trigger_observation_id: input.triggerObservation.id,
+  }
+
+  let output: RefineOutput | undefined
+  const schema = ProviderTransform.schema(
+    resolved.model,
+    applyKindConstraint(z.toJSONSchema(RefineOutputSchema)),
+  ) as Record<string, unknown>
+
+  const refineDirective =
+    "TASK = refine. 你正在根据全部 observations 重新生成一个 experience。\n" +
+    "必须调用 StructuredOutput 工具，并且输出对象要**完整填写** kind / title / abstract / scope；" +
+    "不确定的 optional 字段（statement / trigger_condition / task_type / categories / conflicts_with）请**省略**，不要提交空串或占位符。\n" +
+    "abstract 必须是简体中文对 observations 的归纳，绝不能输出诸如 'not used' / 'ignore' / 'placeholder' 这类英文说明。\n" +
+    "以下 JSON 是 refine 任务的输入（注意顶层 task 字段）：\n"
+
+  const messages: ModelMessage[] = [
+    ...(isOpenaiOauth || !systemPrompt
+      ? []
+      : ([{ role: "system", content: systemPrompt }] as ModelMessage[])),
+    { role: "user", content: refineDirective + JSON.stringify(payload, null, 2) },
+  ]
+
+  const params = {
+    experimental_telemetry: {
+      isEnabled: cfg?.experimental?.openTelemetry,
+      metadata: { userId: cfg?.username ?? "unknown" },
+    },
+    temperature: 0.1,
+    messages,
+    model: language,
+    tools: {
+      StructuredOutput: createStructuredOutputTool({
+        schema,
+        onSuccess(raw) {
+          const parsed = RefineOutputSchema.safeParse(raw)
+          if (parsed.success) output = parsed.data
+          else
+            log.warn("refine output failed schema", {
+              error: parsed.error.message,
+              raw_kind: (raw as any)?.kind,
+              raw_title: (raw as any)?.title,
+            })
+        },
+      }),
+    },
+    providerOptions: ProviderTransform.providerOptions(resolved.model, {
+      instructions: systemPrompt ?? "",
+      store: false,
+    }),
+    stopWhen: stepCountIs(4),
+  } satisfies Parameters<typeof generateText>[0]
+
+  try {
+    if (isOpenaiOauth) {
+      const result = streamText({ ...params, onError: () => {} })
+      for await (const part of result.fullStream) {
+        if (part.type === "error") throw part.error
+      }
+    } else {
+      await generateText(params)
+    }
+  } catch (error) {
+    log.warn("refiner refine LLM failed", { error })
+    return
+  }
+
+  return output
+}
+
+// -----------------------------------------------------------------------------
+// Originality guard
+// -----------------------------------------------------------------------------
+
+function abstractEqualsRaw(abstractText: string, observations: Observation[]) {
+  const normalized = compactText(abstractText).slice(0, 200)
+  if (!normalized) return true
+  const abstractDigest = Hash.fast(normalized.toLowerCase())
+  for (const obs of observations) {
+    const rawHead = compactText(obs.user_text).slice(0, 200).toLowerCase()
+    if (!rawHead) continue
+    if (Hash.fast(rawHead) === abstractDigest) return true
+    // fuzzy: if abstract is a contiguous slice of user_text
+    if (rawHead.includes(normalized.toLowerCase())) return true
   }
   return false
 }
 
-function eventText(event: Workflow.EventInfo) {
-  if (event.kind === "node.control") {
-    return [`Runtime command: ${event.payload.command ?? "unknown"}`, JSON.stringify(event.payload, null, 2)].filter(Boolean).join("\n\n")
-  }
-  if (event.kind === "node.attempt_reported") {
-    return [
-      typeof event.payload.summary === "string" ? event.payload.summary : "",
-      ...(Array.isArray(event.payload.needs) ? event.payload.needs.map(String) : []),
-      ...(Array.isArray(event.payload.errors)
-        ? event.payload.errors.map((item) => {
-            if (!item || typeof item !== "object") return String(item)
-            return [item.source, item.reason].filter(Boolean).join(": ")
-          })
-        : []),
-    ]
-      .filter(Boolean)
-      .join("\n")
-  }
-  return JSON.stringify(event.payload, null, 2)
+/**
+ * Detect abstracts that look like the model's own schema comments / placeholders
+ * rather than a real distilled rule. The refine prompt describes BOTH the route
+ * and the refine schemas, so a confused model sometimes emits the route-schema
+ * comment "This is not used in route output; ignore" (or similar) as the
+ * abstract. Catch that and treat it as an unacceptable refinement.
+ */
+function abstractLooksLikePlaceholder(abstractText: string) {
+  const raw = compactText(abstractText)
+  if (!raw) return true
+  if (raw.length < 10) return true
+
+  const lower = raw.toLowerCase()
+  const placeholderPatterns = [
+    /\bnot used\b/,
+    /\bignore\b.*\b(if|this|field)\b/,
+    /\bplaceholder\b/,
+    /\bto be filled\b/,
+    /\btbd\b/,
+    /\bn\/a\b/,
+    /route output/,
+    /this (field|is) (is )?not/,
+    /^<[^>]+>$/,
+    /^".*"$/,
+    /^\{[^{}]*\}$/,
+  ]
+  for (const p of placeholderPatterns) if (p.test(lower)) return true
+
+  // If we expect Chinese natural language prose, reject output that is
+  // overwhelmingly ASCII (likely an English schema comment).
+  const chineseCount = (raw.match(/[\u4e00-\u9fff]/g) ?? []).length
+  const asciiLetters = (raw.match(/[A-Za-z]/g) ?? []).length
+  if (chineseCount === 0 && asciiLetters >= 4) return true
+  return false
 }
 
-async function observeCandidate(candidate: Candidate) {
-  const cfg = await settings()
-  if (!cfg.enabled) return
-  const snapshot = await Workflow.get(candidate.workflow_id).catch(() => undefined)
-  if (!snapshot) return
-  const node = relevantNode(snapshot, candidate.node_id)
-  let decision = heuristicDecision({
-    candidate,
-    runtimePhase: snapshot.runtime.phase,
-    nodeAgent: node?.agent,
-  })
+/**
+ * Normalize optional string fields returned by the LLM: an empty / whitespace
+ * string should be treated as "missing" so that downstream `?? existing` falls
+ * through instead of overwriting the previous good value with "".
+ */
+function blankToUndefined(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined
+  const trimmed = value.trim()
+  return trimmed ? trimmed : undefined
+}
 
-  if (cfg.modelAssisted) {
-    decision =
-      (await refineWithAgent({
-        candidate,
-        snapshot,
-        nodeAgent: node?.agent,
-      }).catch((error) => {
-        log.warn("refiner agent failed, falling back to heuristics", { error })
-        return undefined
-      })) ?? decision
+// -----------------------------------------------------------------------------
+// Attach + refine
+// -----------------------------------------------------------------------------
+
+async function attachAndRefine(input: {
+  experience: ExperienceWithPath
+  observation: Observation
+  categoryHints?: string[]
+  conflictHints?: string[]
+  historyKind?: "auto" | "manual_augment" | "re_refine"
+}) {
+  const resolved = await resolveRefinerModel()
+  const modelTag = resolved?.selected ? `${resolved.selected.providerID}/${resolved.selected.modelID}` : "unknown"
+
+  const snapshotExp: Experience = {
+    ...input.experience,
+    observations: [...input.experience.observations, input.observation],
   }
 
-  if (!decision.related && candidate.source_type !== "user") {
-    decision = {
-      ...decision,
-      related: true,
-      classification: decision.classification === "noise" ? "context_completion" : decision.classification,
-      long_term_value: candidate.source_type !== "slave" ? decision.long_term_value : true,
+  // First attempt
+  let refined = await refineExperience({ experience: snapshotExp, triggerObservation: input.observation })
+  if (!refined) {
+    log.warn("refine returned nothing on attach; leaving experience unchanged", {
+      experience_id: snapshotExp.id,
+    })
+    return { attached: false as const, reason: "refine_failed" }
+  }
+
+  // Originality guard: retry once if abstract is essentially raw text OR
+  // looks like a schema-comment/placeholder rather than a real distillation.
+  const abstractInvalid = (r: RefineOutput) =>
+    abstractEqualsRaw(r.abstract, snapshotExp.observations) ||
+    abstractLooksLikePlaceholder(r.abstract)
+
+  if (abstractInvalid(refined)) {
+    log.info("abstract invalid (raw or placeholder); retrying once", {
+      experience_id: snapshotExp.id,
+      abstract_preview: clipText(refined.abstract, 120),
+    })
+    refined = await refineExperience({ experience: snapshotExp, triggerObservation: input.observation })
+    if (!refined || abstractInvalid(refined)) {
+      await appendRejected({
+        at: nowMs(),
+        reason: refined
+          ? abstractLooksLikePlaceholder(refined.abstract)
+            ? "abstract_placeholder_after_retry"
+            : "abstract_equals_raw_after_retry"
+          : "refine_failed_after_retry",
+        observation_id: input.observation.id,
+        session_id: input.observation.session_id,
+        message_id: input.observation.message_id,
+        excerpt: clipText(input.observation.user_text, 200),
+        stage: "abstract_guard",
+      })
+      return { attached: false as const, reason: "abstract_not_abstract_enough" }
     }
   }
 
-  const experience = await upsertExperience({ candidate, snapshot, decision })
-  const inboxPath = await writeInbox({
-    candidate,
-    snapshot,
-    decision,
-    experienceID: experience?.id,
-    experiencePath: experience?.filepath,
+  // Coerce empty-string optional fields to undefined so that `?? existing`
+  // preserves prior good values instead of overwriting them with "".
+  refined = {
+    ...refined,
+    statement: blankToUndefined(refined.statement),
+    trigger_condition: blankToUndefined(refined.trigger_condition),
+    task_type: blankToUndefined(refined.task_type),
+  }
+
+  const prevDigest = sha1Short(compactText(input.experience.abstract).toLowerCase(), 12)
+  const prevSnapshot: RefinementSnapshot = {
+    title: input.experience.title,
+    abstract: input.experience.abstract,
+    statement: input.experience.statement,
+    trigger_condition: input.experience.trigger_condition,
+    task_type: input.experience.task_type,
+    scope: input.experience.scope,
+    kind: input.experience.kind,
+    categories: input.experience.categories,
+  }
+  const mergedCategories = uniqueStrings([
+    ...(snapshotExp.categories ?? []),
+    ...(input.categoryHints ?? []),
+    ...(refined.categories ?? []),
+  ])
+  const mergedConflicts = uniqueStrings([
+    ...(snapshotExp.conflicts_with ?? []),
+    ...(input.conflictHints ?? []),
+    ...(refined.conflicts_with ?? []),
+  ]).filter((id) => id !== snapshotExp.id)
+
+  const next: Experience = {
+    ...snapshotExp,
+    kind: refined.kind,
+    title: refined.title,
+    abstract: refined.abstract,
+    statement: refined.statement,
+    trigger_condition: refined.trigger_condition,
+    task_type: refined.task_type ?? snapshotExp.task_type,
+    scope: refined.scope,
+    categories: mergedCategories,
+    conflicts_with: mergedConflicts,
+    last_refined_at: nowMs(),
+    refinement_history: [
+      ...snapshotExp.refinement_history,
+      {
+        at: nowMs(),
+        trigger_observation_id: input.observation.id,
+        prev_abstract_digest: prevDigest,
+        prev_snapshot: prevSnapshot,
+        kind:
+          input.historyKind ??
+          (input.observation.source === "manual_augment"
+            ? ("manual_augment" as const)
+            : ("auto" as const)),
+        source_ids: [input.observation.id],
+        model: modelTag,
+      },
+    ],
+  }
+
+  // If kind changed, delete the old file so it moves to new kind dir
+  if (next.kind !== input.experience.kind) {
+    const cfg = await settings()
+    const oldPath = experienceFilepath(cfg.base, input.experience)
+    await unlink(oldPath).catch(() => {})
+  }
+
+  const filepath = await writeExperience(next)
+  if (next.kind.startsWith("custom:")) await registerCustomKind(next.kind, next.id)
+  for (const slug of next.categories ?? []) await registerCategory(slug, next.id)
+  return { attached: true as const, experience: { ...next, path: rel(filepath) } }
+}
+
+// -----------------------------------------------------------------------------
+// Create new
+// -----------------------------------------------------------------------------
+
+async function createExperience(input: {
+  observation: Observation
+  proposal: Extract<RouteDecision, { action: "new" }>
+}): Promise<ExperienceWithPath | undefined> {
+  // Originality + placeholder guard
+  if (
+    abstractEqualsRaw(input.proposal.abstract, [input.observation]) ||
+    abstractLooksLikePlaceholder(input.proposal.abstract)
+  ) {
+    await appendRejected({
+      at: nowMs(),
+      reason: abstractLooksLikePlaceholder(input.proposal.abstract)
+        ? "new_abstract_placeholder"
+        : "new_abstract_equals_raw",
+      observation_id: input.observation.id,
+      session_id: input.observation.session_id,
+      message_id: input.observation.message_id,
+      excerpt: clipText(input.observation.user_text, 200),
+      stage: "abstract_guard",
+    })
+    return
+  }
+
+  const id = sha1Short(`${input.observation.id}:${input.proposal.kind}:${input.proposal.title}:${nowMs()}`, 12)
+  const exp: Experience = {
+    id,
+    kind: input.proposal.kind,
+    title: input.proposal.title,
+    abstract: input.proposal.abstract,
+    statement: blankToUndefined(input.proposal.statement),
+    trigger_condition: blankToUndefined(input.proposal.trigger_condition),
+    task_type: blankToUndefined(input.proposal.task_type),
+    scope: input.proposal.scope,
+    categories: input.proposal.categories ?? [],
+    observations: [input.observation],
+    related_experience_ids: [],
+    conflicts_with: [],
+    refinement_history: [],
+    archived: false,
+    created_at: nowMs(),
+    last_refined_at: nowMs(),
+  }
+  const filepath = await writeExperience(exp)
+  if (exp.kind.startsWith("custom:")) await registerCustomKind(exp.kind, exp.id)
+  for (const slug of exp.categories ?? []) await registerCategory(slug, exp.id)
+  return { ...exp, path: rel(filepath) }
+}
+
+// -----------------------------------------------------------------------------
+// Main entry
+// -----------------------------------------------------------------------------
+
+async function observeObservation(observation: Observation) {
+  const existingRaw = await listExperiences()
+  const existing = existingRaw.map(summarizeExperience)
+
+  const decision = await routeObservation({ observation, existing })
+  if (!decision) {
+    log.warn("refiner route produced no decision", { observation_id: observation.id })
+    return
+  }
+
+  if (decision.action === "noise") {
+    await appendRejected({
+      at: nowMs(),
+      reason: decision.reason,
+      observation_id: observation.id,
+      session_id: observation.session_id,
+      message_id: observation.message_id,
+      excerpt: clipText(observation.user_text, 200),
+      stage: "route",
+    })
+    return
+  }
+
+  if (decision.action === "new") {
+    await createExperience({ observation, proposal: decision })
+    return
+  }
+
+  // attach
+  const target = existingRaw.find((e) => e.id === decision.experience_id)
+  if (!target) {
+    log.warn("route asked to attach to unknown experience; falling back to noise", {
+      id: decision.experience_id,
+    })
+    await appendRejected({
+      at: nowMs(),
+      reason: `attach_target_not_found:${decision.experience_id}`,
+      observation_id: observation.id,
+      session_id: observation.session_id,
+      message_id: observation.message_id,
+      excerpt: clipText(observation.user_text, 200),
+      stage: "route",
+    })
+    return
+  }
+  // Pass any router-proposed category/conflict hints so attachAndRefine can seed them.
+  await attachAndRefine({
+    experience: target,
+    observation,
+    categoryHints: decision.categories,
+    conflictHints: decision.conflicts_with,
   })
-  if (experience?.filepath) {
-    const doc = await readMatter(experience.filepath).catch(() => undefined)
-    if (doc) {
-      const data = doc.data as ExperienceRecord
-      const nextItems = data.evidence.items.map((item) =>
-        item.workflow_id === candidate.workflow_id &&
-          item.trigger_kind === candidate.trigger_kind &&
-          item.observed_at === candidate.observed_at &&
-          item.source_type === candidate.source_type
-          ? {
-              ...item,
-              inbox_path: rel(inboxPath),
-            }
-          : item,
-      )
-      const next = {
-        ...data,
-        evidence: {
-          ...data.evidence,
-          items: nextItems,
-        },
-      } satisfies ExperienceRecord
-      await writeMatter(experience.filepath, next as unknown as Record<string, unknown>, renderExperience(next))
+}
+
+// -----------------------------------------------------------------------------
+// Overview
+// -----------------------------------------------------------------------------
+
+function buildOverviewGraph(experiences: ExperienceWithPath[]) {
+  const nodes: GraphNode[] = []
+  const edges: GraphEdge[] = []
+  for (const exp of experiences) {
+    const expNodeID = `experience:${exp.id}`
+    nodes.push({
+      id: expNodeID,
+      type: "experience",
+      label: clipText(exp.title, 60),
+      secondary: clipText(exp.abstract, 120),
+      kind: exp.kind,
+      path: exp.path,
+    })
+    for (const obs of exp.observations) {
+      const obsNodeID = `observation:${obs.id}`
+      nodes.push({
+        id: obsNodeID,
+        type: "observation",
+        label: clipText(obs.user_text, 60),
+        secondary: new Date(obs.observed_at).toISOString(),
+      })
+      edges.push({ from: expNodeID, to: obsNodeID, kind: "has_observation" })
+    }
+    for (const relatedID of exp.related_experience_ids) {
+      edges.push({ from: expNodeID, to: `experience:${relatedID}`, kind: "related" })
     }
   }
+  return { nodes, edges }
 }
+
+// -----------------------------------------------------------------------------
+// Public namespace
+// -----------------------------------------------------------------------------
 
 export namespace Refiner {
-  export const DecisionSchema = AgentDecision
-  export const ClassificationSchema = Classification
+  export const RouteDecisionSchemaExport = RouteDecisionWireSchema
+  export const RefineOutputSchemaExport = RefineOutputSchema
+  export const ExperienceSchemaExport = ExperienceSchema
+  export const ObservationSchemaExport = ObservationSchema
 
-  export function classifyHeuristically(input: { text: string; runtimePhase?: string; nodeAgent?: string }) {
-    return heuristicDecision({
-      candidate: {
-        source_type: "user",
-        workflow_id: "workflow",
-        trigger_kind: "user.message",
-        observed_at: Date.now(),
-        text: input.text,
-      },
-      runtimePhase: input.runtimePhase ?? "execute",
-      nodeAgent: input.nodeAgent,
-    })
+  export function setRouteOverrideForTest(
+    override?:
+      | ((observation: Observation, existing: ExperienceSummary[]) => Promise<RouteDecision | undefined>)
+      | undefined,
+  ) {
+    testRouteOverride = override
+  }
+
+  export function setRefineOverrideForTest(
+    override?:
+      | ((observation: Observation, experience: Experience) => Promise<RefineOutput | undefined>)
+      | undefined,
+  ) {
+    testRefineOverride = override
   }
 
   export async function observeUserMessage(input: { sessionID: SessionID; messageID: MessageID }) {
+    const cfg = await settings()
+    if (!cfg.enabled) return
     const extracted = await extractUserMessage(input.sessionID, input.messageID).catch(() => undefined)
     if (!extracted) return
-    const workflow = await Workflow.bySession(input.sessionID).catch(() => undefined)
-    if (!workflow) return
-    await observeCandidate({
-      source_type: "user",
-      workflow_id: workflow.workflow.id,
-      session_id: input.sessionID,
-      node_id: relevantNode(workflow)?.id,
-      trigger_kind: "user.message",
-      observed_at: extracted.info.time.created,
+    const observation = await captureObservation({
+      sessionID: input.sessionID,
+      messageID: input.messageID,
       text: extracted.text,
+      observedAt: extracted.info.time.created,
+    })
+    await observeObservation(observation).catch((error) => {
+      log.warn("observeObservation failed", { error, observation_id: observation.id })
     })
   }
 
-  export async function observeWorkflowEvent(event: Workflow.EventInfo) {
-    if (!isInterestingEvent(event)) return
-    const current = state()
-    const seenKey = `${event.workflow_id}:${event.id}:${event.kind}`
-    if (current.eventSeen[seenKey]) return
-    current.eventSeen[seenKey] = true
+  export async function experienceByID(id: string) {
+    return getExperienceByID(id)
+  }
 
-    const source_type: CandidateSourceType =
-      event.kind === "node.control" || event.source === "orchestrator" ? "master" : "slave"
+  export async function experiences() {
+    return listExperiences()
+  }
 
-    await observeCandidate({
-      source_type,
-      workflow_id: event.workflow_id,
-      session_id: event.session_id,
-      node_id: event.node_id,
-      trigger_kind: event.kind,
-      observed_at: event.time_created,
-      text: eventText(event),
-      event_payload: event.payload,
+  export async function taxonomy() {
+    return listKinds()
+  }
+
+  export const ConfigOverrideSchemaExport = ConfigOverrideSchema
+
+  export async function config() {
+    const override = await readConfigOverride()
+    const resolved = await resolveRefinerModel()
+    return {
+      resolved: resolved?.selected,
+      source: (resolved?.source ?? "none") as ModelSource | "none",
+      override: override ?? null,
+    }
+  }
+
+  export async function setConfig(input: {
+    model?: { providerID: string; modelID: string } | null
+    temperature?: number | null
+  }) {
+    const existing: ConfigOverride = (await readConfigOverride()) ?? {}
+    const next: ConfigOverride = { ...existing }
+
+    if ("model" in input) {
+      if (input.model === null) {
+        delete next.model
+      } else if (input.model) {
+        next.model = { providerID: input.model.providerID, modelID: input.model.modelID }
+      }
+    }
+
+    if ("temperature" in input) {
+      if (input.temperature === null) delete next.temperature
+      else if (typeof input.temperature === "number") next.temperature = input.temperature
+    }
+
+    await writeConfigOverride(next)
+    return config()
+  }
+
+  // ---------- Delete + Archive + audit ----------
+
+  async function appendAudit(file: "deleted.ndjson" | "merged.ndjson" | "ingested.ndjson", entry: Record<string, unknown>) {
+    const cfg = await settings()
+    const filepath = path.join(cfg.base, file)
+    const existing = (await Filesystem.readText(filepath).catch(() => "")) ?? ""
+    await Filesystem.write(filepath, existing + JSON.stringify(entry) + "\n")
+  }
+
+  export async function deleteExperience(id: string, options?: { cascadeObservations?: boolean; reason?: string }) {
+    const cascade = options?.cascadeObservations ?? true
+    const target = await getExperienceByID(id)
+    if (!target) return { ok: false as const, error: "not_found" }
+    const cfg = await settings()
+    const expPath = experienceFilepath(cfg.base, target)
+    await unlink(expPath).catch(() => {})
+    let observationsRemoved = 0
+    if (cascade) {
+      for (const obs of target.observations) {
+        await unlink(observationFilepath(cfg.base, obs)).catch(() => {})
+        observationsRemoved++
+      }
+    }
+    // Remove from other experiences' related/conflicts references
+    const rest = await listExperiences()
+    for (const exp of rest) {
+      if (exp.id === id) continue
+      const needsUpdate =
+        exp.related_experience_ids.includes(id) || (exp.conflicts_with ?? []).includes(id)
+      if (!needsUpdate) continue
+      const next: Experience = {
+        ...exp,
+        related_experience_ids: exp.related_experience_ids.filter((x) => x !== id),
+        conflicts_with: (exp.conflicts_with ?? []).filter((x) => x !== id),
+      }
+      await writeExperience(next)
+    }
+    await appendAudit("deleted.ndjson", {
+      at: nowMs(),
+      id: target.id,
+      kind: target.kind,
+      title: target.title,
+      observations_removed: observationsRemoved,
+      cascade,
+      reason: options?.reason ?? "user_delete",
     })
+    return { ok: true as const, observations_removed: observationsRemoved }
+  }
 
-    const status = typeof event.payload.status === "string" ? event.payload.status : undefined
-    const result = typeof event.payload.result_status === "string" ? event.payload.result_status : undefined
-    if (event.kind === "node.completed" || status === "completed" || result === "success") {
-      await markPendingSuccess(event.workflow_id, event.node_id, "Later workflow observation marked this case as recovered successfully")
+  export async function setArchived(id: string, archived: boolean) {
+    const target = await getExperienceByID(id)
+    if (!target) return { ok: false as const, error: "not_found" }
+    const next: Experience = {
+      ...target,
+      archived,
+      archived_at: archived ? nowMs() : undefined,
+    }
+    const filepath = await writeExperience(next)
+    return { ok: true as const, experience: { ...next, path: rel(filepath) } }
+  }
+
+  // ---------- Augment (user adds a manual observation) ----------
+
+  export async function augmentExperience(input: {
+    id: string
+    user_text: string
+    note?: string
+  }) {
+    const target = await getExperienceByID(input.id)
+    if (!target) return { ok: false as const, error: "not_found" }
+    const text = input.user_text?.trim()
+    if (!text) return { ok: false as const, error: "empty_user_text" }
+
+    const observedAt = nowMs()
+    const manualID = `manual:${target.id}:${sha1Short(`${observedAt}:${text}`, 10)}`
+    const observation: Observation = {
+      id: manualID,
+      observed_at: observedAt,
+      session_id: "manual",
+      message_id: manualID,
+      user_text: text,
+      source: "manual_augment",
+      note: input.note,
+      agent_context: {
+        session_history_excerpt: [],
+      },
+    }
+    await writeObservation(observation)
+
+    const result = await attachAndRefine({
+      experience: target,
+      observation,
+      historyKind: "manual_augment",
+    })
+    if (!result.attached) {
+      return { ok: false as const, error: result.reason }
+    }
+    return { ok: true as const, experience: result.experience }
+  }
+
+  // ---------- Agent-assisted manual creation ----------
+
+  export async function createExperienceFromText(input: {
+    user_text: string
+    kind_hint?: Kind
+    scope_hint?: "workspace" | "project" | "repo" | "user"
+    task_type_hint?: string
+    note?: string
+  }) {
+    const text = input.user_text?.trim()
+    if (!text) return { ok: false as const, error: "empty_user_text" }
+
+    const observedAt = nowMs()
+    const manualID = `manual-new:${sha1Short(`${observedAt}:${text}`, 10)}`
+    const observation: Observation = {
+      id: manualID,
+      observed_at: observedAt,
+      session_id: "manual",
+      message_id: manualID,
+      user_text: text,
+      source: "manual_augment",
+      note: input.note,
+      agent_context: {
+        session_history_excerpt: [],
+      },
+    }
+    await writeObservation(observation)
+
+    // Run route to let the LLM pick category/kind, but force the action to "new":
+    // we still leverage the full router because it sees existing categories/kinds.
+    const existing = (await listExperiences()).map(summarizeExperience)
+    const decision = await routeObservation({ observation, existing })
+    if (!decision) return { ok: false as const, error: "route_failed" }
+
+    // If agent decided "noise" or "attach", override to "new" so a fresh experience is created.
+    let proposal: Extract<RouteDecision, { action: "new" }>
+    if (decision.action === "new") {
+      proposal = {
+        ...decision,
+        kind: input.kind_hint ?? decision.kind,
+        scope: input.scope_hint ?? decision.scope,
+        task_type: input.task_type_hint ?? decision.task_type,
+      }
+    } else {
+      // Synthesize a minimal proposal by requesting a direct refine on a one-obs experience
+      const skeleton: Experience = {
+        id: "pending",
+        kind: input.kind_hint ?? "know_how",
+        title: clipText(text, 40),
+        abstract: clipText(text, 180),
+        scope: input.scope_hint ?? "workspace",
+        task_type: input.task_type_hint,
+        categories: [],
+        observations: [observation],
+        related_experience_ids: [],
+        conflicts_with: [],
+        refinement_history: [],
+        archived: false,
+        created_at: observedAt,
+        last_refined_at: observedAt,
+      }
+      const refined = await refineExperience({ experience: skeleton, triggerObservation: observation })
+      if (!refined) return { ok: false as const, error: "refine_failed" }
+      proposal = {
+        action: "new",
+        reason: "manual_create",
+        kind: input.kind_hint ?? refined.kind,
+        title: refined.title,
+        abstract: refined.abstract,
+        statement: refined.statement,
+        trigger_condition: refined.trigger_condition,
+        task_type: input.task_type_hint ?? refined.task_type,
+        scope: input.scope_hint ?? refined.scope,
+        categories: refined.categories,
+        conflicts_with: refined.conflicts_with,
+      }
+    }
+
+    const exp = await createExperience({ observation, proposal })
+    if (!exp) return { ok: false as const, error: "create_failed_abstract_guard" }
+    return { ok: true as const, experience: exp }
+  }
+
+  // ---------- Manual edit (no LLM) ----------
+
+  export async function patchExperience(input: {
+    id: string
+    title?: string
+    abstract?: string
+    statement?: string | null
+    trigger_condition?: string | null
+    task_type?: string | null
+    scope?: "workspace" | "project" | "repo" | "user"
+    categories?: string[]
+  }) {
+    const target = await getExperienceByID(input.id)
+    if (!target) return { ok: false as const, error: "not_found" }
+
+    const changes: string[] = []
+    const next: Experience = { ...target }
+    if (input.title !== undefined && input.title !== target.title) {
+      next.title = input.title
+      changes.push("title")
+    }
+    if (input.abstract !== undefined && input.abstract !== target.abstract) {
+      next.abstract = input.abstract
+      changes.push("abstract")
+    }
+    if (input.statement !== undefined && input.statement !== target.statement) {
+      next.statement = input.statement === null ? undefined : input.statement
+      changes.push("statement")
+    }
+    if (input.trigger_condition !== undefined && input.trigger_condition !== target.trigger_condition) {
+      next.trigger_condition = input.trigger_condition === null ? undefined : input.trigger_condition
+      changes.push("trigger_condition")
+    }
+    if (input.task_type !== undefined && input.task_type !== target.task_type) {
+      next.task_type = input.task_type === null ? undefined : input.task_type
+      changes.push("task_type")
+    }
+    if (input.scope !== undefined && input.scope !== target.scope) {
+      next.scope = input.scope
+      changes.push("scope")
+    }
+    if (input.categories !== undefined) {
+      const slugged = uniqueStrings(input.categories.map(slugifyCategory))
+      if (slugged.join("|") !== (target.categories ?? []).join("|")) {
+        next.categories = slugged
+        changes.push("categories")
+      }
+    }
+    if (changes.length === 0) return { ok: true as const, experience: { ...target, path: target.path } }
+
+    const prevSnapshot: RefinementSnapshot = {
+      title: target.title,
+      abstract: target.abstract,
+      statement: target.statement,
+      trigger_condition: target.trigger_condition,
+      task_type: target.task_type,
+      scope: target.scope,
+      kind: target.kind,
+      categories: target.categories,
+    }
+    next.refinement_history = [
+      ...target.refinement_history,
+      {
+        at: nowMs(),
+        trigger_observation_id: "manual_edit",
+        prev_abstract_digest: sha1Short(compactText(target.abstract).toLowerCase(), 12),
+        prev_snapshot: prevSnapshot,
+        kind: "manual_edit",
+        source_ids: changes,
+        model: "manual",
+      },
+    ]
+    const filepath = await writeExperience(next)
+    if (next.categories && next.categories.length > 0) {
+      for (const slug of next.categories) await registerCategory(slug, next.id)
+    }
+    return { ok: true as const, experience: { ...next, path: rel(filepath) } }
+  }
+
+  // ---------- Manual re-refine (same observations) ----------
+
+  export async function reRefine(id: string) {
+    const target = await getExperienceByID(id)
+    if (!target) return { ok: false as const, error: "not_found" }
+    if (target.observations.length === 0) return { ok: false as const, error: "no_observations" }
+    const trigger = target.observations[target.observations.length - 1]
+    const result = await attachAndRefine({
+      experience: { ...target, observations: target.observations.slice(0, -1), path: target.path },
+      observation: trigger,
+      historyKind: "re_refine",
+    })
+    if (!result.attached) return { ok: false as const, error: result.reason }
+    return { ok: true as const, experience: result.experience }
+  }
+
+  // ---------- Undo last refinement ----------
+
+  export async function undoRefinement(id: string) {
+    const target = await getExperienceByID(id)
+    if (!target) return { ok: false as const, error: "not_found" }
+    const last = target.refinement_history[target.refinement_history.length - 1]
+    if (!last || !last.prev_snapshot) {
+      return { ok: false as const, error: "no_undoable_history" }
+    }
+    const snap = last.prev_snapshot
+    const kindChanged = snap.kind && snap.kind !== target.kind
+    const restored: Experience = {
+      ...target,
+      kind: snap.kind ?? target.kind,
+      title: snap.title,
+      abstract: snap.abstract,
+      statement: snap.statement,
+      trigger_condition: snap.trigger_condition,
+      task_type: snap.task_type,
+      scope: snap.scope ?? target.scope,
+      categories: snap.categories ?? target.categories,
+      refinement_history: [
+        ...target.refinement_history.slice(0, -1),
+        {
+          at: nowMs(),
+          trigger_observation_id: last.trigger_observation_id,
+          kind: "undo",
+          model: "manual",
+          prev_snapshot: {
+            title: target.title,
+            abstract: target.abstract,
+            statement: target.statement,
+            trigger_condition: target.trigger_condition,
+            task_type: target.task_type,
+            scope: target.scope,
+            kind: target.kind,
+            categories: target.categories,
+          },
+        },
+      ],
+    }
+    if (kindChanged) {
+      const cfg = await settings()
+      await unlink(experienceFilepath(cfg.base, target)).catch(() => {})
+    }
+    const filepath = await writeExperience(restored)
+    return { ok: true as const, experience: { ...restored, path: rel(filepath) } }
+  }
+
+  // ---------- Observation-level ops ----------
+
+  export async function deleteObservation(input: { experience_id: string; observation_id: string }) {
+    const target = await getExperienceByID(input.experience_id)
+    if (!target) return { ok: false as const, error: "not_found" }
+    const obs = target.observations.find((o) => o.id === input.observation_id)
+    if (!obs) return { ok: false as const, error: "observation_not_found" }
+    const cfg = await settings()
+    await unlink(observationFilepath(cfg.base, obs)).catch(() => {})
+
+    const remaining = target.observations.filter((o) => o.id !== input.observation_id)
+    // If no observations remain, auto-archive the experience to prevent an orphan hero.
+    if (remaining.length === 0) {
+      const archived: Experience = { ...target, observations: [], archived: true, archived_at: nowMs() }
+      const filepath = await writeExperience(archived)
+      return { ok: true as const, auto_archived: true as const, experience: { ...archived, path: rel(filepath) } }
+    }
+    const next: Experience = { ...target, observations: remaining }
+    const filepath = await writeExperience(next)
+    return { ok: true as const, auto_archived: false as const, experience: { ...next, path: rel(filepath) } }
+  }
+
+  export async function moveObservation(input: {
+    observation_id: string
+    from_experience_id: string
+    to_experience_id: string
+  }) {
+    if (input.from_experience_id === input.to_experience_id) {
+      return { ok: false as const, error: "same_experience" }
+    }
+    const from = await getExperienceByID(input.from_experience_id)
+    const to = await getExperienceByID(input.to_experience_id)
+    if (!from) return { ok: false as const, error: "from_not_found" }
+    if (!to) return { ok: false as const, error: "to_not_found" }
+    const obs = from.observations.find((o) => o.id === input.observation_id)
+    if (!obs) return { ok: false as const, error: "observation_not_found" }
+
+    const fromNext: Experience = {
+      ...from,
+      observations: from.observations.filter((o) => o.id !== input.observation_id),
+    }
+    await writeExperience(fromNext)
+
+    const attachResult = await attachAndRefine({
+      experience: to,
+      observation: obs,
+      historyKind: "manual_augment",
+    })
+    if (!attachResult.attached) return { ok: false as const, error: attachResult.reason }
+    return { ok: true as const, from: fromNext, to: attachResult.experience }
+  }
+
+  // ---------- Merge ----------
+
+  export async function mergeExperiences(input: { ids: string[]; reason?: string }) {
+    if (input.ids.length < 2) return { ok: false as const, error: "need_at_least_two" }
+    const all = await listExperiences()
+    const sources = input.ids
+      .map((id) => all.find((e) => e.id === id))
+      .filter((e): e is ExperienceWithPath => !!e)
+    if (sources.length < 2) return { ok: false as const, error: "missing_sources" }
+
+    // Combine observations (de-dup by id), pick seed experience for primary fields
+    const allObs = new Map<string, Observation>()
+    for (const src of sources) for (const obs of src.observations) allObs.set(obs.id, obs)
+    const mergedObs = [...allObs.values()].sort((a, b) => a.observed_at - b.observed_at)
+
+    const seed = sources.reduce((a, b) => (a.last_refined_at >= b.last_refined_at ? a : b))
+    const mergedCategories = uniqueStrings(sources.flatMap((s) => s.categories ?? []))
+    const mergedRelated = uniqueStrings(
+      sources.flatMap((s) => s.related_experience_ids).filter((id) => !input.ids.includes(id)),
+    )
+
+    const synthesizedExperience: Experience = {
+      ...seed,
+      id: sha1Short(`merge:${input.ids.join(",")}:${nowMs()}`, 12),
+      observations: mergedObs,
+      categories: mergedCategories,
+      related_experience_ids: mergedRelated,
+      conflicts_with: [],
+      refinement_history: [],
+      archived: false,
+      created_at: nowMs(),
+      last_refined_at: nowMs(),
+    }
+
+    // Ask the LLM to merge: we call refineExperience on the synthesized experience,
+    // with the last observation as trigger. The refiner already sees all observations.
+    const trigger = mergedObs[mergedObs.length - 1]
+    let refined = await refineExperience({ experience: synthesizedExperience, triggerObservation: trigger })
+
+    // If the LLM failed or produced a placeholder abstract, retry once; if still
+    // bad, FALL BACK to the seed experience's metadata so the merge itself still
+    // completes. The user can always trigger a manual re-refine on the result.
+    let synthesisFallback = false
+    if (!refined || abstractLooksLikePlaceholder(refined.abstract)) {
+      log.warn("merge refine produced invalid output; retrying", {
+        seed_id: seed.id,
+        source_ids: input.ids,
+        had_output: Boolean(refined),
+      })
+      refined = await refineExperience({ experience: synthesizedExperience, triggerObservation: trigger })
+    }
+    if (!refined || abstractLooksLikePlaceholder(refined.abstract)) {
+      log.warn("merge refine failed after retry; falling back to seed metadata", {
+        seed_id: seed.id,
+        source_ids: input.ids,
+      })
+      synthesisFallback = true
+      refined = {
+        kind: seed.kind,
+        title: seed.title,
+        abstract: seed.abstract,
+        statement: seed.statement,
+        trigger_condition: seed.trigger_condition,
+        task_type: seed.task_type,
+        scope: seed.scope,
+        categories: mergedCategories,
+        conflicts_with: [],
+      }
+    }
+
+    const resolved = await resolveRefinerModel()
+    const modelTag = resolved?.selected ? `${resolved.selected.providerID}/${resolved.selected.modelID}` : "unknown"
+    const merged: Experience = {
+      ...synthesizedExperience,
+      kind: refined.kind,
+      title: refined.title,
+      abstract: refined.abstract,
+      statement: blankToUndefined(refined.statement),
+      trigger_condition: blankToUndefined(refined.trigger_condition),
+      task_type: blankToUndefined(refined.task_type) ?? synthesizedExperience.task_type,
+      scope: refined.scope,
+      categories: uniqueStrings([...(refined.categories ?? []), ...mergedCategories]),
+      refinement_history: [
+        {
+          at: nowMs(),
+          trigger_observation_id: trigger.id,
+          kind: "merge",
+          source_ids: input.ids,
+          model: synthesisFallback ? `${modelTag}:fallback` : modelTag,
+        },
+      ],
+    }
+    const filepath = await writeExperience(merged)
+    if (merged.kind.startsWith("custom:")) await registerCustomKind(merged.kind, merged.id)
+    for (const slug of merged.categories) await registerCategory(slug, merged.id)
+
+    // Archive (not delete) the sources; audit the merge.
+    for (const src of sources) {
+      const archived: Experience = { ...src, archived: true, archived_at: nowMs() }
+      await writeExperience(archived)
+    }
+    await appendAudit("merged.ndjson", {
+      at: nowMs(),
+      merged_id: merged.id,
+      source_ids: input.ids,
+      reason: input.reason ?? "user_merge",
+      synthesis_fallback: synthesisFallback ? true : undefined,
+    })
+    return {
+      ok: true as const,
+      experience: { ...merged, path: rel(filepath) },
+      synthesisFallback,
+    }
+  }
+
+  // ---------- Search ----------
+
+  export async function search(input: { q: string; limit?: number; includeArchived?: boolean }) {
+    const q = input.q.trim().toLowerCase()
+    if (!q) return { results: [] as Array<{ experience_id: string; score: number; where: string }> }
+    const all = await listExperiences()
+    const limit = input.limit ?? 20
+    const scored: Array<{ experience_id: string; score: number; where: string; exp: Experience }> = []
+    for (const exp of all) {
+      if (!input.includeArchived && exp.archived) continue
+      let score = 0
+      const where: string[] = []
+      const hay = {
+        title: exp.title.toLowerCase(),
+        abstract: exp.abstract.toLowerCase(),
+        statement: (exp.statement ?? "").toLowerCase(),
+        task_type: (exp.task_type ?? "").toLowerCase(),
+        categories: (exp.categories ?? []).join(" ").toLowerCase(),
+      }
+      if (hay.title.includes(q)) { score += 5; where.push("title") }
+      if (hay.abstract.includes(q)) { score += 3; where.push("abstract") }
+      if (hay.statement.includes(q)) { score += 3; where.push("statement") }
+      if (hay.task_type.includes(q)) { score += 2; where.push("task_type") }
+      if (hay.categories.includes(q)) { score += 2; where.push("categories") }
+      for (const obs of exp.observations) {
+        if (obs.user_text.toLowerCase().includes(q)) { score += 1; where.push("observation"); break }
+      }
+      if (score > 0) scored.push({ experience_id: exp.id, score, where: where.join(","), exp })
+    }
+    scored.sort((a, b) => b.score - a.score || b.exp.last_refined_at - a.exp.last_refined_at)
+    return {
+      results: scored.slice(0, limit).map((s) => ({
+        experience_id: s.experience_id,
+        score: s.score,
+        where: s.where,
+        title: s.exp.title,
+        abstract: clipText(s.exp.abstract, 180),
+        kind: s.exp.kind,
+        archived: !!s.exp.archived,
+      })),
+    }
+  }
+
+  // ---------- Batch ingest from historical session ----------
+
+  export async function ingestSession(input: { sessionID: string }) {
+    const cfg = await settings()
+    const stats = { processed: 0, observed: 0, skipped: 0 }
+    const messages = await Session.messages({ sessionID: SessionID.make(input.sessionID), limit: 500 }).catch(
+      () => [],
+    )
+    for (const msg of messages) {
+      stats.processed++
+      if (msg.info.role !== "user") { stats.skipped++; continue }
+      const text = msg.parts
+        .flatMap((p) => (p.type === "text" && !p.synthetic && !p.ignored ? [p.text.trim()] : []))
+        .filter(Boolean)
+        .join("\n")
+        .trim()
+      if (!text) { stats.skipped++; continue }
+      const observedAt = msg.info.time.created
+      const observation: Observation = {
+        id: `${input.sessionID}:${msg.info.id}:${observedAt}`,
+        observed_at: observedAt,
+        session_id: input.sessionID,
+        message_id: msg.info.id,
+        user_text: text,
+        source: "ingest",
+        agent_context: {
+          session_history_excerpt: [],
+        },
+      }
+      await writeObservation(observation)
+      try {
+        await observeObservation(observation)
+        stats.observed++
+      } catch (err) {
+        log.warn("ingest observeObservation failed", { err, message_id: msg.info.id })
+        stats.skipped++
+      }
+    }
+    await appendAudit("ingested.ndjson", {
+      at: nowMs(),
+      session_id: input.sessionID,
+      stats,
+      base: cfg.base,
+    })
+    return { ok: true as const, stats }
+  }
+
+  // ---------- Export / Import ----------
+
+  export async function exportArchive(): Promise<{ base: string; files: string[] }> {
+    const cfg = await settings()
+    const files = (
+      await Glob.scan("**/*", { cwd: cfg.base, absolute: true, dot: true, include: "file" }).catch(() => [])
+    ).sort()
+    return { base: cfg.base, files: files.map((f) => rel(f)) }
+  }
+
+  export async function exportJson(): Promise<Record<string, unknown>> {
+    const cfg = await settings()
+    const experiences = await listExperiences()
+    const taxonomyObj = await listKinds().catch(() => ({ core: [], custom: [] }))
+    const categoriesObj = await listCategories().catch(() => ({ categories: [] }))
+    const configObj = (await readConfigOverride()) ?? null
+    return {
+      version: 2,
+      exported_at: nowMs(),
+      base: rel(cfg.base),
+      experiences,
+      taxonomy: taxonomyObj,
+      categories: categoriesObj,
+      config: configObj,
+    }
+  }
+
+  export async function importJson(input: { data: unknown; mode?: "merge" | "replace" }) {
+    const parsed = z
+      .object({
+        version: z.number(),
+        experiences: z.array(ExperienceSchema),
+      })
+      .safeParse(input.data)
+    if (!parsed.success) return { ok: false as const, error: "invalid_payload", details: parsed.error.message }
+    const mode = input.mode ?? "merge"
+    const cfg = await settings()
+    if (mode === "replace") {
+      // Move existing experience dir to a timestamped archive instead of rm -rf
+      const stamp = new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14)
+      const existingDir = path.join(cfg.base, "experiences")
+      const archiveDir = path.join(cfg.base, `experiences.pre-import-${stamp}`)
+      if (await Filesystem.exists(existingDir)) {
+        await Bun.write(path.join(archiveDir, ".placeholder"), "").catch(() => {})
+      }
+    }
+    let imported = 0
+    for (const exp of parsed.data.experiences) {
+      await writeExperience(exp)
+      imported++
+    }
+    return { ok: true as const, imported }
+  }
+
+  // ---------- Categories ----------
+
+  export async function categories() {
+    return listCategories()
+  }
+
+  export async function overview(input: {
+    sessionID?: string
+    workflowID?: string
+    limit?: number
+    includeArchived?: boolean
+    /**
+     * "all" (default): return every experience regardless of origin session/workflow.
+     * "session": only experiences that have an observation from sessionID.
+     * "workflow": only experiences that have an observation from workflowID.
+     */
+    scope?: "all" | "session" | "workflow"
+  }): Promise<RefinerOverview> {
+    const all = await listExperiences()
+    const base = input.includeArchived ? all : all.filter((exp) => !exp.archived)
+    const scope = input.scope ?? "all"
+    let filtered = base
+    if (scope === "session" && input.sessionID) {
+      filtered = base.filter((exp) => exp.observations.some((o) => o.session_id === input.sessionID))
+    } else if (scope === "workflow" && input.workflowID) {
+      filtered = base.filter((exp) =>
+        exp.observations.some((o) => o.agent_context.workflow_snapshot?.workflow_id === input.workflowID),
+      )
+    }
+    // Order: most recently refined first, so new distillations surface at the top.
+    filtered = [...filtered].sort((a, b) => b.last_refined_at - a.last_refined_at)
+    const limited = filtered.slice(0, input.limit ?? 40)
+    const latest = limited.reduce<number | undefined>(
+      (acc, exp) => (acc === undefined || exp.last_refined_at > acc ? exp.last_refined_at : acc),
+      undefined,
+    )
+    const resolved = await resolveRefinerModel()
+    const totalObservations = limited.reduce((sum, exp) => sum + exp.observations.length, 0)
+    return {
+      schema_version: 2,
+      status: {
+        total_experiences: limited.length,
+        total_observations: totalObservations,
+        latest_refined_at: latest,
+      },
+      model: resolved?.selected,
+      experiences: limited,
+      graph: buildOverviewGraph(limited),
     }
   }
 }

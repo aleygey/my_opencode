@@ -116,6 +116,7 @@ export type WorkflowAppProps = {
   tokenStats?: TokenStats
   sandTables?: Record<string, SandTableDiscussion | undefined>
   onSession: (node?: string) => void
+  onRefiner?: (node?: string) => void
   onTaskSelect?: (task: string) => void
   onModel: (nodeIDs?: string[]) => void
   onModelChange?: (model: string) => void
@@ -431,6 +432,12 @@ export function WorkflowApp(props: WorkflowAppProps) {
           nodeProgress={nodeProgress}
           tokenStats={props.tokenStats}
           onTaskSidebarToggle={() => setSidebar((v) => !v)}
+          onDetailClick={() => {
+            if (!pick) return
+            setSessionNode(pick)
+          }}
+          onSessionClick={() => props.onSession()}
+          onRefinerClick={() => props.onRefiner?.(node?.id)}
           onModelClick={props.onModel}
           onRunClick={() => props.onRun(node?.id)}
           onRestartClick={() => props.onRestart(node?.id)}

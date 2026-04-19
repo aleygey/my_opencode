@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import { useCallback, useEffect, useState } from 'react'
-import { Moon, PanelLeftOpen, Settings2, Square, Sun, Play, Pause, RotateCcw, Zap, Gauge } from 'lucide-react'
+import { Eye, MessageSquare, Moon, PanelLeftOpen, Settings2, Square, Sun, Play, Pause, RotateCcw, Zap, Gauge, Layers3 } from 'lucide-react'
 import { Spin } from './spin'
 import type { TokenStats } from '../app'
 
@@ -102,9 +102,9 @@ interface TopBarProps {
   nodeProgress?: { done: number; total: number }
   tokenStats?: TokenStats
   onTaskSidebarToggle?: () => void
-  // Detail / Session buttons removed in favour of clicking the card arrow
-  // (which now opens the per-node session view in-place). They were redundant
-  // and the Session button was a near-noop — see removal in commit history.
+  onDetailClick: () => void
+  onSessionClick: () => void
+  onRefinerClick?: () => void
   onModelClick?: () => void
   onRunClick?: () => void
   onRestartClick?: () => void
@@ -119,6 +119,9 @@ export function TopBar({
   nodeProgress,
   tokenStats,
   onTaskSidebarToggle,
+  onDetailClick,
+  onSessionClick,
+  onRefinerClick,
   onModelClick,
   onRunClick,
   onRestartClick,
@@ -240,6 +243,20 @@ export function TopBar({
             </div>
             <div className="wf-topbar-sep mx-0.5" />
           </>
+        )}
+        <button onClick={onDetailClick} className="wf-topbar-text-btn">
+          <Eye className="h-3.5 w-3.5" strokeWidth={1.6} />
+          <span>Detail</span>
+        </button>
+        <button onClick={onSessionClick} className="wf-topbar-text-btn">
+          <MessageSquare className="h-3.5 w-3.5" strokeWidth={1.6} />
+          <span>Session</span>
+        </button>
+        {onRefinerClick && (
+          <button onClick={onRefinerClick} className="wf-topbar-text-btn">
+            <Layers3 className="h-3.5 w-3.5" strokeWidth={1.6} />
+            <span>Refiner</span>
+          </button>
         )}
         <button onClick={onModelClick} className="wf-topbar-icon-btn">
           <Settings2 className="h-3.5 w-3.5" strokeWidth={1.6} />

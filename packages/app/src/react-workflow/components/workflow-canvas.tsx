@@ -208,14 +208,15 @@ function RootAgentCard({ root, chainCount, onClick }: { root: RootAgent; chainCo
           <div className="flex items-center gap-2">
             <span className="truncate text-[12px] font-bold tracking-[-0.02em] text-[var(--wf-ink)]">{root.title}</span>
             {run && (
-              <span className="wf-root-agent-live">
-                <Sparkles className="h-2 w-2" strokeWidth={2} />
+              <span className="wf-root-agent-live font-mono">
+                <Sparkles className="h-2.5 w-2.5" strokeWidth={2} />
                 LIVE
               </span>
             )}
           </div>
-          <div className="flex items-center gap-1.5 text-[10px]">
-            <span className="font-medium text-[var(--wf-ink-soft)]">{root.phase}</span>
+
+          <div className="mt-1 flex items-center gap-2 text-[10.5px]">
+            <span className="font-mono font-medium text-[var(--wf-ink-soft)]">{root.phase}</span>
             {root.model && (
               <>
                 <span className="text-[var(--wf-line-strong)]">&middot;</span>
@@ -223,20 +224,29 @@ function RootAgentCard({ root, chainCount, onClick }: { root: RootAgent; chainCo
               </>
             )}
             <span className="text-[var(--wf-line-strong)]">&middot;</span>
-            <span className="inline-flex items-center gap-1 text-[var(--wf-dim)]">
-              <GitBranch className="h-2 w-2" strokeWidth={2} />
-              {chainCount}
+            <span className="inline-flex items-center gap-1 font-mono text-[var(--wf-dim)]">
+              <GitBranch className="h-2.5 w-2.5" strokeWidth={2} />
+              {chainCount} {chainCount === 1 ? 'chain' : 'chains'}
             </span>
           </div>
         </div>
 
-        <div className="flex flex-shrink-0 items-center gap-2">
-          <div className="wf-root-agent-progress" style={{ width: 48 }}>
-            <div
-              className="wf-progress-fill"
-              data-animated={run ? '' : undefined}
-              style={{ width: `${progress}%` }}
-            />
+          <p className="mt-2 text-[11px] leading-[1.6] text-[var(--wf-dim)]">{root.goal}</p>
+
+          <div className="mt-3 flex items-center gap-3">
+            <div className="wf-root-agent-progress">
+              <div
+                className="wf-progress-fill"
+                data-animated={run ? '' : undefined}
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+            <span className="font-mono text-[10px] font-bold tabular-nums text-[var(--wf-dim)]">
+              {root.completedCount}/{root.nodeCount}
+            </span>
+            {run && (
+              <span className="font-mono text-[10px] font-bold tabular-nums text-[var(--wf-ok)]">{progress}%</span>
+            )}
           </div>
           <span className="text-[9.5px] font-bold tabular-nums text-[var(--wf-dim)]">
             {root.completedCount}/{root.nodeCount}
@@ -479,11 +489,11 @@ function ChainLane({
       {collapsed && (
         <div className="wf-lane-collapsed wf-fade-in">
           <div className="wf-lane-collapsed-bar" style={{ background: color.accent }} />
-          <span className="wf-lane-collapsed-text">
+          <span className="wf-lane-collapsed-text font-mono">
             {completedCount}/{chain.nodes.length} completed
           </span>
           {runningCount > 0 && (
-            <span className="wf-lane-collapsed-running" style={{ color: color.accent }}>
+            <span className="wf-lane-collapsed-running font-mono" style={{ color: color.accent }}>
               {runningCount} running
             </span>
           )}
@@ -587,7 +597,7 @@ export function WorkflowCanvas({ root, chains, selectedNodeId, onNodeSelect, onN
       {/* Canvas controls — always visible */}
       <div className="wf-canvas-controls">
         {/* Zoom level */}
-        <span className="text-[10px] font-bold tabular-nums text-[var(--wf-dim)]">{zoomPct}%</span>
+        <span className="font-mono text-[10px] font-bold tabular-nums text-[var(--wf-dim)]">{zoomPct}%</span>
 
         {/* Reset / Locate root button */}
         <button

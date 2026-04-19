@@ -18,6 +18,7 @@ import { lazy } from "../../util/lazy"
 import { Effect, Option } from "effect"
 import { WorkspaceRoutes } from "./workspace"
 import { Agent } from "@/agent/agent"
+import { Refiner } from "@/refiner"
 
 const ConsoleOrgOption = z.object({
   accountID: z.string(),
@@ -140,6 +141,551 @@ export const ExperimentalRoutes = lazy(() =>
           }),
         )
         return c.json(true)
+      },
+    )
+    .get(
+      "/refiner/overview",
+      describeRoute({
+        summary: "Get refiner overview",
+        description:
+          "Get refiner status, model, distilled experiences, their attached observations, and graph relations for the current session or workflow.",
+        operationId: "experimental.refiner.overview.get",
+        responses: {
+          200: {
+            description: "Refiner overview",
+            content: {
+              "application/json": {
+                schema: resolver(z.record(z.string(), z.unknown())),
+              },
+            },
+          },
+        },
+      }),
+      validator(
+        "query",
+        z.object({
+          session_id: z.string().optional(),
+          workflow_id: z.string().optional(),
+          limit: z.coerce.number().optional(),
+          include_archived: z.coerce.boolean().optional(),
+          scope: z.enum(["all", "session", "workflow"]).optional(),
+        }),
+      ),
+      async (c) => {
+        const query = c.req.valid("query")
+        return c.json(
+          await Refiner.overview({
+            sessionID: query.session_id,
+            workflowID: query.workflow_id,
+            limit: query.limit ?? 40,
+            includeArchived: query.include_archived,
+            scope: query.scope,
+          }),
+        )
+      },
+    )
+    .get(
+      "/refiner/experience/:id",
+      describeRoute({
+        summary: "Get refiner experience detail",
+        description: "Fetch a single distilled experience with all attached observations and refinement history.",
+        operationId: "experimental.refiner.experience.get",
+        responses: {
+          200: {
+            description: "Refiner experience",
+            content: {
+              "application/json": {
+                schema: resolver(z.record(z.string(), z.unknown())),
+              },
+            },
+          },
+          ...errors(400),
+        },
+      }),
+      async (c) => {
+        const id = c.req.param("id")
+        const exp = await Refiner.experienceByID(id)
+        if (!exp) return c.json({ error: "not_found", id }, 404)
+        return c.json(exp)
+      },
+    )
+    .get(
+      "/refiner/taxonomy",
+      describeRoute({
+        summary: "Get refiner taxonomy",
+        description: "List refiner experience kinds: the 7 core kinds plus any dynamically discovered custom kinds.",
+        operationId: "experimental.refiner.taxonomy.get",
+        responses: {
+          200: {
+            description: "Refiner taxonomy",
+            content: {
+              "application/json": {
+                schema: resolver(z.record(z.string(), z.unknown())),
+              },
+            },
+          },
+        },
+      }),
+      async (c) => {
+        return c.json(await Refiner.taxonomy())
+      },
+    )
+    .get(
+      "/refiner/config",
+      describeRoute({
+        summary: "Get refiner config",
+        description:
+          "Get the refiner agent's currently resolved model plus its source (runtime override, agent config, or provider default) and any persisted override.",
+        operationId: "experimental.refiner.config.get",
+        responses: {
+          200: {
+            description: "Refiner config",
+            content: {
+              "application/json": {
+                schema: resolver(z.record(z.string(), z.unknown())),
+              },
+            },
+          },
+        },
+      }),
+      async (c) => {
+        return c.json(await Refiner.config())
+      },
+    )
+    .put(
+      "/refiner/config",
+      describeRoute({
+        summary: "Update refiner config",
+        description:
+          "Persist a runtime override for the refiner agent's model (and optional temperature). Pass `model: null` to clear the override.",
+        operationId: "experimental.refiner.config.update",
+        responses: {
+          200: {
+            description: "Updated refiner config",
+            content: {
+              "application/json": {
+                schema: resolver(z.record(z.string(), z.unknown())),
+              },
+            },
+          },
+          ...errors(400),
+        },
+      }),
+      validator(
+        "json",
+        z.object({
+          model: z
+            .union([
+              z.object({
+                providerID: z.string().min(1),
+                modelID: z.string().min(1),
+              }),
+              z.null(),
+            ])
+            .optional(),
+          temperature: z.union([z.number().min(0).max(2), z.null()]).optional(),
+        }),
+      ),
+      async (c) => {
+        const body = c.req.valid("json")
+        return c.json(await Refiner.setConfig(body))
+      },
+    )
+    .get(
+      "/refiner/categories",
+      describeRoute({
+        summary: "List refiner categories",
+        description:
+          "Return the auto-maintained category index (category slug → experience IDs + count).",
+        operationId: "experimental.refiner.categories.list",
+        responses: {
+          200: {
+            description: "Categories",
+            content: { "application/json": { schema: resolver(z.record(z.string(), z.unknown())) } },
+          },
+        },
+      }),
+      async (c) => {
+        return c.json(await Refiner.categories())
+      },
+    )
+    .delete(
+      "/refiner/experience/:id",
+      describeRoute({
+        summary: "Delete experience",
+        description:
+          "Delete an experience (cascade-remove its attached observations by default) and append a deleted.ndjson audit entry.",
+        operationId: "experimental.refiner.experience.delete",
+        responses: {
+          200: {
+            description: "Deletion result",
+            content: { "application/json": { schema: resolver(z.record(z.string(), z.unknown())) } },
+          },
+          ...errors(400),
+        },
+      }),
+      validator(
+        "query",
+        z.object({
+          cascade: z.coerce.boolean().optional(),
+          reason: z.string().optional(),
+        }),
+      ),
+      async (c) => {
+        const id = c.req.param("id")
+        const q = c.req.valid("query")
+        const result = await Refiner.deleteExperience(id, {
+          cascadeObservations: q.cascade ?? true,
+          reason: q.reason,
+        })
+        if (!result.ok) return c.json({ error: result.error, id }, 404)
+        return c.json(result)
+      },
+    )
+    .post(
+      "/refiner/experience/:id/archive",
+      describeRoute({
+        summary: "Archive experience",
+        description: "Flag an experience as archived; overview hides archived experiences by default.",
+        operationId: "experimental.refiner.experience.archive",
+        responses: {
+          200: {
+            description: "Archive result",
+            content: { "application/json": { schema: resolver(z.record(z.string(), z.unknown())) } },
+          },
+          ...errors(400),
+        },
+      }),
+      validator("json", z.object({ archived: z.boolean() })),
+      async (c) => {
+        const id = c.req.param("id")
+        const { archived } = c.req.valid("json")
+        const result = await Refiner.setArchived(id, archived)
+        if (!result.ok) return c.json({ error: result.error, id }, 404)
+        return c.json(result)
+      },
+    )
+    .post(
+      "/refiner/experience/:id/observation",
+      describeRoute({
+        summary: "Augment experience (add observation + re-refine)",
+        description:
+          "Attach a user-supplied observation to an existing experience and trigger a fresh refinement.",
+        operationId: "experimental.refiner.experience.augment",
+        responses: {
+          200: {
+            description: "Augmented experience",
+            content: { "application/json": { schema: resolver(z.record(z.string(), z.unknown())) } },
+          },
+          ...errors(400),
+        },
+      }),
+      validator(
+        "json",
+        z.object({
+          user_text: z.string().min(1),
+          note: z.string().optional(),
+        }),
+      ),
+      async (c) => {
+        const id = c.req.param("id")
+        const body = c.req.valid("json")
+        const result = await Refiner.augmentExperience({
+          id,
+          user_text: body.user_text,
+          note: body.note,
+        })
+        if (!result.ok) return c.json({ error: result.error, id }, 400)
+        return c.json(result)
+      },
+    )
+    .post(
+      "/refiner/experience",
+      describeRoute({
+        summary: "Create experience (agent-assisted)",
+        description:
+          "Create a new experience from a free-text prompt. The refiner LLM derives title/abstract/kind/categories.",
+        operationId: "experimental.refiner.experience.create",
+        responses: {
+          200: {
+            description: "Created experience",
+            content: { "application/json": { schema: resolver(z.record(z.string(), z.unknown())) } },
+          },
+          ...errors(400),
+        },
+      }),
+      validator(
+        "json",
+        z.object({
+          user_text: z.string().min(1),
+          kind_hint: z.string().optional(),
+          scope_hint: z.enum(["workspace", "project", "repo", "user"]).optional(),
+          task_type_hint: z.string().optional(),
+          note: z.string().optional(),
+        }),
+      ),
+      async (c) => {
+        const body = c.req.valid("json")
+        const result = await Refiner.createExperienceFromText({
+          user_text: body.user_text,
+          kind_hint: body.kind_hint as any,
+          scope_hint: body.scope_hint,
+          task_type_hint: body.task_type_hint,
+          note: body.note,
+        })
+        if (!result.ok) return c.json({ error: result.error }, 400)
+        return c.json(result)
+      },
+    )
+    .patch(
+      "/refiner/experience/:id",
+      describeRoute({
+        summary: "Manually edit experience (no LLM)",
+        description:
+          "Patch title/abstract/statement/scope/task_type/categories in place. Records a manual_edit refinement history entry with a snapshot for undo.",
+        operationId: "experimental.refiner.experience.patch",
+        responses: {
+          200: {
+            description: "Patched experience",
+            content: { "application/json": { schema: resolver(z.record(z.string(), z.unknown())) } },
+          },
+          ...errors(400),
+        },
+      }),
+      validator(
+        "json",
+        z.object({
+          title: z.string().optional(),
+          abstract: z.string().optional(),
+          statement: z.union([z.string(), z.null()]).optional(),
+          trigger_condition: z.union([z.string(), z.null()]).optional(),
+          task_type: z.union([z.string(), z.null()]).optional(),
+          scope: z.enum(["workspace", "project", "repo", "user"]).optional(),
+          categories: z.array(z.string()).optional(),
+        }),
+      ),
+      async (c) => {
+        const id = c.req.param("id")
+        const body = c.req.valid("json")
+        const result = await Refiner.patchExperience({ id, ...body })
+        if (!result.ok) return c.json({ error: result.error, id }, 404)
+        return c.json(result)
+      },
+    )
+    .post(
+      "/refiner/experience/:id/refine",
+      describeRoute({
+        summary: "Re-refine experience",
+        description: "Re-run the refiner LLM on an experience's existing observations without adding new ones.",
+        operationId: "experimental.refiner.experience.reRefine",
+        responses: {
+          200: {
+            description: "Re-refined experience",
+            content: { "application/json": { schema: resolver(z.record(z.string(), z.unknown())) } },
+          },
+          ...errors(400),
+        },
+      }),
+      async (c) => {
+        const id = c.req.param("id")
+        const result = await Refiner.reRefine(id)
+        if (!result.ok) return c.json({ error: result.error, id }, 400)
+        return c.json(result)
+      },
+    )
+    .post(
+      "/refiner/experience/:id/undo-refinement",
+      describeRoute({
+        summary: "Undo last refinement",
+        description: "Restore an experience to the snapshot recorded in its most recent refinement_history entry.",
+        operationId: "experimental.refiner.experience.undoRefinement",
+        responses: {
+          200: {
+            description: "Restored experience",
+            content: { "application/json": { schema: resolver(z.record(z.string(), z.unknown())) } },
+          },
+          ...errors(400),
+        },
+      }),
+      async (c) => {
+        const id = c.req.param("id")
+        const result = await Refiner.undoRefinement(id)
+        if (!result.ok) return c.json({ error: result.error, id }, 400)
+        return c.json(result)
+      },
+    )
+    .delete(
+      "/refiner/experience/:experience_id/observation/:observation_id",
+      describeRoute({
+        summary: "Delete observation",
+        description: "Remove a single observation from an experience; auto-archives the experience if it was the last one.",
+        operationId: "experimental.refiner.observation.delete",
+        responses: {
+          200: {
+            description: "Delete result",
+            content: { "application/json": { schema: resolver(z.record(z.string(), z.unknown())) } },
+          },
+          ...errors(400),
+        },
+      }),
+      async (c) => {
+        const result = await Refiner.deleteObservation({
+          experience_id: c.req.param("experience_id"),
+          observation_id: c.req.param("observation_id"),
+        })
+        if (!result.ok) return c.json({ error: result.error }, 404)
+        return c.json(result)
+      },
+    )
+    .post(
+      "/refiner/observation/move",
+      describeRoute({
+        summary: "Move observation between experiences",
+        description: "Detach an observation from one experience and re-attach it (with re-refine) to another.",
+        operationId: "experimental.refiner.observation.move",
+        responses: {
+          200: {
+            description: "Move result",
+            content: { "application/json": { schema: resolver(z.record(z.string(), z.unknown())) } },
+          },
+          ...errors(400),
+        },
+      }),
+      validator(
+        "json",
+        z.object({
+          observation_id: z.string().min(1),
+          from_experience_id: z.string().min(1),
+          to_experience_id: z.string().min(1),
+        }),
+      ),
+      async (c) => {
+        const body = c.req.valid("json")
+        const result = await Refiner.moveObservation(body)
+        if (!result.ok) return c.json({ error: result.error }, 400)
+        return c.json(result)
+      },
+    )
+    .post(
+      "/refiner/experience/merge",
+      describeRoute({
+        summary: "Merge experiences",
+        description:
+          "Combine multiple experiences into a new one (LLM re-synthesizes title/abstract/statement); source experiences are archived and merge audit is recorded.",
+        operationId: "experimental.refiner.experience.merge",
+        responses: {
+          200: {
+            description: "Merged experience",
+            content: { "application/json": { schema: resolver(z.record(z.string(), z.unknown())) } },
+          },
+          ...errors(400),
+        },
+      }),
+      validator(
+        "json",
+        z.object({
+          ids: z.array(z.string().min(1)).min(2),
+          reason: z.string().optional(),
+        }),
+      ),
+      async (c) => {
+        const body = c.req.valid("json")
+        const result = await Refiner.mergeExperiences(body)
+        if (!result.ok) return c.json({ error: result.error }, 400)
+        return c.json(result)
+      },
+    )
+    .get(
+      "/refiner/search",
+      describeRoute({
+        summary: "Search refiner experiences",
+        description: "Substring search across title, abstract, statement, task_type, categories, and observation text.",
+        operationId: "experimental.refiner.search",
+        responses: {
+          200: {
+            description: "Search results",
+            content: { "application/json": { schema: resolver(z.record(z.string(), z.unknown())) } },
+          },
+        },
+      }),
+      validator(
+        "query",
+        z.object({
+          q: z.string().min(1),
+          limit: z.coerce.number().optional(),
+          include_archived: z.coerce.boolean().optional(),
+        }),
+      ),
+      async (c) => {
+        const q = c.req.valid("query")
+        return c.json(
+          await Refiner.search({ q: q.q, limit: q.limit, includeArchived: q.include_archived }),
+        )
+      },
+    )
+    .post(
+      "/refiner/ingest-session/:session_id",
+      describeRoute({
+        summary: "Batch ingest session into refiner",
+        description:
+          "Replay all user messages from an existing session through the refiner pipeline. Useful for sedimenting historical conversations.",
+        operationId: "experimental.refiner.ingestSession",
+        responses: {
+          200: {
+            description: "Ingest stats",
+            content: { "application/json": { schema: resolver(z.record(z.string(), z.unknown())) } },
+          },
+          ...errors(400),
+        },
+      }),
+      async (c) => {
+        const sessionID = c.req.param("session_id")
+        return c.json(await Refiner.ingestSession({ sessionID }))
+      },
+    )
+    .get(
+      "/refiner/export",
+      describeRoute({
+        summary: "Export refiner memory",
+        description: "Return the entire refiner memory (experiences, taxonomy, categories, config) as a JSON bundle.",
+        operationId: "experimental.refiner.export",
+        responses: {
+          200: {
+            description: "Export bundle",
+            content: { "application/json": { schema: resolver(z.record(z.string(), z.unknown())) } },
+          },
+        },
+      }),
+      async (c) => {
+        return c.json(await Refiner.exportJson())
+      },
+    )
+    .post(
+      "/refiner/import",
+      describeRoute({
+        summary: "Import refiner memory",
+        description: "Accept a JSON bundle previously produced by /refiner/export and write experiences to disk.",
+        operationId: "experimental.refiner.import",
+        responses: {
+          200: {
+            description: "Import result",
+            content: { "application/json": { schema: resolver(z.record(z.string(), z.unknown())) } },
+          },
+          ...errors(400),
+        },
+      }),
+      validator(
+        "json",
+        z.object({
+          data: z.unknown(),
+          mode: z.enum(["merge", "replace"]).optional(),
+        }),
+      ),
+      async (c) => {
+        const body = c.req.valid("json")
+        const result = await Refiner.importJson({ data: body.data, mode: body.mode })
+        if (!result.ok) return c.json({ error: result.error }, 400)
+        return c.json(result)
       },
     )
     .get(

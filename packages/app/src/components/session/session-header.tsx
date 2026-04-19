@@ -8,6 +8,7 @@ import { Spinner } from "@opencode-ai/ui/spinner"
 import { showToast } from "@opencode-ai/ui/toast"
 import { Tooltip, TooltipKeybind } from "@opencode-ai/ui/tooltip"
 import { getFilename } from "@opencode-ai/util/path"
+import { useLocation, useNavigate } from "@solidjs/router"
 import { createEffect, createMemo, For, onCleanup, Show } from "solid-js"
 import { createStore } from "solid-js/store"
 import { Portal } from "solid-js/web"
@@ -136,6 +137,8 @@ export function SessionHeader() {
   const language = useLanguage()
   const sync = useSync()
   const terminal = useTerminal()
+  const navigate = useNavigate()
+  const location = useLocation()
   const { params, view } = useSessionLayout()
 
   const projectDirectory = createMemo(() => decode64(params.dir) ?? "")
@@ -224,6 +227,8 @@ export function SessionHeader() {
   const tint = createMemo(() =>
     messageAgentColor(params.id ? sync.data.message[params.id] : undefined, sync.data.agent),
   )
+  const refinerHref = createMemo(() => (params.id ? `/${params.dir}/session/${params.id}/refiner` : undefined))
+  const onRefinerPage = createMemo(() => !!refinerHref() && location.pathname === refinerHref())
 
   const selectApp = (app: OpenApp) => {
     if (!options().some((item) => item.id === app)) return
@@ -415,6 +420,19 @@ export function SessionHeader() {
                 </div>
               </Show>
               <div class="flex items-center gap-1">
+                <Show when={refinerHref()}>
+                  {(href) => (
+                    <Tooltip placement="bottom" value="Open refiner sidecar view">
+                      <Button
+                        variant={onRefinerPage() ? "secondary" : "ghost"}
+                        class="titlebar-icon h-6 px-2 text-[11px] font-medium"
+                        onClick={() => navigate(href())}
+                      >
+                        Refiner
+                      </Button>
+                    </Tooltip>
+                  )}
+                </Show>
                 <Tooltip placement="bottom" value={language.t("status.popover.trigger")}>
                   <StatusPopover />
                 </Tooltip>
