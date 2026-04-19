@@ -11,6 +11,7 @@ import { DialogSelectModel } from "@/components/dialog-select-model"
 import { DialogSelectProvider } from "@/components/dialog-select-provider"
 import { useProviders } from "@/hooks/use-providers"
 import { useLocal } from "@/context/local"
+import { getSessionContextMetrics } from "@/components/session/session-context-metrics"
 import { WorkflowApp, type WorkflowAppProps } from "@/react-workflow/app"
 import type { WorkflowPlan } from "@/react-workflow/components/plan-card"
 import type { SandTableDiscussion } from "@/react-workflow/components/sand-table-session-view"
@@ -476,8 +477,23 @@ const sandTableSummary = (messages: Message[], parts: Record<string, Part[] | un
 
   const output = latest.output
   const history = Array.isArray(output?.history) ? output.history : []
+  // When the tool output exceeds opencode's size limit, the runtime replaces
+  // `state.output` with a plain-text notice and JSON.parse returns undefined.
+  // The tool still records the real discussion id under `state.metadata`, so
+  // prefer that — otherwise the fetch URL falls back to the tool part id and
+  // every `/workflow/sand_table/:id` request 404s.
+  const metadata =
+    latest.part.state.status !== "pending" && typeof latest.part.state.metadata === "object"
+      ? (latest.part.state.metadata as Record<string, unknown>)
+      : undefined
+  const metadataID = typeof metadata?.sandTableID === "string" ? metadata.sandTableID : undefined
+  // The backend registers each discussion under both its real `discussionID`
+  // (published via ctx.metadata.sandTableID) AND the tool `callID`, so we can
+  // fall back to callID when metadata hasn't propagated yet. `part.id` is a
+  // last-resort fallback that won't match, but we keep it as a defined id so
+  // React keys stay stable.
   return {
-    id: output?.sand_table_id ?? latest.part.id,
+    id: output?.sand_table_id ?? metadataID ?? latest.part.callID ?? latest.part.id,
     title,
     topic: topic || "Planning discussion",
     status: status as "pending" | "running" | "completed" | "failed",
@@ -1652,6 +1668,25 @@ export function WorkflowRuntimePanel(props: {
     ),
   )
   const sandPlan = createMemo(() => sandTableSummary(sync.data.message[rootID()] ?? [], sync.data.part))
+
+  // Token stats for the root (master) session. We reuse the same helper
+  // the per-session Context tab uses so numbers line up everywhere. The
+  // metric is anchored to the *last* assistant message that reported
+  // tokens — that's the live "context window so far" the orchestrator
+  // is running against, which is what the topbar ring visualises.
+  const tokenStats = createMemo<WorkflowAppProps["tokenStats"]>(() => {
+    const msgs = sync.data.message[rootID()] ?? []
+    if (!msgs.length) return undefined
+    const metrics = getSessionContextMetrics(msgs, providers.all() as any)
+    const ctx = metrics.context
+    if (!ctx) return undefined
+    return {
+      totalTokens: ctx.total,
+      inputTokens: ctx.input,
+      outputTokens: ctx.output,
+      contextLength: ctx.limit,
+    }
+  })
   const fetchSandTable = async (discussionID: string) => {
     const result = await request<SandTableDiscussion>(`/workflow/sand_table/${discussionID}`)
     setState("sand", discussionID, result)
@@ -1660,11 +1695,18 @@ export function WorkflowRuntimePanel(props: {
   createEffect(() => {
     const plan = sandPlan()
     if (!plan?.id) return
+    // Always fetch once on plan identity change — covers the "user just
+    // opened the plan node" case so the view is not stuck on the fallback
+    // object while waiting for the next poll tick.
     void fetchSandTable(plan.id).catch(() => undefined)
     if (plan.status !== "running") return
+    // While the discussion is live, poll aggressively. The server is local
+    // and the payload is small, so 1s keeps planner/evaluator bubbles
+    // showing up nearly as soon as they post without waiting for the user
+    // to exit and re-enter the node.
     const timer = setInterval(() => {
       void fetchSandTable(plan.id).catch(() => undefined)
-    }, 2000)
+    }, 1000)
     onCleanup(() => clearInterval(timer))
   })
   const chainData = createMemo<WorkflowAppProps["chains"] | undefined>(() => {
@@ -1676,28 +1718,33 @@ export function WorkflowRuntimePanel(props: {
       session: node.session_id ?? props.snapshot.workflow.session_id,
     }))
     const plan = sandPlan()
-    if (!plan) return undefined
+    if (!plan && execution.length === 0) return undefined
+    // Plan and execution belong to a single task — render them as ONE chain so
+    // the canvas shows a linear "plan → first node → …" flow instead of
+    // awkwardly splitting into two lanes. The plan node sits at position 0
+    // when present; it's visually distinct (color + icon already encode it).
+    const merged: WorkflowAppProps["chains"][number]["nodes"] = []
+    if (plan) {
+      merged.push({
+        id: `sand-table:${plan.id}`,
+        title: plan.title,
+        type: "plan",
+        status: plan.status,
+        session: rootID(),
+        summary: sandPlanBadges(plan),
+      })
+    }
+    for (const node of execution) merged.push(node)
     return [
       {
-        id: "planning",
-        label: "Plan",
-        color: "#8b6ad9",
-        nodes: [
-          {
-            id: `sand-table:${plan.id}`,
-            title: plan.title,
-            type: "plan",
-            status: plan.status,
-            session: rootID(),
-            summary: sandPlanBadges(plan),
-          },
-        ],
-      },
-      {
-        id: "execution",
-        label: "Execution",
+        id: "workflow",
+        // Chain label only shows when there are multiple chains — with the
+        // unified plan+execution layout the header is hidden. Still, prefer the
+        // workflow's own title over a hardcoded "Workflow" placeholder so that
+        // any future multi-chain view reflects the task subject.
+        label: props.snapshot.workflow.title || "Workflow",
         color: "#7578c5",
-        nodes: execution,
+        nodes: merged,
       },
     ]
   })
@@ -1724,6 +1771,13 @@ export function WorkflowRuntimePanel(props: {
           [...new Set(plan.history.map((item) => item.model).filter((item): item is string => !!item))]
             .slice(0, 2)
             .join(" / ") || "multi-agent",
+        // Pull the first-seen planner / evaluator model out of the
+        // discussion history so the Inspector can surface them as two
+        // distinct chips. Before, the Inspector collapsed both into a
+        // single "X / Y" Model chip and users couldn't tell which model
+        // was drafting vs critiquing without opening the Plan view.
+        plannerModel: plan.history.find((item) => item.role === "planner" && !!item.model)?.model ?? undefined,
+        evaluatorModel: plan.history.find((item) => item.role === "evaluator" && !!item.model)?.model ?? undefined,
         attempt: `${Math.max(plan.rounds, 0)}`,
         actions: `${plan.history.length} messages`,
         sessionId: plan.sessionID,
@@ -2310,6 +2364,7 @@ export function WorkflowRuntimePanel(props: {
         details: detailsWithPlan(),
         flow: flow(),
         agents: agents(),
+        tokenStats: tokenStats(),
         chats: chatsWithDialogs(),
         sandTables: sandTables(),
         onSession: openSession,
@@ -2323,6 +2378,18 @@ export function WorkflowRuntimePanel(props: {
         onRestart: () => control("restart"),
         onStop: () => hardControl("abort"),
         onPause: () => hardControl("pause"),
+        // Narrow "interrupt orchestrator only" path for the chat-panel
+        // send→stop button. Unlike hardControl("abort"), this does not
+        // touch child node sessions — the user is just cancelling a
+        // reply, not killing the workflow.
+        onStopMaster: () => {
+          void sdk.client.session
+            .abort({ sessionID: rootID(), directory: sdk.directory })
+            .catch(() => undefined)
+            .then(() => {
+              void sync.session.sync(rootID(), { force: true })
+            })
+        },
         onSend: send,
         onPlanRun: runApprovedPlan,
         onPlanEdit: revisePlanWithContext,
@@ -2331,6 +2398,16 @@ export function WorkflowRuntimePanel(props: {
         onPermissionReply: replyPermission,
         onSandTableSend: (nodeID, text) => {
           void sendSandTable(nodeID, text).catch(() => undefined)
+        },
+        // History pagination for the master (root) session. Without these
+        // the ChatPanel "Load earlier messages" button runs out of
+        // in-memory groups at 80 messages and the earliest turns are
+        // unreachable. `more()` returns true when there's still a
+        // server-side cursor; `loadMore` triggers a prepend fetch.
+        historyHasMore: sync.session.history.more(rootID()),
+        historyLoading: sync.session.history.loading(rootID()),
+        onLoadMoreHistory: () => {
+          void sync.session.history.loadMore(rootID()).catch(() => undefined)
         },
       }),
     )

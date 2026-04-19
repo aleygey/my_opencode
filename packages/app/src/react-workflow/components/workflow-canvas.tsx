@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { BrainCircuit, ChevronDown, GitBranch, Locate, Sparkles, Zap } from 'lucide-react'
+import { BrainCircuit, ChevronDown, GitBranch, Locate, Sparkles } from 'lucide-react'
 import { WorkflowNode, type NodeStatus, type NodeType } from './workflow-node'
 import { Spin } from './spin'
 
@@ -115,38 +115,47 @@ function useCanvas() {
   return { offset, zoom, animating, isPanned, moved, onPointerDown, onPointerMove, onPointerUp, onWheel, reset }
 }
 
-/* ── Animated edge line (vertical) ── */
+/* ── Animated edge line (subtle S-curve bezier, vertical) ──
+ *
+ * A straight rule looks too rigid between cards, so we draw a gentle
+ * cubic-bezier from top to bottom that bows out slightly. The path stays
+ * axis-aligned at its endpoints (so it looks like it "enters" each card
+ * cleanly), while the middle pinches in a hand-drawn wobble. When the edge
+ * is inactive (not yet reached), we draw the same path dashed.
+ */
 function EdgeLine({ active, flowing, height = 32, glow = false }: { active: boolean; flowing: boolean; height?: number; glow?: boolean }) {
   const sw = active ? 2 : 1
+  // Straight vertical line between two cards in a single chain. We used to
+  // draw a subtle S-curve here (cubic bezier with control points pulled off
+  // axis), but the curve made the connector look unstable and — when paired
+  // with the animateMotion particles — rendered the travelling dots visibly
+  // off-centre, giving the impression of a stray floating node beside the
+  // card. Branch topology (multiple children) is handled by `BranchConnector`
+  // below with orthogonal straight lines; curves are not needed here.
+  const cx = 3
+  const path = `M${cx},0 L${cx},${height}`
 
   return (
     <div className="wf-edge" style={{ height }}>
       <svg width="6" height="100%" viewBox={`0 0 6 ${height}`} preserveAspectRatio="none" fill="none">
-        {/* Glow layer behind active edges */}
         {active && glow && (
-          <line x1="3" y1="0" x2="3" y2={height}
-            stroke="var(--wf-ok)" strokeWidth="4" opacity="0.08" />
+          <path d={path} stroke="var(--wf-ok)" strokeWidth="4" opacity="0.08" fill="none" />
         )}
-        {/* Main edge */}
-        <line x1="3" y1="0" x2="3" y2={height}
+        <path d={path}
           stroke={active ? 'var(--wf-ok)' : 'var(--wf-line-strong)'}
           strokeWidth={sw}
           strokeDasharray={active ? 'none' : '4 5'}
-          strokeLinecap="round" />
+          strokeLinecap="round"
+          fill="none" />
       </svg>
-      {/* Flowing particle + trail */}
       {flowing && (
         <svg className="absolute inset-0 pointer-events-none" width="6" height="100%" viewBox={`0 0 6 ${height}`} preserveAspectRatio="none" fill="none">
-          {/* Glow trail */}
-          <line x1="3" y1="0" x2="3" y2={height}
-            stroke="var(--wf-ok)" strokeWidth="6" opacity="0.06" />
-          {/* Particle */}
+          <path d={path} stroke="var(--wf-ok)" strokeWidth="6" opacity="0.06" fill="none" />
           <circle r="2.5" fill="var(--wf-ok)" opacity="0.9">
-            <animateMotion dur="1.2s" repeatCount="indefinite" path={`M3,0 L3,${height}`} />
+            <animateMotion dur="1.2s" repeatCount="indefinite" path={path} />
           </circle>
-          {/* Particle glow halo */}
           <circle r="5" fill="var(--wf-ok)" opacity="0.15">
-            <animateMotion dur="1.2s" repeatCount="indefinite" path={`M3,0 L3,${height}`} />
+            <animateMotion dur="1.2s" repeatCount="indefinite" path={path} />
           </circle>
         </svg>
       )}
@@ -164,12 +173,15 @@ function RootAgentCard({ root, chainCount, onClick }: { root: RootAgent; chainCo
   return (
     <div
       data-wf-root=""
-      className="wf-root-agent wf-slide-up group"
+      className="wf-root-agent group"
       onClick={onClick}
       role="button"
       tabIndex={0}
       onKeyDown={(e) => { if (e.key === 'Enter') onClick?.() }}
     >
+      {/* Running state: a static halo (not pulsing) — motion already conveyed
+       * by the Spin spinner, the LIVE badge, and the animated progress bar.
+       * Stacking a pulsing glow on top of those made the card feel restless. */}
       {run && <div className="wf-root-agent-glow" />}
 
       <div
@@ -183,62 +195,52 @@ function RootAgentCard({ root, chainCount, onClick }: { root: RootAgent; chainCo
         }}
       />
 
-      <div className="relative flex items-start gap-4" style={{ padding: '16px 18px' }}>
-        <div className={`wf-root-agent-icon ${run ? 'wf-pulse' : ''}`}>
+      <div className="relative flex items-center gap-2.5" style={{ padding: '8px 12px' }}>
+        <div className="wf-root-agent-icon">
           {run ? (
-            <Spin size={18} tone="white" line={2} />
+            <Spin size={14} tone="white" line={1.8} />
           ) : (
-            <BrainCircuit className="h-[18px] w-[18px] text-white" strokeWidth={1.8} />
+            <BrainCircuit className="h-[14px] w-[14px] text-white" strokeWidth={1.8} />
           )}
         </div>
 
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2.5">
-            <span className="text-[13px] font-bold tracking-[-0.02em] text-[var(--wf-ink)]">{root.title}</span>
-            <span className="wf-root-agent-badge">
-              <Zap className="h-2.5 w-2.5" strokeWidth={2.5} />
-              Orchestrator
-            </span>
+          <div className="flex items-center gap-2">
+            <span className="truncate text-[12px] font-bold tracking-[-0.02em] text-[var(--wf-ink)]">{root.title}</span>
             {run && (
               <span className="wf-root-agent-live">
-                <Sparkles className="h-2.5 w-2.5" strokeWidth={2} />
+                <Sparkles className="h-2 w-2" strokeWidth={2} />
                 LIVE
               </span>
             )}
           </div>
-
-          <div className="mt-1 flex items-center gap-2 text-[10.5px]">
+          <div className="flex items-center gap-1.5 text-[10px]">
             <span className="font-medium text-[var(--wf-ink-soft)]">{root.phase}</span>
             {root.model && (
               <>
                 <span className="text-[var(--wf-line-strong)]">&middot;</span>
-                <span className="font-mono text-[10px] text-[var(--wf-dim)]">{root.model}</span>
+                <span className="font-mono text-[9.5px] text-[var(--wf-dim)]">{root.model}</span>
               </>
             )}
             <span className="text-[var(--wf-line-strong)]">&middot;</span>
             <span className="inline-flex items-center gap-1 text-[var(--wf-dim)]">
-              <GitBranch className="h-2.5 w-2.5" strokeWidth={2} />
-              {chainCount} {chainCount === 1 ? 'chain' : 'chains'}
+              <GitBranch className="h-2 w-2" strokeWidth={2} />
+              {chainCount}
             </span>
           </div>
+        </div>
 
-          <p className="mt-2 text-[11px] leading-[1.6] text-[var(--wf-dim)]">{root.goal}</p>
-
-          <div className="mt-3 flex items-center gap-3">
-            <div className="wf-root-agent-progress">
-              <div
-                className="wf-progress-fill"
-                data-animated={run ? '' : undefined}
-                style={{ width: `${progress}%` }}
-              />
-            </div>
-            <span className="text-[10px] font-bold tabular-nums text-[var(--wf-dim)]">
-              {root.completedCount}/{root.nodeCount}
-            </span>
-            {run && (
-              <span className="text-[10px] font-bold tabular-nums text-[var(--wf-ok)]">{progress}%</span>
-            )}
+        <div className="flex flex-shrink-0 items-center gap-2">
+          <div className="wf-root-agent-progress" style={{ width: 48 }}>
+            <div
+              className="wf-progress-fill"
+              data-animated={run ? '' : undefined}
+              style={{ width: `${progress}%` }}
+            />
           </div>
+          <span className="text-[9.5px] font-bold tabular-nums text-[var(--wf-dim)]">
+            {root.completedCount}/{root.nodeCount}
+          </span>
         </div>
       </div>
     </div>
@@ -527,15 +529,15 @@ export function WorkflowCanvas({ root, chains, selectedNodeId, onNodeSelect, onN
         }}
       />
 
-      {/* Vignette */}
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-36 bg-gradient-to-t from-[var(--wf-bg)] to-transparent z-[2]" />
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-[var(--wf-bg)] to-transparent z-[2]" />
-      <div className="pointer-events-none absolute inset-y-0 left-0 w-24 bg-gradient-to-r from-[var(--wf-bg)] to-transparent z-[2]" />
-      <div className="pointer-events-none absolute inset-y-0 right-0 w-24 bg-gradient-to-l from-[var(--wf-bg)] to-transparent z-[2]" />
+      {/* Vignette — subtle fade so edges feel soft without eating real estate */}
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-[var(--wf-bg)] to-transparent z-[2]" />
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-8 bg-gradient-to-b from-[var(--wf-bg)] to-transparent z-[2]" />
+      <div className="pointer-events-none absolute inset-y-0 left-0 w-8 bg-gradient-to-r from-[var(--wf-bg)] to-transparent z-[2]" />
+      <div className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-[var(--wf-bg)] to-transparent z-[2]" />
 
       {/* Pannable + zoomable content */}
       <div
-        className="relative flex min-h-full w-full justify-center px-8 py-12"
+        className="relative flex min-h-full w-full justify-center px-4 py-6"
         style={{
           transform: `translate(${canvas.offset.x}px, ${canvas.offset.y}px) scale(${canvas.zoom})`,
           transformOrigin: '50% 20%',

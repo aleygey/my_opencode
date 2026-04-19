@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import { useState } from 'react'
-import { GitFork, CheckSquare, ChevronRight, Zap, Play, Edit3 } from 'lucide-react'
+import { GitFork, CheckSquare, ChevronDown, Zap, Play, Edit3 } from 'lucide-react'
 
 export interface WorkflowPlanNode {
   id: string
@@ -114,7 +114,7 @@ export function PlanCard({ plan, onRun, onEdit }: PlanCardProps) {
                 <div key={node.id} className="wf-plan-flow-item">
                   {i > 0 && (
                     <div className="wf-plan-arrow">
-                      <ChevronRight className="h-3.5 w-3.5" strokeWidth={2} style={{ color: 'var(--wf-dim)' }} />
+                      <ChevronDown className="h-3.5 w-3.5" strokeWidth={2} style={{ color: 'var(--wf-dim)' }} />
                     </div>
                   )}
                   <div className="wf-plan-node" data-agent={node.agent} style={{ borderColor: color }}>

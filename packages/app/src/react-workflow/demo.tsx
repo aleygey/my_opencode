@@ -275,6 +275,7 @@ const mockProps: WorkflowAppProps = {
   onRestart: (node) => console.log("restart", node),
   onStop: (node) => console.log("stop", node),
   onPause: (node) => console.log("pause", node),
+  onStopMaster: () => console.log("stop master only"),
   onSend: (text, node) => console.log("send", text, node),
   onQuestionReply: (id, answers) => console.log("question reply", id, answers),
   onQuestionReject: (id) => console.log("question reject", id),

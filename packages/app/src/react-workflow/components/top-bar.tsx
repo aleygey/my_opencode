@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import { useCallback, useEffect, useState } from 'react'
-import { Eye, MessageSquare, Moon, PanelLeftOpen, Settings2, Square, Sun, Play, Pause, RotateCcw, Zap, Gauge } from 'lucide-react'
+import { Moon, PanelLeftOpen, Settings2, Square, Sun, Play, Pause, RotateCcw, Zap, Gauge } from 'lucide-react'
 import { Spin } from './spin'
 import type { TokenStats } from '../app'
 
@@ -11,6 +11,64 @@ function fmtTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
   return String(n)
+}
+
+/**
+ * Circular progress ring showing what fraction of the model's context
+ * window the current master session has consumed. Rendered inline
+ * beside the numeric token readout so the user can gauge "how much
+ * headroom do I have before compaction" at a glance without doing
+ * arithmetic. Colour ramps amber past 70%, red past 90% so looming
+ * overflows are obvious without a popover.
+ */
+function TokenRing({ pct, size = 18, stroke = 2.5 }: { pct: number; size?: number; stroke?: number }) {
+  const clamped = Math.max(0, Math.min(100, pct))
+  const r = (size - stroke) / 2
+  const c = size / 2
+  const circumference = 2 * Math.PI * r
+  const offset = circumference * (1 - clamped / 100)
+  const tone =
+    clamped >= 90
+      ? 'var(--wf-bad)'
+      : clamped >= 70
+        ? '#d1a23a'
+        : 'var(--wf-ok)'
+  return (
+    <div
+      className="wf-topbar-token-ring"
+      role="img"
+      aria-label={`${Math.round(clamped)}% context used`}
+      title={`Context window · ${Math.round(clamped)}% used`}
+    >
+      <svg width={size} height={size}>
+        <circle
+          cx={c}
+          cy={c}
+          r={r}
+          fill="none"
+          stroke="var(--wf-line)"
+          strokeWidth={stroke}
+          opacity={0.45}
+        />
+        <circle
+          cx={c}
+          cy={c}
+          r={r}
+          fill="none"
+          stroke={tone}
+          strokeWidth={stroke}
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={offset}
+          transform={`rotate(-90 ${c} ${c})`}
+          style={{ transition: 'stroke-dashoffset 350ms ease-out, stroke 200ms ease-out' }}
+        />
+      </svg>
+      <span className="wf-topbar-token-ring-pct" style={{ color: tone }}>
+        {Math.round(clamped)}
+      </span>
+    </div>
+  )
 }
 
 /* ── Theme toggle with localStorage persistence ── */
@@ -44,8 +102,9 @@ interface TopBarProps {
   nodeProgress?: { done: number; total: number }
   tokenStats?: TokenStats
   onTaskSidebarToggle?: () => void
-  onDetailClick: () => void
-  onSessionClick: () => void
+  // Detail / Session buttons removed in favour of clicking the card arrow
+  // (which now opens the per-node session view in-place). They were redundant
+  // and the Session button was a near-noop — see removal in commit history.
   onModelClick?: () => void
   onRunClick?: () => void
   onRestartClick?: () => void
@@ -60,8 +119,6 @@ export function TopBar({
   nodeProgress,
   tokenStats,
   onTaskSidebarToggle,
-  onDetailClick,
-  onSessionClick,
   onModelClick,
   onRunClick,
   onRestartClick,
@@ -155,11 +212,17 @@ export function TopBar({
 
       {/* Right cluster */}
       <div className="flex items-center gap-1">
-        {/* Token stats */}
+        {/* Token stats — ring visualises context-window usage so the
+         * user can eyeball remaining headroom without mental math. The
+         * numeric breakdown stays for absolute values. */}
         {tokenStats && tokenStats.totalTokens > 0 && (
           <>
             <div className="wf-topbar-token-stats">
-              <Gauge className="h-3 w-3 text-[var(--wf-dim)]" strokeWidth={1.8} />
+              {tokenStats.contextLength != null && tokenStats.contextLength > 0 ? (
+                <TokenRing pct={(tokenStats.totalTokens / tokenStats.contextLength) * 100} />
+              ) : (
+                <Gauge className="h-3 w-3 text-[var(--wf-dim)]" strokeWidth={1.8} />
+              )}
               <span className="wf-topbar-token-label">
                 {fmtTokens(tokenStats.totalTokens)}
               </span>
@@ -178,14 +241,6 @@ export function TopBar({
             <div className="wf-topbar-sep mx-0.5" />
           </>
         )}
-        <button onClick={onDetailClick} className="wf-topbar-text-btn">
-          <Eye className="h-3.5 w-3.5" strokeWidth={1.6} />
-          <span>Detail</span>
-        </button>
-        <button onClick={onSessionClick} className="wf-topbar-text-btn">
-          <MessageSquare className="h-3.5 w-3.5" strokeWidth={1.6} />
-          <span>Session</span>
-        </button>
         <button onClick={onModelClick} className="wf-topbar-icon-btn">
           <Settings2 className="h-3.5 w-3.5" strokeWidth={1.6} />
         </button>

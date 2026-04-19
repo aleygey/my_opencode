@@ -553,6 +553,18 @@ export default function Page() {
     selectWorkflowSession(snapshot.workflow.session_id)
   }
 
+  // Clicking "New Task" inside the workflow task-sidebar: drop the :id from
+  // the URL so the session page falls into its "no active session" branch and
+  // renders the NewSessionView composer. The user's next message will spin up
+  // a fresh session + workflow. We also reset the workflow root-view state so
+  // the new page doesn't inherit a stale "graph" flag.
+  const newWorkflowTask = () => {
+    const slug = params.dir ?? base64Encode(sdk.directory)
+    setStore("workflow", "session")
+    local.agent.set("orchestrator")
+    navigate(`/${slug}/session`)
+  }
+
   createEffect(() => {
     const snapshot = workflowSnapshot()
     const sessionID = params.id
@@ -1817,6 +1829,7 @@ export default function Page() {
             currentSessionID={params.id}
             onSelectSession={selectWorkflowSession}
             onSelectRootView={selectWorkflowRoot}
+            onNewTask={newWorkflowTask}
           />
         </div>
       </Match>
@@ -1925,6 +1938,7 @@ export default function Page() {
                               currentSessionID={params.id}
                               onSelectSession={selectWorkflowSession}
                               onSelectRootView={selectWorkflowRoot}
+                              onNewTask={newWorkflowTask}
                             />
                           </Match>
                         </Switch>

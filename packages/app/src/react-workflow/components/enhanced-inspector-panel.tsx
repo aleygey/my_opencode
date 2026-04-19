@@ -52,6 +52,39 @@ function Metric({ label, value, icon: Icon, accent }: {
   )
 }
 
+/* ── Clickable model tile ──
+ *
+ * Variant of Metric that opens the model picker on click. Shares the same
+ * visual footprint so the metrics grid stays aligned; adds a pencil affordance
+ * on hover to signal editability. */
+function ClickableModelTile({ label, onClick }: { label: string; onClick: () => void }) {
+  const unset = !label || label === 'route required' || label === 'No model configured'
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onClick}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick() } }}
+      className="wf-inspector-metric group cursor-pointer transition hover:bg-[var(--wf-chip)]"
+      title="Click to change model"
+    >
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1.5">
+          <Cpu className="h-3 w-3 text-[var(--wf-dim)] transition group-hover:text-[var(--wf-ink-soft)]" strokeWidth={1.6} />
+          <span className="text-[10px] font-medium uppercase tracking-[0.05em] text-[var(--wf-dim)]">Model</span>
+        </div>
+        <Pencil className="h-3 w-3 opacity-0 text-[var(--wf-dim)] transition group-hover:opacity-100" strokeWidth={1.8} />
+      </div>
+      <div
+        className="mt-1 break-words text-[12.5px] font-semibold tracking-[-0.01em]"
+        style={{ color: unset ? 'var(--wf-bad, #c96b6b)' : 'var(--wf-ink)' }}
+      >
+        {label || 'No model configured'}
+      </div>
+    </div>
+  )
+}
+
 /* ── Event line: humanise `kind · summary` into a friendlier row ── */
 function humaniseEventKind(kind: string): string {
   const map: Record<string, string> = {
@@ -387,10 +420,58 @@ export function EnhancedInspectorPanel(props: Props) {
                     value={d.result}
                     accent={d.result === 'Success' || d.result === 'completed'}
                   />
-                  <Metric icon={Cpu} label="Model" value={d.model} />
+                  {/* Model tile is clickable: opens the model picker scoped to
+                   * this node. This is the inspector-side of the "agent model
+                   * routing" entry — hovering reveals the edit affordance. */}
+                  <ClickableModelTile
+                    label={d.model}
+                    onClick={() => props.onModelClick?.([d.id])}
+                  />
                   <Metric icon={Activity} label="Attempt" value={d.attempt} />
                   <Metric icon={Terminal} label="Actions" value={d.actions} />
                 </div>
+
+                {/* Plan-node participants: surface the planner and evaluator
+                 * model identities directly in the Inspector. Previously we
+                 * only hinted at them with a dashed banner and punted users
+                 * to the Plan view; that cost an extra click to answer the
+                 * question "which model drafted this plan?". */}
+                {d.type === 'plan' && (d.plannerModel || d.evaluatorModel) && (
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <div className="wf-inspector-metric group">
+                      <div className="flex items-center gap-1.5">
+                        <Sparkles className="h-3 w-3 text-[var(--wf-dim)]" strokeWidth={1.6} />
+                        <span className="text-[10px] font-medium uppercase tracking-[0.05em] text-[var(--wf-dim)]">Planner</span>
+                      </div>
+                      <div className="mt-1 break-words text-[12.5px] font-semibold tracking-[-0.01em] text-[var(--wf-ink)]">
+                        {d.plannerModel || <span className="text-[var(--wf-dim)] italic">—</span>}
+                      </div>
+                    </div>
+                    <div className="wf-inspector-metric group">
+                      <div className="flex items-center gap-1.5">
+                        <BrainCircuit className="h-3 w-3 text-[var(--wf-dim)]" strokeWidth={1.6} />
+                        <span className="text-[10px] font-medium uppercase tracking-[0.05em] text-[var(--wf-dim)]">Evaluator</span>
+                      </div>
+                      <div className="mt-1 break-words text-[12.5px] font-semibold tracking-[-0.01em] text-[var(--wf-ink)]">
+                        {d.evaluatorModel || <span className="text-[var(--wf-dim)] italic">—</span>}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Plan-node context hint: if neither planner nor evaluator
+                 * model is resolved yet (session still booting, or history
+                 * has no role-tagged entries), fall back to the old banner
+                 * so users know where to look when the chips finally
+                 * populate. */}
+                {d.type === 'plan' && !d.plannerModel && !d.evaluatorModel && (
+                  <div className="flex items-start gap-2 rounded-lg border border-dashed border-[var(--wf-line)] bg-[var(--wf-chip)] px-2.5 py-2 text-[10.5px] leading-[1.5] text-[var(--wf-ink-soft)]">
+                    <Sparkles className="mt-0.5 h-3 w-3 flex-shrink-0 text-[var(--wf-dim)]" strokeWidth={1.8} />
+                    <span>
+                      Plan 节点由 <strong className="text-[var(--wf-ink)]">planner</strong> 和 <strong className="text-[var(--wf-ink)]">evaluator</strong> 两个子 agent 协同产生，模型将在讨论开始后显示于此。
+                    </span>
+                  </div>
+                )}
 
                 {/* Execution log — humanised event list */}
                 {d.executionLog && d.executionLog.length > 0 && (

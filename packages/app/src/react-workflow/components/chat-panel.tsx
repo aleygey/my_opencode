@@ -72,11 +72,29 @@ interface Props {
   /** Plan card callbacks */
   onPlanRun?: (plan: WorkflowPlan) => void
   onPlanEdit?: (context: string) => void
+  /** When true, plan messages render as a compact chip instead of the
+   * full PlanCard. The parent owns the full-size overlay modal; the
+   * chip is the in-chat "re-open" affordance. */
+  renderPlanAsChip?: boolean
+  /** Fired when the user clicks the chip — the parent opens the
+   * overlay for the given plan message id. */
+  onPlanOpen?: (msgId: string) => void
   /** Session control */
   isRunning?: boolean
   onStop?: () => void
   /** Height controls */
-  chatHeight?: 'tall' | 'short' | 'hidden'
+  chatHeight?: 'tall' | 'short' | 'input-only' | 'hidden'
+  /** Latest master-agent monitor content — a short "what the agent is
+   * thinking right now" stream surfaced above the input when we're in
+   * input-only mode. Rendered as plain text; the container scrolls.
+   * When empty the monitor section hides itself. */
+  monitorText?: string
+  monitorLabel?: string
+  /** When set, the monitor header surfaces a small "Plan" chip that
+   * re-opens the overlay for this plan message. Safety net for the
+   * case where the user closed the overlay in input-only mode and
+   * can't find the in-chat chip because the messages scrolled off. */
+  monitorPlanMsgId?: string
   onSizeToggle?: () => void   // toggle tall ↔ short
   onHide?: () => void          // collapse to hidden
   onRestore?: () => void       // restore from hidden
@@ -84,6 +102,16 @@ interface Props {
   onQuestionReply?: (requestID: string, answers: string[][]) => void
   onQuestionReject?: (requestID: string) => void
   onPermissionReply?: (requestID: string, reply: PermissionReply, message?: string) => void
+  /** Server-side history pagination for long master sessions. The chat
+   * panel keeps its own client-side page window (50 groups) but the
+   * underlying message store only hydrates the first 80 messages; older
+   * turns require a cursor-based fetch. When `historyHasMore` is true
+   * and the user has already revealed every in-memory group, the
+   * "Load earlier messages" button calls `onLoadMoreHistory` to request
+   * the next page from the server instead of being a no-op. */
+  historyHasMore?: boolean
+  historyLoading?: boolean
+  onLoadMoreHistory?: () => void
 }
 
 const icons: Record<Role, React.ElementType> = {
@@ -492,6 +520,13 @@ export function ChatPanel(props: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const prevMsgCount = useRef(0)
   const initialMount = useRef(true)
+  // Snapshot of scroll state right before a "Load earlier" action.
+  // After the DOM re-lays-out (either via visibleCount bump or a
+  // history prepend from the server), we restore scrollTop so the user
+  // stays anchored on whatever they were reading — otherwise the list
+  // would jerk to the top and the auto-scroll effect below would
+  // mis-fire as if new messages had just arrived at the bottom.
+  const pendingScrollRef = useRef<{ height: number; top: number } | null>(null)
 
   const slash = useSlashCommands({
     callbacks: {
@@ -512,6 +547,24 @@ export function ChatPanel(props: Props) {
   // Scroll: instant on first render or bulk load, smooth on incremental new messages
   // Only trigger when message count actually changes (not on reference changes)
   useEffect(() => {
+    // Anchor-preserve path: the user asked for earlier messages, so
+    // either the client window grew or the server returned a prepended
+    // page. Both cases add DOM above the current viewport; without
+    // restoring scrollTop the reader snaps to the top of the freshly
+    // added block and the isBulk heuristic below would also wrongly
+    // yank them to the bottom.
+    const pending = pendingScrollRef.current
+    if (pending) {
+      pendingScrollRef.current = null
+      const el = messagesRef.current
+      if (el) {
+        el.scrollTop = pending.top + (el.scrollHeight - pending.height)
+      }
+      prevMsgCount.current = props.messages.length
+      initialMount.current = false
+      return
+    }
+
     const count = props.messages.length
     const prev = prevMsgCount.current
     const isInitial = initialMount.current
@@ -529,7 +582,7 @@ export function ChatPanel(props: Props) {
       // Smooth scroll only for genuinely new messages
       end.current?.scrollIntoView({ behavior: 'smooth' })
     }
-  }, [props.messages.length])
+  }, [props.messages.length, visibleCount])
 
   // Close model dropdown on outside click
   useEffect(() => {
@@ -653,17 +706,12 @@ export function ChatPanel(props: Props) {
           <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-[var(--wf-chip)] px-1.5 text-[10px] font-bold tabular-nums text-[var(--wf-dim)]">
             {props.messages.length}
           </span>
-          {/* Stop button — visible when running */}
-          {props.isRunning && props.onStop && (
-            <button
-              className="wf-chat-stop-btn"
-              onClick={props.onStop}
-              title="Stop agent"
-            >
-              <Square className="h-2.5 w-2.5" strokeWidth={0} fill="currentColor" />
-              <span>Stop</span>
-            </button>
-          )}
+          {/* Header Stop removed — that action was a duplicate of the
+           * top-bar Abort button (both went through hardControl("abort")).
+           * The master-agent interrupt now lives on the input's send
+           * button, which flips to a Stop icon while the agent is
+           * running so the user can cancel the orchestrator mid-reply
+           * without tearing down the whole workflow. */}
           {props.onSizeToggle && (
             <button
               className="wf-chat-height-toggle"
@@ -700,19 +748,87 @@ export function ChatPanel(props: Props) {
         </div>
       )}
 
-      {/* Messages */}
-      <div className="wf-chat-messages" ref={messagesRef}>
+      {/* Input-only mode surfaces a compact monitor where the message
+       * list normally lives, so the user sees the master agent's most
+       * recent reasoning without the full chat taking over the
+       * viewport. Hidden when there's nothing to monitor yet. */}
+      {props.chatHeight === 'input-only' && (
+        <div className="wf-chat-monitor">
+          <div className="wf-chat-monitor__header">
+            <span className="wf-chat-monitor__dot" />
+            <span className="wf-chat-monitor__label">
+              {props.monitorLabel ?? 'Master agent · latest thought'}
+            </span>
+            <span className="wf-chat-monitor__hint">history visible below</span>
+            {props.monitorPlanMsgId && props.onPlanOpen && (
+              <button
+                className="wf-chat-monitor__plan-btn"
+                onClick={() => props.onPlanOpen?.(props.monitorPlanMsgId!)}
+                title="Re-open the current workflow plan"
+              >
+                <GitBranch className="h-3 w-3" strokeWidth={2} />
+                <span>Plan</span>
+              </button>
+            )}
+          </div>
+          <div className="wf-chat-monitor__body">
+            {props.monitorText?.trim()
+              ? <pre className="wf-chat-monitor__text">{props.monitorText}</pre>
+              : <div className="wf-chat-monitor__empty">Waiting for first agent output…</div>}
+          </div>
+        </div>
+      )}
+
+      {/* Messages — always visible. Previous builds hid the list
+       * entirely in input-only mode, but that made the user's own
+       * message and the master's reply disappear the moment the
+       * workflow flipped to running, which the user experienced as
+       * "I sent something and the agent never responded". In
+       * input-only mode we now just rely on the shorter chat height
+       * (188px) to keep the canvas the primary focus while still
+       * letting recent messages stay scroll-visible. */}
+      <div
+        className="wf-chat-messages"
+        ref={messagesRef}
+      >
         {(() => {
           const allGroups = groupMessages(props.messages)
           const truncated = allGroups.length > visibleCount
           const groups = truncated ? allGroups.slice(-visibleCount) : allGroups
+          // The button serves two staged purposes:
+          //   1. Reveal more of what's already in memory (client-side window
+          //      bump) — fast, no network.
+          //   2. Once every in-memory group is visible and the server still
+          //      has older turns, fetch the next page via onLoadMoreHistory.
+          // Without (2), long master sessions stopped at 80 messages and the
+          // user couldn't scroll back to the start of the conversation.
+          const canReveal = truncated
+          const canFetchMore = !truncated && !!props.historyHasMore
+          const loading = !!props.historyLoading
+          const showButton = canReveal || canFetchMore || loading
+          const handleLoad = () => {
+            // Snapshot scroll state before the expansion / fetch so the
+            // useEffect can restore the viewport anchor after re-layout.
+            const el = messagesRef.current
+            if (el) pendingScrollRef.current = { height: el.scrollHeight, top: el.scrollTop }
+            if (canReveal) {
+              setVisibleCount((v) => v + MSG_PAGE_SIZE)
+              return
+            }
+            if (canFetchMore) props.onLoadMoreHistory?.()
+          }
           return (<>
-            {truncated && (
+            {showButton && (
               <button
                 className="wf-load-earlier"
-                onClick={() => setVisibleCount((v) => v + MSG_PAGE_SIZE)}
+                onClick={handleLoad}
+                disabled={loading}
               >
-                Load {Math.min(MSG_PAGE_SIZE, allGroups.length - visibleCount)} earlier messages
+                {loading
+                  ? 'Loading earlier messages…'
+                  : canReveal
+                    ? `Load ${Math.min(MSG_PAGE_SIZE, allGroups.length - visibleCount)} earlier messages`
+                    : 'Load earlier messages from server'}
               </button>
             )}
             {groups.map((group, i) => {
@@ -769,7 +885,33 @@ export function ChatPanel(props: Props) {
           }
 
           // ── Plan card — left ──
+          // When `renderPlanAsChip` is set, the parent owns a modal
+          // overlay for the full plan view and we render only a
+          // compact chip in the chat stream. Clicking the chip asks
+          // the parent to re-open the overlay for this plan. This
+          // keeps the scrolling chat readable even after several
+          // revisions of the plan accumulate.
           if (item.plan) {
+            if (props.renderPlanAsChip) {
+              return (
+                <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={{ animationDelay: `${i * 30}ms` }}>
+                  <div className="wf-msg-left-content">
+                    <button
+                      className="wf-plan-chip"
+                      onClick={() => props.onPlanOpen?.(item.id)}
+                      title="Re-open workflow plan"
+                    >
+                      <GitBranch className="h-3.5 w-3.5" strokeWidth={1.8} />
+                      <span className="wf-plan-chip__label">Workflow Plan</span>
+                      <span className="wf-plan-chip__meta">
+                        {item.plan.nodes.length} nodes · {item.plan.checkpoints.length} checkpoints
+                      </span>
+                      <span className="wf-plan-chip__cta">Open</span>
+                    </button>
+                  </div>
+                </div>
+              )
+            }
             return (
               <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={{ animationDelay: `${i * 30}ms` }}>
                 <div className="wf-msg-left-content">
@@ -977,13 +1119,31 @@ export function ChatPanel(props: Props) {
             placeholder="Message the agent... (/ for commands)"
             className="wf-chat-input"
           />
-          <button
-            onClick={send}
-            disabled={!msg.trim()}
-            className="wf-chat-send"
-          >
-            <ArrowUp className="h-3.5 w-3.5" strokeWidth={2.5} />
-          </button>
+          {props.isRunning && props.onStop ? (
+            // While the master agent is running, the right-side button
+            // becomes a Stop control: tapping it aborts only the root
+            // (orchestrator) session so the user can interrupt a reply
+            // without tearing down child node executions. The top-bar
+            // Abort button is still the escape hatch for the full
+            // workflow.
+            <button
+              onClick={props.onStop}
+              className="wf-chat-send wf-chat-send--stop"
+              title="Stop master agent"
+              aria-label="Stop master agent"
+            >
+              <Square className="h-3 w-3" strokeWidth={0} fill="currentColor" />
+            </button>
+          ) : (
+            <button
+              onClick={send}
+              disabled={!msg.trim()}
+              className="wf-chat-send"
+              aria-label="Send message"
+            >
+              <ArrowUp className="h-3.5 w-3.5" strokeWidth={2.5} />
+            </button>
+          )}
         </div>
       </div>
     </div>

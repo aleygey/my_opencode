@@ -1,5 +1,5 @@
 /** @jsxImportSource react */
-import { useMemo, useState } from "react"
+import { useLayoutEffect, useMemo, useRef, useState } from "react"
 
 import {
   Activity,
@@ -241,7 +241,27 @@ function StatePanel({ json }: { json: Record<string, unknown> }) {
 }
 
 export function NodeSessionView(props: NodeSessionViewProps) {
-  const left = useSplit({ axis: "x", size: 420, min: 320, max: 720 })
+  // Default to a 50/50 split — the previous 420px initial value pushed the
+  // chat into a narrow column that didn't match typical screen sizes. We
+  // measure the container on first layout and set size to half its width;
+  // user drags afterwards are preserved by the hook's internal state.
+  const bodyRef = useRef<HTMLDivElement | null>(null)
+  const initialSize = typeof window !== "undefined" ? Math.round(window.innerWidth / 2) : 560
+  const left = useSplit({ axis: "x", size: initialSize, min: 320, max: 2000 })
+  const didSyncRef = useRef(false)
+  // Sync exactly once on mount — after the user drags the splitter, we
+  // respect their chosen size (useSplit owns state from that point on).
+  useLayoutEffect(() => {
+    if (didSyncRef.current) return
+    const el = bodyRef.current
+    if (!el) return
+    const width = el.getBoundingClientRect().width
+    if (width > 0) {
+      left.setSize(Math.round(width / 2))
+      didSyncRef.current = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   const [openPanel, setOpenPanel] = useState<"events" | "state" | null>(null)
 
   const run = props.nodeStatus === "running"
@@ -391,7 +411,7 @@ export function NodeSessionView(props: NodeSessionViewProps) {
       )}
 
       {/* ─── 2-column body: chat | plugin slot (plugin fills remaining width) ─── */}
-      <div className="flex min-h-0 flex-1">
+      <div ref={bodyRef} className="flex min-h-0 flex-1">
         {/* ── Left: Chat (shared ChatPanel — identical to root page) ── */}
         <div className="flex min-h-0 flex-shrink-0 flex-col" style={{ width: left.size }}>
           <ChatPanel

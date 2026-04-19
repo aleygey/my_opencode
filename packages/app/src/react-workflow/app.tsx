@@ -14,6 +14,7 @@ import {
 } from "./components/sand-table-session-view"
 import { SplitBar, useSplit } from "./components/split"
 import type { WorkflowPlan } from "./components/plan-card"
+import { PlanOverlay } from "./components/plan-overlay"
 import type { SandTableResult } from "./components/sand-table-card"
 import { ChevronUp } from "lucide-react"
 import { initPlugins } from "./plugins"
@@ -64,6 +65,12 @@ export type Detail = {
   stateJson: Record<string, unknown>
   codeChanges?: FileDiff[]
   executionLog?: string[]
+  /** Plan-node only: the two sub-agent models contributing to a sand_table
+   * discussion. Surfaced in the Inspector so users can see which model
+   * drafted the plan and which one critiqued it without drilling into the
+   * full Plan view. */
+  plannerModel?: string
+  evaluatorModel?: string
 }
 
 type Agent = {
@@ -119,6 +126,11 @@ export type WorkflowAppProps = {
   onRestart: (node?: string) => void
   onStop: (node?: string) => void
   onPause: (node?: string) => void
+  /** Interrupt ONLY the master (orchestrator) session — leaves child
+   * node executions alone. Wired to the chat-panel send→stop button so
+   * the user can cancel a reply mid-thought without nuking the whole
+   * workflow. The top-bar Abort remains the "kill everything" path. */
+  onStopMaster?: () => void
   onSend: (text: string, node?: string) => void
   // Slash command callbacks
   onNewSession?: () => void
@@ -131,15 +143,69 @@ export type WorkflowAppProps = {
   onQuestionReject?: (requestID: string) => void
   onPermissionReply?: (requestID: string, reply: "once" | "always" | "reject", message?: string) => void
   onSandTableSend?: (nodeID: string, text: string) => void
+  /** Master-session chat history pagination — the underlying sync store
+   * only hydrates the first page of messages (80) on session mount. For
+   * conversations longer than that, the ChatPanel "Load earlier messages"
+   * button needs to trigger a server-side fetch; without this wiring the
+   * button would run out of in-memory groups and appear to stop working,
+   * leaving the earliest turns invisible. */
+  historyHasMore?: boolean
+  historyLoading?: boolean
+  onLoadMoreHistory?: () => void
 }
 
 export function WorkflowApp(props: WorkflowAppProps) {
   const [pick, setPick] = useState<string | null>(props.pick ?? props.nodes[0]?.id ?? null)
   const [sidebar, setSidebar] = useState(false)
   const [sessionNode, setSessionNode] = useState<string | null>(null)
+  // ── Plan modal state ──
+  // Plans live on chat messages (msg.plan). Instead of rendering them
+  // inline in the chat stream, we surface them as a fullscreen overlay
+  // the first time they arrive and keep a chip in the chat afterwards
+  // so the user can re-open at any time. Keyed by message id.
+  const [activePlanMsgId, setActivePlanMsgId] = useState<string | null>(null)
+  const [minimizedPlans, setMinimizedPlans] = useState<Set<string>>(() => new Set())
+  // Remember which plan ids we've already auto-opened so re-renders
+  // don't keep popping the modal back up after the user minimized it.
+  // We persist in localStorage so a hard refresh doesn't auto-pop the
+  // same plan back in the user's face — prior builds used a React ref,
+  // which was wiped on mount and retriggered the overlay every reload.
+  const AUTO_OPEN_STORAGE_KEY = "wf-plan-auto-opened:v1"
+  const autoOpenedPlans = useRef<Set<string>>(
+    (() => {
+      if (typeof window === "undefined") return new Set<string>()
+      try {
+        const raw = window.localStorage.getItem(AUTO_OPEN_STORAGE_KEY)
+        if (!raw) return new Set<string>()
+        const parsed = JSON.parse(raw)
+        return new Set<string>(Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : [])
+      } catch {
+        return new Set<string>()
+      }
+    })(),
+  )
+  const markAutoOpened = (id: string) => {
+    autoOpenedPlans.current.add(id)
+    if (typeof window === "undefined") return
+    try {
+      window.localStorage.setItem(
+        AUTO_OPEN_STORAGE_KEY,
+        JSON.stringify(Array.from(autoOpenedPlans.current)),
+      )
+    } catch {
+      // quota exceeded / privacy mode — ignore, worst case we re-open on refresh
+    }
+  }
   const side = useSplit({ axis: "x", size: 640, min: 520, max: 920, dir: -1 })
   const chat = useSplit({ axis: "y", size: 520, min: 0, max: 700, dir: -1 })
-  const [chatHeight, setChatHeight] = useState<"tall" | "short" | "hidden">("tall")
+  // ── Chat panel height modes ──
+  // tall       full chat with long message list (idle / design mode)
+  // short      compact chat, some history visible (manual toggle)
+  // input-only running mode — history hidden; only input + monitor
+  //            panel visible so the user can still inject context
+  //            without the chat log crowding the canvas
+  // hidden     fully collapsed (manual)
+  const [chatHeight, setChatHeight] = useState<"tall" | "short" | "input-only" | "hidden">("tall")
   const prevChatSize = useRef(520)
   const handleSizeToggle = () => {
     setChatHeight((prev) => {
@@ -147,6 +213,13 @@ export function WorkflowApp(props: WorkflowAppProps) {
         prevChatSize.current = chat.size
         chat.setSize(220)
         return "short"
+      }
+      if (prev === "input-only") {
+        // Going from input-only → tall restores full history; useful
+        // when the user wants to scroll past chat while the workflow
+        // is still running.
+        chat.setSize(prevChatSize.current || 520)
+        return "tall"
       }
       chat.setSize(prevChatSize.current || 520)
       return "tall"
@@ -162,7 +235,10 @@ export function WorkflowApp(props: WorkflowAppProps) {
     setChatHeight(prevChatSize.current > 300 ? "tall" : "short")
   }
 
-  // Dynamic chat panel height: tall when idle/paused, short when running
+  // Dynamic chat panel height: tall when idle, input-only when running
+  // (previous behaviour was "short" which still showed some history —
+  // that competed with the canvas for vertical space and made it hard
+  // to keep the graph in view during execution).
   const isRunning = props.status === "running"
   const prevRunning = useRef(isRunning)
   const [chatAnimating, setChatAnimating] = useState(false)
@@ -172,10 +248,13 @@ export function WorkflowApp(props: WorkflowAppProps) {
     if (chatHeight === "hidden") return
     setChatAnimating(true)
     if (isRunning) {
-      chat.setSize(220)
-      setChatHeight("short")
+      // Keep a record of the pre-run height so we can restore it
+      // exactly when execution ends.
+      prevChatSize.current = chat.size || prevChatSize.current || 520
+      chat.setSize(188)
+      setChatHeight("input-only")
     } else {
-      chat.setSize(520)
+      chat.setSize(prevChatSize.current || 520)
       setChatHeight("tall")
     }
     const t = setTimeout(() => setChatAnimating(false), 500)
@@ -232,12 +311,60 @@ export function WorkflowApp(props: WorkflowAppProps) {
   const node = useMemo(() => allNodes.find((item) => item.id === pick) ?? null, [pick, allNodes])
   const detail = useMemo(() => (pick ? (props.details[pick] ?? null) : null), [props.details, pick])
   const rows = props.chats[props.root] ?? []
+  // True only when the ROOT (master) session is producing output right
+  // now — i.e. it has a thinking or tool-call row still in-flight. We
+  // deliberately don't fall back to `props.status === "running"` here
+  // because that flag is workflow-level (any child node running counts)
+  // and would keep the send→stop button stuck in Stop mode long after
+  // the master itself has gone idle waiting for slaves to finish.
   const rootSessionRunning = useMemo(
-    () =>
-      props.status === "running" ||
-      rows.some((item) => item.thinking?.status === "running" || item.toolCall?.status === "running"),
-    [props.status, rows],
+    () => rows.some((item) => item.thinking?.status === "running" || item.toolCall?.status === "running"),
+    [rows],
   )
+
+  // ── Monitor text ──
+  // Derives the "what is master agent thinking right now" stream from
+  // the chat rows. We prefer the most recent reasoning block (model's
+  // internal chain-of-thought as emitted by the backend), then fall
+  // back to the most recent assistant content. This is what the
+  // compact monitor panel surfaces while the workflow is running.
+  const monitorText = useMemo(() => {
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const m = rows[i]
+      if (m.reasoning?.text?.trim()) return m.reasoning.text
+      if (m.thinking?.status === "running") return "Agent is thinking…"
+      if (m.role === "assistant" && m.content?.trim()) return m.content
+    }
+    return ""
+  }, [rows])
+
+  // ── Plan modal auto-open ──
+  // Watch the chat stream for new plan messages. First time we see one
+  // we pop the overlay; after the user dismisses or minimizes, the id
+  // is marked as "seen" so it won't auto-open again on re-render.
+  const planMessages = useMemo(() => rows.filter((m): m is ChatMsg & { plan: WorkflowPlan } => !!m.plan), [rows])
+  useEffect(() => {
+    if (planMessages.length === 0) return
+    const latest = planMessages[planMessages.length - 1]
+    if (autoOpenedPlans.current.has(latest.id)) return
+    markAutoOpened(latest.id)
+    setActivePlanMsgId(latest.id)
+  }, [planMessages])
+
+  // Expose the most recent plan's message id so the chat panel's
+  // monitor header can render a "re-open plan" chip. This is the
+  // safety net for the "I closed the overlay and now I can't get
+  // back" complaint: the chat history itself still carries a chip,
+  // but when the user has scrolled up or the chat is short, surfacing
+  // the shortcut on the monitor header (always in view) keeps the
+  // plan reachable with a single click.
+  const latestPlanMsgId = planMessages.length > 0 ? planMessages[planMessages.length - 1].id : undefined
+
+  const activePlan = useMemo(() => {
+    if (!activePlanMsgId) return null
+    const msg = planMessages.find((m) => m.id === activePlanMsgId)
+    return msg?.plan ?? null
+  }, [activePlanMsgId, planMessages])
 
   // Node session view (Page 2)
   if (sessionNode) {
@@ -304,11 +431,6 @@ export function WorkflowApp(props: WorkflowAppProps) {
           nodeProgress={nodeProgress}
           tokenStats={props.tokenStats}
           onTaskSidebarToggle={() => setSidebar((v) => !v)}
-          onDetailClick={() => {
-            if (!pick) return
-            setSessionNode(pick)
-          }}
-          onSessionClick={() => props.onSession()}
           onModelClick={props.onModel}
           onRunClick={() => props.onRun(node?.id)}
           onRestartClick={() => props.onRestart(node?.id)}
@@ -333,21 +455,21 @@ export function WorkflowApp(props: WorkflowAppProps) {
                 chains={canvasChains}
                 selectedNodeId={pick}
                 onNodeSelect={(id) => {
-                  if (pick === id) {
-                    const next = allNodes.find((item) => item.id === id)
-                    if (next?.type === "plan") {
-                      setSessionNode(id)
-                      return
-                    }
-                    props.onSession(id)
-                    return
-                  }
+                  // Selecting a node only updates the inspector — it never
+                  // navigates. Navigation is reserved for the arrow button so
+                  // that browsing the graph feels distinct from drilling in.
                   setPick(id)
                 }}
                 onNodeOpen={(id) => {
+                  // Arrow click: drill into the node's detail view in-place.
+                  // Both plan nodes (SandTableSessionView) and regular nodes
+                  // (NodeSessionView) render inside the workflow canvas — this
+                  // keeps navigation contextual to the workflow rather than
+                  // punting the user to the old session page. The previous
+                  // behaviour (non-plan → props.onSession(id)) caused the UI
+                  // to jump out of the workflow view, which required users to
+                  // click a separate "Detail" button to get back in.
                   setPick(id)
-                  // Arrow click always opens the in-app node detail view
-                  // (NodeSessionView / SandTableSessionView depending on type)
                   setSessionNode(id)
                 }}
                 onRootClick={() => props.onSession()}
@@ -394,13 +516,32 @@ export function WorkflowApp(props: WorkflowAppProps) {
                   onPlanRun={props.onPlanRun}
                   onPlanEdit={props.onPlanEdit}
                   isRunning={rootSessionRunning}
-                  onStop={() => props.onStop()}
+                  onStop={() => props.onStopMaster?.()}
                   onQuestionReply={props.onQuestionReply}
                   onQuestionReject={props.onQuestionReject}
                   onPermissionReply={props.onPermissionReply}
                   chatHeight={chatHeight}
                   onSizeToggle={handleSizeToggle}
                   onHide={handleHide}
+                  monitorText={monitorText}
+                  monitorPlanMsgId={latestPlanMsgId}
+                  historyHasMore={props.historyHasMore}
+                  historyLoading={props.historyLoading}
+                  onLoadMoreHistory={props.onLoadMoreHistory}
+                  // Plan routing: the message list renders a compact
+                  // chip for every plan so the full card is reserved
+                  // for the modal overlay. Clicking the chip re-opens
+                  // the overlay for that specific plan.
+                  renderPlanAsChip
+                  onPlanOpen={(msgId) => {
+                    setMinimizedPlans((prev) => {
+                      if (!prev.has(msgId)) return prev
+                      const next = new Set(prev)
+                      next.delete(msgId)
+                      return next
+                    })
+                    setActivePlanMsgId(msgId)
+                  }}
                 />
               </div>
             )}
@@ -467,6 +608,29 @@ export function WorkflowApp(props: WorkflowAppProps) {
           }}
         />
       </div>
+      {/* Plan overlay — rendered last so it layers above the canvas,
+       * inspector, sidebar, and both header clusters. The overlay owns
+       * its own backdrop blur; we just need to make sure the root div
+       * isn't clipping it (already `overflow-hidden`, but the overlay
+       * uses `position: fixed` so it escapes the container). */}
+      {activePlan && activePlanMsgId && (
+        <PlanOverlay
+          plan={activePlan}
+          onClose={() => {
+            // Close = remove from view. The plan stays in chat as a
+            // chip (thanks to renderPlanAsChip) so the user can always
+            // re-open it later.
+            setMinimizedPlans((prev) => new Set(prev).add(activePlanMsgId))
+            setActivePlanMsgId(null)
+          }}
+          onMinimize={() => {
+            setMinimizedPlans((prev) => new Set(prev).add(activePlanMsgId))
+            setActivePlanMsgId(null)
+          }}
+          onRun={props.onPlanRun}
+          onEdit={props.onPlanEdit}
+        />
+      )}
     </div>
   )
 }

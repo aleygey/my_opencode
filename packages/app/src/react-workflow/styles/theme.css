@@ -434,7 +434,10 @@
     0 0 0 1px rgba(77, 158, 138, 0.15),
     0 0 32px -4px rgba(77, 158, 138, 0.12);
   pointer-events: none;
-  animation: wf-pulse 2.2s ease-in-out infinite;
+  /* Static halo: the pulsing infinite animation was redundant with the
+   * Spin spinner, LIVE badge, and animated progress bar — it made the
+   * whole card feel restless. Keeping the glow as a still accent so the
+   * "running" state still reads at a glance without extra motion. */
 }
 
 .workflow-make .wf-root-agent-icon {
@@ -687,12 +690,27 @@
 
 .workflow-make .wf-node-pulse {
   position: absolute;
-  inset: 0;
+  inset: -1px;
   border-radius: inherit;
-  background: var(--wf-ok-soft);
-  opacity: 0;
-  animation: wf-pulse 2.2s ease-in-out infinite;
   pointer-events: none;
+  /* Breathing ring on running nodes. A soft green halo scales out and fades
+   * so the user can find the live node at a glance, even across a long chain.
+   * Runs continuously and composes with the card's own shadow on hover. */
+  animation: wf-node-breathe 2.2s ease-in-out infinite;
+  box-shadow: 0 0 0 0 rgba(77, 158, 138, 0.45);
+}
+
+@keyframes wf-node-breathe {
+  0%, 100% {
+    box-shadow:
+      0 0 0 0 rgba(77, 158, 138, 0.45),
+      0 0 10px 0 rgba(77, 158, 138, 0.18);
+  }
+  50% {
+    box-shadow:
+      0 0 0 6px rgba(77, 158, 138, 0),
+      0 0 22px 2px rgba(77, 158, 138, 0.28);
+  }
 }
 
 .workflow-make .wf-node-icon {
@@ -895,6 +913,35 @@
   font-size: 10px;
   font-weight: 600;
   color: var(--wf-accent);
+}
+
+/* Context-window usage ring — appears inline with the token readout
+ * when the current model's context limit is known. The SVG sits behind
+ * a tiny centred percentage so the number and the ring convey the
+ * same information with different affordances (glance vs. exact read). */
+.workflow-make .wf-topbar-token-ring {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+}
+.workflow-make .wf-topbar-token-ring svg {
+  display: block;
+}
+.workflow-make .wf-topbar-token-ring-pct {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
 }
 
 .workflow-make .wf-topbar-action {
@@ -1801,9 +1848,48 @@
   justify-content: flex-start;
 }
 
+/* Flex-axis gotcha: with `flex-direction: row-reverse`, `justify-content: flex-end`
+ * packs items to the visual LEFT (the main-axis end is reversed). We actually
+ * want the avatar + bubble to sit on the visual RIGHT, which is `flex-start`
+ * under a reversed row. Additionally we stretch the row to full width so the
+ * `flex-start` has the full track to anchor against — without `w-full` a
+ * shrink-to-fit row would still visually hug whichever side its content spills
+ * toward. */
 .workflow-make .wf-sand-dialogue--right {
-  justify-content: flex-end;
+  justify-content: flex-start;
   flex-direction: row-reverse;
+  width: 100%;
+}
+
+/* Entrance animation applied to each dialogue row as it mounts. Fires once
+ * per message because React only mounts a row on first render — revisited
+ * rows reuse the same DOM node and do not retrigger the animation. This
+ * turns batched polling updates into a visually staged reveal without any
+ * per-message state tracking. */
+.workflow-make .wf-sand-dialogue--enter {
+  animation: wf-sand-dialogue-enter 320ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.workflow-make .wf-sand-dialogue--left.wf-sand-dialogue--enter {
+  transform-origin: left top;
+}
+
+.workflow-make .wf-sand-dialogue--right.wf-sand-dialogue--enter {
+  transform-origin: right top;
+}
+
+@keyframes wf-sand-dialogue-enter {
+  0% {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
+  }
+  60% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .workflow-make .wf-sand-bubble-wrap {
@@ -1858,6 +1944,64 @@
   padding: 1px 5px;
   border-radius: 4px;
   background: color-mix(in srgb, var(--wf-ink) 8%, transparent);
+}
+
+.workflow-make .wf-sand-bubble--thinking {
+  padding: 12px 16px;
+  background: color-mix(in srgb, var(--wf-card) 80%, transparent);
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--wf-line-strong) 70%, transparent);
+  animation: wf-sand-thinking-breathe 2.4s ease-in-out infinite;
+}
+
+@keyframes wf-sand-thinking-breathe {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--wf-accent, var(--wf-ok)) 0%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--wf-accent, var(--wf-ok)) 12%, transparent);
+  }
+}
+
+.workflow-make .wf-sand-thinking-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 14px;
+}
+
+.workflow-make .wf-sand-thinking-dots > span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--wf-ink) 55%, transparent);
+  animation: wf-sand-thinking-dot 1.2s ease-in-out infinite;
+}
+
+.workflow-make .wf-sand-thinking-dots > span:nth-child(1) {
+  animation-delay: 0s;
+}
+
+.workflow-make .wf-sand-thinking-dots > span:nth-child(2) {
+  animation-delay: 0.18s;
+}
+
+.workflow-make .wf-sand-thinking-dots > span:nth-child(3) {
+  animation-delay: 0.36s;
+}
+
+@keyframes wf-sand-thinking-dot {
+  0%,
+  80%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.35;
+  }
+  40% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
 }
 
 .workflow-make .wf-sand-orchestrator-wrap {
@@ -2122,6 +2266,109 @@
   background: var(--wf-bg);
 }
 
+/* ── Workflow monitor (shown above the input in input-only mode) ──
+ * Gives the user a glimpse of the most recent master-agent reasoning
+ * without the full chat log stealing the canvas's vertical space.
+ * Internal scroll keeps long chain-of-thought contained. */
+.workflow-make .wf-chat-monitor {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 8px 12px;
+  gap: 6px;
+  border-top: 1px solid var(--wf-line);
+  background: color-mix(in srgb, var(--wf-chip) 60%, var(--wf-bg));
+}
+
+.workflow-make .wf-chat-monitor__header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--wf-dim);
+  flex-shrink: 0;
+}
+
+.workflow-make .wf-chat-monitor__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--wf-ok);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--wf-ok) 18%, transparent);
+  animation: wf-chat-monitor-pulse 1.8s ease-in-out infinite;
+}
+
+.workflow-make .wf-chat-monitor__label {
+  color: var(--wf-ink-soft);
+  letter-spacing: -0.01em;
+}
+
+.workflow-make .wf-chat-monitor__hint {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--wf-dim);
+  font-weight: 500;
+}
+
+/* Monitor-header re-open-plan chip. Kept compact so it doesn't fight
+ * the dot+label pair for space; the chevron-like outline cues users
+ * that it's a secondary shortcut, while the accent tint pulls enough
+ * attention to rescue the "I can't find the plan anymore" case. */
+.workflow-make .wf-chat-monitor__plan-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+  padding: 3px 8px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--wf-accent);
+  background: color-mix(in srgb, var(--wf-accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--wf-accent) 28%, transparent);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+.workflow-make .wf-chat-monitor__plan-btn:hover {
+  background: color-mix(in srgb, var(--wf-accent) 18%, transparent);
+  border-color: color-mix(in srgb, var(--wf-accent) 45%, transparent);
+}
+
+.workflow-make .wf-chat-monitor__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid var(--wf-line);
+  border-radius: 8px;
+  background: var(--wf-card);
+  padding: 8px 10px;
+}
+
+.workflow-make .wf-chat-monitor__text {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--wf-ink);
+  font-family: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.workflow-make .wf-chat-monitor__empty {
+  font-size: 11px;
+  color: var(--wf-dim);
+  font-style: italic;
+  text-align: center;
+  padding: 6px 0;
+}
+
+@keyframes wf-chat-monitor-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.4; }
+}
+
 .workflow-make .wf-chat-input-wrap {
   display: flex;
   align-items: flex-end;
@@ -2185,6 +2432,26 @@
   background: var(--wf-chip-strong);
   color: var(--wf-dim);
   cursor: default;
+}
+
+/* Running-state override: the same button, flipped to a stop control
+ * while the master agent is replying. Red fill telegraphs destructive
+ * intent; the pulse loop catches the eye so users notice the button
+ * changed meaning mid-session. */
+.workflow-make .wf-chat-send--stop {
+  background: var(--wf-bad);
+  color: #fff;
+  animation: wf-chat-stop-pulse 1.6s ease-in-out infinite;
+}
+
+.workflow-make .wf-chat-send--stop:hover {
+  background: color-mix(in srgb, var(--wf-bad) 85%, black);
+  animation-play-state: paused;
+}
+
+@keyframes wf-chat-stop-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--wf-bad) 40%, transparent); }
+  50%      { box-shadow: 0 0 0 4px color-mix(in srgb, var(--wf-bad) 0%, transparent); }
 }
 
 /* ── Chat input accessories ── */
@@ -2373,6 +2640,184 @@
   box-shadow: var(--wf-shadow-sm);
 }
 
+/* ── Plan chip (compact in-chat placeholder when the full plan lives
+ * in the overlay) ──
+ * Purpose: the chat stream can accumulate several plan revisions; we
+ * don't want each of them rendering as a big card. The chip keeps the
+ * timeline readable and exposes a one-click "open" affordance. */
+.workflow-make .wf-plan-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--wf-line-strong);
+  border-radius: 10px;
+  background: var(--wf-card);
+  box-shadow: var(--wf-shadow-xs);
+  color: var(--wf-ink);
+  font-size: 12px;
+  font-weight: 500;
+  transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
+  cursor: pointer;
+  max-width: 100%;
+}
+
+.workflow-make .wf-plan-chip:hover {
+  border-color: var(--wf-accent);
+  background: color-mix(in srgb, var(--wf-accent) 6%, var(--wf-card));
+  transform: translateY(-1px);
+}
+
+.workflow-make .wf-plan-chip__label {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.workflow-make .wf-plan-chip__meta {
+  color: var(--wf-dim);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.workflow-make .wf-plan-chip__cta {
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--wf-accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+/* ── Plan overlay (fullscreen modal for the full WorkflowPlan) ──
+ * Backdrop-blurs everything behind it so the plan is the only thing
+ * in focus. The panel itself is wide (up to 960px) with its own
+ * scroll so very large plans stay readable. */
+.workflow-make .wf-plan-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: wf-plan-overlay-in 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.workflow-make .wf-plan-overlay__backdrop {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--wf-bg) 55%, transparent);
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+}
+
+.workflow-make .wf-plan-overlay__panel {
+  position: relative;
+  /* Wider panel — plan nodes now stack vertically, so there's no benefit
+   * to constraining the card and the old 960px felt cramped for longer
+   * objective + description text. */
+  width: min(1120px, calc(100vw - 40px));
+  max-height: calc(100vh - 60px);
+  display: flex;
+  flex-direction: column;
+  background: var(--wf-card);
+  border: 1px solid var(--wf-line-strong);
+  border-radius: 16px;
+  box-shadow: 0 24px 48px -12px rgba(0, 0, 0, 0.25), 0 0 0 1px var(--wf-line) inset;
+  overflow: hidden;
+  animation: wf-plan-panel-in 280ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.workflow-make .wf-plan-overlay__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--wf-line);
+  background: var(--wf-chip);
+  flex-shrink: 0;
+}
+
+.workflow-make .wf-plan-overlay__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--wf-ink);
+}
+
+.workflow-make .wf-plan-overlay__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--wf-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--wf-accent) 20%, transparent);
+}
+
+.workflow-make .wf-plan-overlay__hint {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--wf-card);
+  color: var(--wf-dim);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  border: 1px solid var(--wf-line);
+}
+
+.workflow-make .wf-plan-overlay__actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.workflow-make .wf-plan-overlay__icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  color: var(--wf-dim);
+  transition: background 140ms ease, color 140ms ease;
+}
+
+.workflow-make .wf-plan-overlay__icon-btn:hover {
+  background: var(--wf-chip-strong);
+  color: var(--wf-ink);
+}
+
+.workflow-make .wf-plan-overlay__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 24px;
+  background: var(--wf-bg);
+}
+
+/* Override the inner PlanCard to use the full overlay width rather
+ * than the chat bubble's constrained column. */
+.workflow-make .wf-plan-overlay__body .wf-plan-card {
+  max-width: none;
+  width: 100%;
+}
+
+@keyframes wf-plan-overlay-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes wf-plan-panel-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
 .workflow-make .wf-plan-header {
   display: flex;
   align-items: center;
@@ -2444,27 +2889,33 @@
   flex-direction: column;
 }
 
-/* Workflow node row */
+/* Workflow node column — plan nodes stack vertically with a down-arrow
+ * separator between them. Horizontal layout crammed multi-line titles
+ * into 160px boxes and made longer plans overflow into a side-scroller
+ * the user had to discover. Vertical reads top-to-bottom like the DAG
+ * it represents and lets each node use the full card width. */
 .workflow-make .wf-plan-workflow {
   display: flex;
-  align-items: flex-start;
+  flex-direction: column;
+  align-items: stretch;
   gap: 0;
-  overflow-x: auto;
   padding-bottom: 4px;
 }
 
 .workflow-make .wf-plan-flow-item {
   display: flex;
-  align-items: flex-start;
+  flex-direction: column;
+  align-items: stretch;
   gap: 0;
-  flex-shrink: 0;
+  width: 100%;
 }
 
 .workflow-make .wf-plan-arrow {
   display: flex;
+  justify-content: center;
   align-items: center;
-  padding: 0 2px;
-  margin-top: 14px;
+  padding: 2px 0;
+  margin: 0;
   color: var(--wf-dim);
   flex-shrink: 0;
 }
@@ -2473,9 +2924,9 @@
   display: flex;
   flex-direction: column;
   gap: 3px;
-  min-width: 110px;
-  max-width: 160px;
-  padding: 9px 11px;
+  width: 100%;
+  max-width: none;
+  padding: 10px 12px;
   border-radius: 9px;
   border: 1.5px solid var(--wf-line-strong);
   background: var(--wf-bg);
@@ -3098,9 +3549,13 @@
     background-color 120ms ease,
     color 120ms ease;
 }
-.workflow-make .wf-load-earlier:hover {
+.workflow-make .wf-load-earlier:hover:not(:disabled) {
   background: var(--wf-chip);
   color: var(--wf-ink-soft);
+}
+.workflow-make .wf-load-earlier:disabled {
+  cursor: wait;
+  opacity: 0.65;
 }
 
 .workflow-make .wf-chat-workspace span {

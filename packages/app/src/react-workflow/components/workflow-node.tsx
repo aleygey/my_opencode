@@ -126,17 +126,18 @@ export function WorkflowNode({ title, type, status, progress, summary, isSelecte
           </div>
         </div>
 
-        {/* Progress (compact inline) */}
-        {run && (
+        {/* Progress (compact inline) — only when a real progress value is present.
+            Without real data we intentionally show nothing rather than a misleading default. */}
+        {run && typeof progress === 'number' && (
           <div className="flex items-center gap-2">
             <div className="wf-node-progress-track">
               <div
                 className="wf-progress-fill"
                 data-animated=""
-                style={{ width: `${progress ?? 65}%` }}
+                style={{ width: `${progress}%` }}
               />
             </div>
-            <span className="text-[10px] font-semibold tabular-nums text-[var(--wf-ok)]">{progress ?? 65}%</span>
+            <span className="text-[10px] font-semibold tabular-nums text-[var(--wf-ok)]">{progress}%</span>
           </div>
         )}
 
