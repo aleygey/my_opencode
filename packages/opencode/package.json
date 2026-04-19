@@ -133,6 +133,7 @@
     "bun-pty": "0.4.8",
     "chokidar": "4.0.3",
     "clipboardy": "4.0.0",
+    "croner": "10.0.1",
     "cross-spawn": "catalog:",
     "decimal.js": "10.5.0",
     "diff": "catalog:",
