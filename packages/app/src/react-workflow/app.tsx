@@ -120,6 +120,7 @@ export type WorkflowAppProps = {
   chats: Record<string, Msg[]>
   tokenStats?: TokenStats
   onSession: (node?: string) => void
+  onRefiner?: (node?: string) => void
   onTaskSelect?: (task: string) => void
   onModel: () => void
   onModelChange?: (model: string) => void
@@ -274,6 +275,7 @@ export function WorkflowApp(props: WorkflowAppProps) {
             setSessionNode(pick)
           }}
           onSessionClick={() => props.onSession()}
+          onRefinerClick={() => props.onRefiner?.(node?.id)}
           onModelClick={props.onModel}
           onRunClick={() => props.onRun(node?.id)}
           onRestartClick={() => props.onRestart(node?.id)}

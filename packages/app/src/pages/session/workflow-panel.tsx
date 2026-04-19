@@ -1,7 +1,8 @@
 import type { FileDiff, Message, Part, TextPart, ToolPart } from "@opencode-ai/sdk/v2/client"
+import { base64Encode } from "@opencode-ai/util/encode"
 import { createEffect, createMemo, For, on, onCleanup, Show, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
-import { useParams } from "@solidjs/router"
+import { useNavigate, useParams } from "@solidjs/router"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { useSDK } from "@/context/sdk"
 import { useServer } from "@/context/server"
@@ -710,9 +711,9 @@ function Canvas(props: {
                       <div class="min-w-0 flex-1">
                         <div class="truncate text-sm font-medium text-foreground">{node.title}</div>
                         <div class="mt-1 flex items-center gap-2">
-                          <span class="text-xs text-muted-foreground">{nodeKind(node)}</span>
+                          <span class="font-mono text-xs text-muted-foreground">{nodeKind(node)}</span>
                           <span class="text-xs text-muted-foreground">•</span>
-                          <span class={`text-xs ${tone(node.status) === "running" ? "text-blue-500" : tone(node.status) === "completed" ? "text-emerald-500" : tone(node.status) === "failed" ? "text-red-500" : "text-muted-foreground"}`}>{node.status}</span>
+                          <span class={`font-mono text-xs ${tone(node.status) === "running" ? "text-blue-500" : tone(node.status) === "completed" ? "text-emerald-500" : tone(node.status) === "failed" ? "text-red-500" : "text-muted-foreground"}`}>{node.status}</span>
                         </div>
                       </div>
                     </div>
@@ -818,9 +819,9 @@ function Inspector(props: {
               <div class="mb-2 text-xs uppercase tracking-wider text-muted-foreground">Selected Node</div>
               <h2 class="text-base font-medium text-foreground">{props.node!.title}</h2>
               <div class="mt-2 flex items-center gap-2">
-                <span class="text-xs text-muted-foreground">{nodeKind(props.node!)}</span>
+                <span class="font-mono text-xs text-muted-foreground">{nodeKind(props.node!)}</span>
                 <span class="text-xs text-muted-foreground">•</span>
-                <span class={`text-xs ${tone(props.node!.status) === "running" ? "text-blue-400" : tone(props.node!.status) === "completed" ? "text-emerald-400" : tone(props.node!.status) === "failed" ? "text-red-400" : "text-muted-foreground"}`}>{props.node!.status}</span>
+                <span class={`font-mono text-xs ${tone(props.node!.status) === "running" ? "text-blue-400" : tone(props.node!.status) === "completed" ? "text-emerald-400" : tone(props.node!.status) === "failed" ? "text-red-400" : "text-muted-foreground"}`}>{props.node!.status}</span>
               </div>
             </div>
 
@@ -1220,15 +1221,33 @@ export function WorkflowSessionStrip(props: {
 }
 
 export function WorkflowContextBar(props: { snapshot: WorkflowSnapshot; currentSessionID?: string }) {
+  const params = useParams()
   const node = createMemo(() => props.snapshot.nodes.find((item) => item.session_id === props.currentSessionID))
+  const refinerHref = createMemo(() => {
+    const sessionID = props.currentSessionID ?? props.snapshot.workflow.session_id
+    if (!params.dir || !sessionID) return undefined
+    return `/${params.dir}/session/${sessionID}/refiner`
+  })
   return (
     <div class="px-4 pt-3">
       <div class="rounded-[22px] border border-white/70 bg-white/78 px-4 py-4 shadow-[0_16px_40px_rgba(15,23,42,0.05)]">
-        <div class="flex flex-wrap items-center gap-2">
-          <Pill status={node()?.status ?? props.snapshot.workflow.status} />
-          <div class="text-[16px] font-semibold tracking-[-0.02em] text-slate-950">
-            {node()?.title ?? props.snapshot.workflow.title}
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="flex min-w-0 flex-wrap items-center gap-2">
+            <Pill status={node()?.status ?? props.snapshot.workflow.status} />
+            <div class="text-[16px] font-semibold tracking-[-0.02em] text-slate-950">
+              {node()?.title ?? props.snapshot.workflow.title}
+            </div>
           </div>
+          <Show when={refinerHref()}>
+            {(href) => (
+              <a
+                href={href()}
+                class="inline-flex h-8 items-center rounded-full border border-slate-200 bg-white px-3 text-[12px] font-medium text-slate-700 transition hover:border-sky-300 hover:text-sky-700"
+              >
+                Refiner
+              </a>
+            )}
+          </Show>
         </div>
         <div class="pt-2 text-[12px] text-slate-500">
           {node() ? `${node()!.agent} session` : goal(props.snapshot)}
@@ -1257,6 +1276,8 @@ export function WorkflowRuntimePanel(props: {
   const sdk = useSDK()
   const server = useServer()
   const platform = usePlatform()
+  const navigate = useNavigate()
+  const params = useParams()
   const [state, setState] = createStore({
     diff: {} as Record<string, FileDiff[] | undefined>,
   })
@@ -1509,6 +1530,18 @@ export function WorkflowRuntimePanel(props: {
     }
     const id = sessionID(node)
     props.onSelectSession(id)
+  }
+
+  const openRefiner = (node?: string) => {
+    const id = sessionID(node)
+    const dir = sdk.directory ? base64Encode(sdk.directory) : params.dir
+    if (!id || !dir) return
+    const href = `/${dir}/session/${id}/refiner`
+    if (typeof window === "object") {
+      window.location.assign(href)
+      return
+    }
+    navigate(href)
   }
 
   const send = (text: string, node?: string) => {
@@ -1818,6 +1851,7 @@ export function WorkflowRuntimePanel(props: {
         agents: agents(),
         chats: chatsWithDialogs(),
         onSession: openSession,
+        onRefiner: openRefiner,
         onTaskSelect: props.onTaskSelect,
         onModel: pickModel,
         onModelChange: changeModel,

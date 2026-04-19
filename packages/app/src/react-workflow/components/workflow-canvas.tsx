@@ -199,7 +199,7 @@ function RootAgentCard({ root, chainCount, onClick }: { root: RootAgent; chainCo
               Orchestrator
             </span>
             {run && (
-              <span className="wf-root-agent-live">
+              <span className="wf-root-agent-live font-mono">
                 <Sparkles className="h-2.5 w-2.5" strokeWidth={2} />
                 LIVE
               </span>
@@ -207,7 +207,7 @@ function RootAgentCard({ root, chainCount, onClick }: { root: RootAgent; chainCo
           </div>
 
           <div className="mt-1 flex items-center gap-2 text-[10.5px]">
-            <span className="font-medium text-[var(--wf-ink-soft)]">{root.phase}</span>
+            <span className="font-mono font-medium text-[var(--wf-ink-soft)]">{root.phase}</span>
             {root.model && (
               <>
                 <span className="text-[var(--wf-line-strong)]">&middot;</span>
@@ -215,7 +215,7 @@ function RootAgentCard({ root, chainCount, onClick }: { root: RootAgent; chainCo
               </>
             )}
             <span className="text-[var(--wf-line-strong)]">&middot;</span>
-            <span className="inline-flex items-center gap-1 text-[var(--wf-dim)]">
+            <span className="inline-flex items-center gap-1 font-mono text-[var(--wf-dim)]">
               <GitBranch className="h-2.5 w-2.5" strokeWidth={2} />
               {chainCount} {chainCount === 1 ? 'chain' : 'chains'}
             </span>
@@ -231,11 +231,11 @@ function RootAgentCard({ root, chainCount, onClick }: { root: RootAgent; chainCo
                 style={{ width: `${progress}%` }}
               />
             </div>
-            <span className="text-[10px] font-bold tabular-nums text-[var(--wf-dim)]">
+            <span className="font-mono text-[10px] font-bold tabular-nums text-[var(--wf-dim)]">
               {root.completedCount}/{root.nodeCount}
             </span>
             {run && (
-              <span className="text-[10px] font-bold tabular-nums text-[var(--wf-ok)]">{progress}%</span>
+              <span className="font-mono text-[10px] font-bold tabular-nums text-[var(--wf-ok)]">{progress}%</span>
             )}
           </div>
         </div>
@@ -476,11 +476,11 @@ function ChainLane({
       {collapsed && (
         <div className="wf-lane-collapsed wf-fade-in">
           <div className="wf-lane-collapsed-bar" style={{ background: color.accent }} />
-          <span className="wf-lane-collapsed-text">
+          <span className="wf-lane-collapsed-text font-mono">
             {completedCount}/{chain.nodes.length} completed
           </span>
           {runningCount > 0 && (
-            <span className="wf-lane-collapsed-running" style={{ color: color.accent }}>
+            <span className="wf-lane-collapsed-running font-mono" style={{ color: color.accent }}>
               {runningCount} running
             </span>
           )}
@@ -584,7 +584,7 @@ export function WorkflowCanvas({ root, chains, selectedNodeId, onNodeSelect, onN
       {/* Canvas controls — always visible */}
       <div className="wf-canvas-controls">
         {/* Zoom level */}
-        <span className="text-[10px] font-bold tabular-nums text-[var(--wf-dim)]">{zoomPct}%</span>
+        <span className="font-mono text-[10px] font-bold tabular-nums text-[var(--wf-dim)]">{zoomPct}%</span>
 
         {/* Reset / Locate root button */}
         <button

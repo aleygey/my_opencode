@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import { useCallback, useEffect, useState } from 'react'
-import { Eye, MessageSquare, Moon, PanelLeftOpen, Settings2, Square, Sun, Play, Pause, RotateCcw, Zap, Gauge } from 'lucide-react'
+import { Eye, MessageSquare, Moon, PanelLeftOpen, Settings2, Square, Sun, Play, Pause, RotateCcw, Zap, Gauge, Layers3 } from 'lucide-react'
 import { Spin } from './spin'
 import type { TokenStats } from '../app'
 
@@ -46,6 +46,7 @@ interface TopBarProps {
   onTaskSidebarToggle?: () => void
   onDetailClick: () => void
   onSessionClick: () => void
+  onRefinerClick?: () => void
   onModelClick?: () => void
   onRunClick?: () => void
   onRestartClick?: () => void
@@ -62,6 +63,7 @@ export function TopBar({
   onTaskSidebarToggle,
   onDetailClick,
   onSessionClick,
+  onRefinerClick,
   onModelClick,
   onRunClick,
   onRestartClick,
@@ -186,6 +188,12 @@ export function TopBar({
           <MessageSquare className="h-3.5 w-3.5" strokeWidth={1.6} />
           <span>Session</span>
         </button>
+        {onRefinerClick && (
+          <button onClick={onRefinerClick} className="wf-topbar-text-btn">
+            <Layers3 className="h-3.5 w-3.5" strokeWidth={1.6} />
+            <span>Refiner</span>
+          </button>
+        )}
         <button onClick={onModelClick} className="wf-topbar-icon-btn">
           <Settings2 className="h-3.5 w-3.5" strokeWidth={1.6} />
         </button>

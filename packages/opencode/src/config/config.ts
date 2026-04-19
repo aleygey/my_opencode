@@ -1085,10 +1085,6 @@ export namespace Config {
             .object({
               enabled: z.boolean().optional().describe("Enable the background refiner agent"),
               directory: z.string().optional().describe("Directory for persisted refiner memory artifacts"),
-              model_assisted: z
-                .boolean()
-                .optional()
-                .describe("Enable model-assisted refinement before heuristic fallback"),
             })
             .optional(),
           openTelemetry: z

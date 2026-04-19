@@ -68,16 +68,25 @@ import { DialogSelectDirectory } from "@/components/dialog-select-directory"
 
 const HomeRoute = lazy(() => import("@/pages/home"))
 const loadSession = () => import("@/pages/session")
+const loadRefinerPage = () => import("@/pages/session/refiner-page")
 const Session = lazy(loadSession)
+const RefinerPage = lazy(loadRefinerPage)
 const Loading = () => <div class="size-full" />
 
 if (typeof location === "object" && /\/session(?:\/|$)/.test(location.pathname)) {
   void loadSession()
+  if (/\/refiner(?:\/|$)/.test(location.pathname)) void loadRefinerPage()
 }
 
 const SessionRoute = () => (
   <SessionProviders>
     <Session />
+  </SessionProviders>
+)
+
+const RefinerRoute = () => (
+  <SessionProviders>
+    <RefinerPage />
   </SessionProviders>
 )
 
@@ -852,6 +861,7 @@ export function AppInterface(props: {
                 <Route path="/" component={HomeRoute} />
                 <Route path="/:dir" component={DirectoryLayout}>
                   <Route path="/" component={SessionIndexRoute} />
+                  <Route path="/session/:id/refiner" component={RefinerRoute} />
                   <Route path="/session/:id?" component={SessionRoute} />
                 </Route>
               </Dynamic>
@@ -874,6 +884,10 @@ export function WorkflowInterface(props: {
         <GlobalSDKProvider>
           <GlobalSyncProvider>
             <Router root={(routerProps) => <WorkflowShellProviders>{routerProps.children}</WorkflowShellProviders>}>
+              <Route path="/:dir" component={DirectoryLayout}>
+                <Route path="/session/:id/refiner" component={RefinerRoute} />
+                <Route path="/session/:id?" component={SessionRoute} />
+              </Route>
               <Route path="/*all" component={WorkflowScreen} />
             </Router>
           </GlobalSyncProvider>

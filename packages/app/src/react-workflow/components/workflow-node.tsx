@@ -44,8 +44,11 @@ export function WorkflowNode({ title, type, status, progress, isSelected, onClic
   return (
     <button
       data-wf-card=""
+      data-wf-type={type}
+      data-wf-status={status}
       className="group w-full text-left wf-node"
       style={{
+        ['--wf-node-type-color' as any]: cfg.color,
         borderLeftColor: statusAccent[status],
         borderLeftWidth: 3,
         boxShadow: isSelected
@@ -75,8 +78,8 @@ export function WorkflowNode({ title, type, status, progress, isSelected, onClic
           </div>
           <div className="mt-0.5 flex items-center gap-2 text-[10.5px]">
             <span
-              className="inline-flex items-center gap-1 font-medium"
-              style={{ color: cfg.color }}
+              className="wf-node-type-chip font-mono"
+              style={{ color: cfg.color, background: `${cfg.color}14`, borderColor: `${cfg.color}33` }}
             >
               {cfg.label}
             </span>
@@ -95,7 +98,7 @@ export function WorkflowNode({ title, type, status, progress, isSelected, onClic
                 <div className="h-[5px] w-[5px] rounded-full bg-[var(--wf-dim)] opacity-50" />
               )}
               <span className={[
-                'font-medium capitalize',
+                'font-mono font-medium capitalize',
                 done ? 'text-[var(--wf-ok)]' :
                 run ? 'text-[var(--wf-ink)]' :
                 fail ? 'text-[var(--wf-bad)]' :
@@ -118,7 +121,7 @@ export function WorkflowNode({ title, type, status, progress, isSelected, onClic
                 style={{ width: `${progress ?? 65}%` }}
               />
             </div>
-            <span className="text-[10px] font-semibold tabular-nums text-[var(--wf-ok)]">{progress ?? 65}%</span>
+            <span className="font-mono text-[10px] font-semibold tabular-nums text-[var(--wf-ok)]">{progress ?? 65}%</span>
           </div>
         )}
 
