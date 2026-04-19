@@ -1,6 +1,7 @@
 import { BusEvent } from "@/bus/bus-event"
 import { Bus } from "@/bus"
 import { Database, eq, desc, and, inArray, gt, sql } from "@/storage/db"
+import { AppRuntime } from "@/effect/app-runtime"
 import { Identifier } from "@/id/id"
 import { Instance } from "@/project/instance"
 import { Log } from "@/util/log"
@@ -45,6 +46,132 @@ const WorkflowNodeStatus = z.enum([
 ])
 const WorkflowNodeResultStatus = z.enum(["unknown", "success", "fail", "partial"])
 const WorkflowCheckpointStatus = z.enum(["pending", "passed", "failed", "skipped"])
+
+// Canonical event-kind taxonomy. All runtime writes MUST use one of these.
+// Slaves may still pass a free-form `event_kind` via workflow_update, in which
+// case we coerce unknown values to `custom.<kind>` and bucket them as "ui"
+// audience so they don't wake the orchestrator by accident.
+const WorkflowEventKind = z.enum([
+  // Workflow lifecycle
+  "workflow.created",
+  "workflow.updated",
+  "workflow.orchestrator_woken",
+  "workflow.orchestrator_wake_queued",
+  "workflow.orchestrator_wake_requested",
+  // Node lifecycle
+  "node.created",
+  "node.started",
+  "node.updated",
+  "node.completed",
+  "node.failed",
+  "node.paused",
+  "node.aborted",
+  "node.interrupted",
+  "node.cancelled",
+  "node.stalled",
+  // Node state signals the orchestrator must react to
+  "node.waiting",
+  "node.blocked",
+  "node.transition_rejected",
+  "node.input_missing",
+  "node.output_invalid",
+  // Node attempt / action accounting
+  "node.attempt_reported",
+  "node.action",
+  "node.action_limit_reached",
+  "node.attempt_limit_reached",
+  // Node ↔ orchestrator control channel
+  "node.control",
+  "node.pulled",
+  "node.command_acked",
+  "node.command_timeout",
+  // Needs (P1.3)
+  "node.need_opened",
+  "node.need_fulfilled",
+  "node.need_resolved",
+  // Node runtime telemetry (UI audience)
+  "node.runtime.tool_running",
+  "node.runtime.tool_completed",
+  "node.runtime.tool_failed",
+  "node.runtime.skill_loaded",
+  "node.runtime.subtask_requested",
+  "node.runtime.subtask_started",
+  "node.runtime.subtask_completed",
+  "node.runtime.subtask_failed",
+  // Edge
+  "edge.created",
+  "edge.updated",
+  "edge.deleted",
+  // Checkpoint
+  "checkpoint.created",
+  "checkpoint.passed",
+  "checkpoint.failed",
+  "checkpoint.pending",
+  "checkpoint.skipped",
+])
+type WorkflowEventKind = z.infer<typeof WorkflowEventKind>
+
+const WorkflowEventAudience = z.enum(["orchestrator", "ui", "both"])
+type WorkflowEventAudience = z.infer<typeof WorkflowEventAudience>
+
+/** Bucket events by who should see them.
+ *  - `orchestrator`: only master / runtime consumers (internal wake signals)
+ *  - `ui`: display-only telemetry; master should NOT read these
+ *  - `both`: life-cycle + decision-relevant events
+ */
+function audienceOf(kind: string): WorkflowEventAudience {
+  if (kind.startsWith("node.runtime.")) return "ui"
+  if (kind === "node.action") return "ui"
+  if (kind === "node.pulled") return "ui"
+  if (kind.startsWith("workflow.orchestrator_")) return "orchestrator"
+  if (kind.startsWith("custom.")) return "ui"
+  return "both"
+}
+
+/** Coerce a slave-supplied kind into a canonical string.
+ *  Unknown kinds are namespaced under `custom.` so they never accidentally
+ *  match an orchestrator trigger. Returns the coerced kind + whether it was
+ *  known — callers may want to log unknowns. */
+function coerceEventKind(raw: string): { kind: string; known: boolean } {
+  const ok = WorkflowEventKind.safeParse(raw)
+  if (ok.success) return { kind: ok.data, known: true }
+  // Already namespaced? keep as-is.
+  if (raw.startsWith("custom.")) return { kind: raw, known: false }
+  return { kind: `custom.${raw}`, known: false }
+}
+
+/** Legal node status transitions. `source === "runtime"` bypasses this —
+ *  runtime stalls / limit-reached handlers need to force terminal states
+ *  even from atypical starts. Same-state transitions are always a no-op
+ *  (handled separately). */
+const NODE_TRANSITIONS: Record<WorkflowNodeStatus, ReadonlySet<WorkflowNodeStatus>> = {
+  pending: new Set(["ready", "running", "waiting", "cancelled", "failed"]),
+  ready: new Set(["running", "waiting", "cancelled", "failed"]),
+  running: new Set(["waiting", "paused", "interrupted", "completed", "failed", "cancelled"]),
+  waiting: new Set(["running", "paused", "interrupted", "cancelled", "failed"]),
+  paused: new Set(["running", "waiting", "cancelled", "failed"]),
+  interrupted: new Set(["running", "cancelled", "failed"]),
+  // Terminal states require restart (runtime-source) to leave.
+  completed: new Set([]),
+  failed: new Set(["running", "cancelled"]),
+  cancelled: new Set([]),
+}
+
+function isLegalNodeTransition(from: WorkflowNodeStatus, to: WorkflowNodeStatus): boolean {
+  if (from === to) return true
+  return NODE_TRANSITIONS[from]?.has(to) ?? false
+}
+
+export class InvalidNodeTransitionError extends Error {
+  constructor(
+    readonly nodeID: string,
+    readonly from: WorkflowNodeStatus,
+    readonly to: WorkflowNodeStatus,
+  ) {
+    super(`Illegal workflow node transition ${from} → ${to} for node ${nodeID}`)
+    this.name = "InvalidNodeTransitionError"
+  }
+}
 
 function mergeJSON(
   current: Record<string, unknown> | undefined,
@@ -501,6 +628,7 @@ export namespace Workflow {
       target_node_id: z.string().optional(),
       kind: z.string(),
       source: z.string(),
+      audience: WorkflowEventAudience.optional(),
       payload: z.record(z.string(), z.any()),
       time_created: z.number(),
     })
@@ -637,6 +765,14 @@ export namespace Workflow {
       payload: Record<string, unknown>
     }
     action_delta?: number
+    /** When set, also increments the top-level node.attempt column.
+     * Previously `attempt_delta` lived only on the workflow_update
+     * tool schema, and the LLM was expected to call it explicitly
+     * every time a slave finished — which it almost never did. Now
+     * onMessage can bump it in lockstep with node.attempt_reported
+     * so the inspector's "attempt X/Y" counter actually reflects
+     * reality. */
+    attempt_delta?: number
     run: (node: WNode) => Partial<Run>
   }) {
     const node = await getNode(input.nodeID).catch(() => undefined)
@@ -652,6 +788,7 @@ export namespace Workflow {
             runtime: next,
           },
         },
+        attempt_delta: input.attempt_delta,
       },
       action_delta: input.action_delta,
       event: {
@@ -843,8 +980,15 @@ export namespace Workflow {
     }).catch(() => undefined)
     if (!msg) return
     const rep = report(node, msg)
+    // Bump the top-level attempt counter on every definitive result so
+    // the inspector "attempt X/Y" badge actually moves. "waiting" is
+    // excluded — those are in-flight pauses, not completed tries. The
+    // orchestrator can still override via workflow_update if it wants
+    // to force a specific count after a manual retry.
+    const shouldBumpAttempt = rep.result !== "waiting"
     await patchRun({
       nodeID: node.id,
+      attempt_delta: shouldBumpAttempt ? 1 : undefined,
       run: (node) => {
         const curr = runState(node)
         const hist = [...(curr.attempt_history ?? []).filter((item) => item.message_id !== rep.message_id), rep]
@@ -876,8 +1020,29 @@ export namespace Workflow {
     if (seen && input.time - seen < wakeDelay) return
     current.seen[key] = input.time
 
-    const status = SessionStatus.get(SessionID.make(input.sessionID))
-    if (status.type === "idle") {
+    // Previously this read `SessionStatus.get(...)` directly on the
+    // namespace, but `get` lives inside the Effect layer closure and
+    // isn't a top-level export — so the call threw `TypeError: get is
+    // not a function` every time, silently killing the wake pipeline.
+    // That's why slave completions stopped waking the orchestrator
+    // after the first round: the queue path never ran, and the
+    // unsubStatus flush path had nothing to flush. We now fetch the
+    // real status through the Effect runtime. Any failure (layer not
+    // ready, runtime shutting down) falls through to the queue branch
+    // so the wake still lands on the next idle transition.
+    let idleNow = false
+    try {
+      const info = await AppRuntime.runPromise(
+        SessionStatus.Service.use((svc) => svc.get(SessionID.make(input.sessionID))),
+      )
+      idleNow = info.type === "idle"
+    } catch (error) {
+      log.warn("failed to read orchestrator status; queueing wake", {
+        workflowID: input.workflowID,
+        error,
+      })
+    }
+    if (idleNow) {
       await sendWake(input).catch(async (error) => {
         if (!(error instanceof Session.BusyError)) {
           log.warn("failed to wake orchestrator", { workflowID: input.workflowID, error })
@@ -1115,6 +1280,14 @@ export namespace Workflow {
   }
 
   function fromEventRow(row: typeof WorkflowEventTable.$inferSelect): EventInfo {
+    // `_audience` is stamped by writeEvent; lift it out so API consumers see
+    // a clean `audience` field and the payload is free of our internal marker.
+    const raw = row.payload ?? {}
+    const tagged = typeof raw._audience === "string" ? raw._audience : undefined
+    const audience = WorkflowEventAudience.safeParse(tagged).success
+      ? (tagged as WorkflowEventAudience)
+      : audienceOf(row.kind)
+    const { _audience: _omit, ...payload } = raw as Record<string, unknown>
     return {
       id: row.id,
       workflow_id: row.workflow_id,
@@ -1123,7 +1296,8 @@ export namespace Workflow {
       target_node_id: row.target_node_id ?? undefined,
       kind: row.kind,
       source: row.source,
-      payload: row.payload,
+      audience,
+      payload,
       time_created: row.time_created,
     }
   }
@@ -1161,10 +1335,23 @@ export namespace Workflow {
     nodeID?: string
     sessionID?: string
     target_node_id?: string
-    kind: string
+    kind: WorkflowEventKind | string
     source: string
     payload?: Record<string, unknown>
   }) {
+    // Validate / coerce kind to the canonical taxonomy. Unknown kinds from
+    // slaves get namespaced under `custom.` so they never match orchestrator
+    // triggers — the orchestrator stays reactive to the closed set above.
+    const { kind, known } = coerceEventKind(input.kind)
+    if (!known) {
+      log.warn("workflow event with unknown kind coerced to custom.*", {
+        workflowID: input.workflowID,
+        raw: input.kind,
+        coerced: kind,
+        source: input.source,
+      })
+    }
+    const audience = audienceOf(kind)
     const row = Database.use((db) =>
       db
         .insert(WorkflowEventTable)
@@ -1173,9 +1360,11 @@ export namespace Workflow {
           node_id: input.nodeID,
           session_id: input.sessionID,
           target_node_id: input.target_node_id,
-          kind: input.kind,
+          kind,
           source: input.source,
-          payload: input.payload ?? {},
+          // Audience is stamped in payload so we don't need a schema migration.
+          // `workflow_read` / `workflow_pull` honour it via audienceOf() on read.
+          payload: { ...(input.payload ?? {}), _audience: audience },
         })
         .returning()
         .get(),
@@ -1540,6 +1729,21 @@ export namespace Workflow {
     )
     if (!workflowRow) throw new NotFoundError({ message: `Workflow not found: ${workflowID}` })
     const workflow = fromWorkflowRow(workflowRow)
+    // Prefer the root session's title once auto-titling has upgraded it from the
+    // "New session - <timestamp>" placeholder. This lets the workflow card in
+    // the sidebar and canvas track the task's actual subject (e.g. "Flash
+    // RT3000 firmware and debug boot") instead of a generic placeholder the
+    // master agent passed at creation time ("Workflow", "Plan via Sand Table",
+    // etc.). Failures fall back silently to the stored workflow title.
+    try {
+      const session = await Session.get(SessionID.make(workflow.session_id))
+      if (session?.title && !Session.isDefaultTitle(session.title)) {
+        workflow.title = session.title
+      }
+    } catch {
+      // Swallow — workflow snapshot should still be usable even if session
+      // lookup fails (e.g. archived, transient DB issue).
+    }
     const rows = Database.use((db) => ({
       nodes: db
         .select()
@@ -1614,6 +1818,11 @@ export namespace Workflow {
     z.object({
       workflowID: z.string(),
       cursor: z.number().int().nonnegative().optional(),
+      /** Audience filter for the returned event feed. Default `orchestrator`
+       *  (master-facing) — drops `ui` telemetry so the master doesn't waste
+       *  context on tool/skill step-by-step noise. UI clients should pass
+       *  `all` to get the full timeline. */
+      audience: z.enum(["orchestrator", "ui", "all"]).optional(),
     }),
     async (input) => {
       await state()
@@ -1621,7 +1830,7 @@ export namespace Workflow {
         db.select().from(WorkflowTable).where(eq(WorkflowTable.id, input.workflowID)).get(),
       )
       if (!workflowRow) throw new NotFoundError({ message: `Workflow not found: ${input.workflowID}` })
-      const events = Database.use((db) =>
+      const rawEvents = Database.use((db) =>
         db
           .select()
           .from(WorkflowEventTable)
@@ -1629,6 +1838,12 @@ export namespace Workflow {
           .orderBy(WorkflowEventTable.id)
           .all(),
       )
+      const aud = input.audience ?? "orchestrator"
+      const events = rawEvents.filter((row) => {
+        if (aud === "all") return true
+        const a = audienceOf(row.kind)
+        return aud === "ui" ? a !== "orchestrator" : a !== "ui"
+      })
       const changedNodeIDs = [...new Set(events.map((row) => row.node_id).filter(Boolean))] as string[]
       const changedNodes = changedNodeIDs.length
         ? Database.use((db) =>
@@ -1639,7 +1854,7 @@ export namespace Workflow {
       const changedCheckpoint = events.some((row) => row.kind.startsWith("checkpoint."))
       const includeWorkflow = events.some((row) => row.kind.startsWith("workflow.") || row.kind.startsWith("node."))
       const info = fromWorkflowRow(workflowRow)
-      const feed = events.map(fromEventRow)
+      const feed = events.map((row) => fromEventRow(row))
       return {
         workflow: includeWorkflow ? info : undefined,
         runtime: includeWorkflow
@@ -1716,12 +1931,34 @@ export namespace Workflow {
     }),
     async (input) => {
       await state()
+      // State-machine guard. runtime-sourced patches are allowed to force any
+      // state (stall detection, limit breaches, restart logic need this);
+      // orchestrator / node sources must walk legal transitions only. On
+      // rejection we emit `node.transition_rejected` so the orchestrator
+      // learns about it instead of silently dropping the intent.
+      let rejection:
+        | { from: WorkflowNodeStatus; to: WorkflowNodeStatus; nodeID: string; workflow_id: string }
+        | undefined
       const row = Database.transaction((tx) => {
         const found = tx.select().from(WorkflowNodeTable).where(eq(WorkflowNodeTable.id, input.nodeID)).get()
         if (!found) throw new NotFoundError({ message: `Workflow node not found: ${input.nodeID}` })
 
         const current = fromNodeRow(found)
-        const nextStatus = input.patch.status ?? current.status
+        const requestedStatus = input.patch.status ?? current.status
+        if (
+          requestedStatus !== current.status &&
+          input.source !== "runtime" &&
+          !isLegalNodeTransition(current.status, requestedStatus)
+        ) {
+          rejection = {
+            from: current.status,
+            to: requestedStatus,
+            nodeID: current.id,
+            workflow_id: current.workflow_id,
+          }
+          return current
+        }
+        const nextStatus = requestedStatus
         const attempt = current.attempt + (input.patch.attempt_delta ?? 0)
         const actionCount =
           input.patch.action_count ?? current.action_count + (input.action_delta ?? 0)
@@ -1779,6 +2016,22 @@ export namespace Workflow {
         if (!updated) throw new Error("Failed to update workflow node")
         return fromNodeRow(updated)
       })
+
+      if (rejection) {
+        await writeEvent({
+          workflowID: rejection.workflow_id,
+          nodeID: rejection.nodeID,
+          target_node_id: rejection.nodeID,
+          source: input.source,
+          kind: "node.transition_rejected",
+          payload: {
+            from: rejection.from,
+            to: rejection.to,
+            requested_by: input.source,
+          },
+        })
+        throw new InvalidNodeTransitionError(rejection.nodeID, rejection.from, rejection.to)
+      }
 
       const workflow = await touchWorkflow({
         workflowID: row.workflow_id,
@@ -1932,6 +2185,10 @@ export namespace Workflow {
     z.object({
       nodeID: z.string(),
       cursor: z.number().int().nonnegative().optional(),
+      /** Filter events by intended audience. Default `orchestrator` — slave
+       *  pulls only orchestrator/both events (control commands + life-cycle).
+       *  Pass `all` to include ui telemetry (debug only). */
+      audience: z.enum(["orchestrator", "ui", "all"]).optional(),
     }),
     async (input) => {
       await state()
@@ -1950,6 +2207,16 @@ export namespace Workflow {
           .orderBy(WorkflowEventTable.id)
           .all(),
       )
+      const aud = input.audience ?? "orchestrator"
+      const events = rows
+        .map(fromEventRow)
+        .filter((event) =>
+          aud === "all"
+            ? true
+            : aud === "ui"
+              ? event.audience !== "orchestrator"
+              : event.audience !== "ui",
+        )
       await writeEvent({
         workflowID: node.workflow_id,
         nodeID: node.id,
@@ -1958,13 +2225,30 @@ export namespace Workflow {
         kind: "node.pulled",
         payload: {
           cursor: input.cursor ?? 0,
-          pending: rows.length,
+          pending: events.length,
+          audience: aud,
         },
       })
+      // Surface the structured ACK queue to slave, alongside open_needs and
+      // resolved_needs. See P1.1 / P1.3 — these live in state_json by
+      // convention so no schema migration is required.
+      const runtimeState = isRec(node.state_json) ? node.state_json : {}
+      const pending_commands = Array.isArray(runtimeState.pending_commands)
+        ? (runtimeState.pending_commands as unknown[])
+        : []
+      const open_needs = Array.isArray(runtimeState.open_needs)
+        ? (runtimeState.open_needs as unknown[])
+        : []
+      const resolved_needs = Array.isArray(runtimeState.resolved_needs)
+        ? (runtimeState.resolved_needs as unknown[])
+        : []
       return {
         node,
         cursor: rows.at(-1)?.id ?? input.cursor ?? 0,
-        events: rows.map(fromEventRow),
+        events,
+        pending_commands,
+        open_needs,
+        resolved_needs,
       }
     },
   )

@@ -1,6 +1,7 @@
 import { Tool } from "./tool"
 import DESCRIPTION from "./sand-table.txt"
 import z from "zod"
+import { Effect } from "effect"
 import { Session } from "../session"
 import { SessionID, MessageID, PartID } from "../session/schema"
 import { MessageV2 } from "../session/message-v2"
@@ -89,6 +90,17 @@ export const SandTableDiscussionSchema = z.object({
 // ── In-memory state ────────────────────────────────────────────────────────
 
 const discussions = new Map<string, DiscussionState>()
+// Secondary index: the tool call ID that triggered each discussion.
+//
+// Rationale — the frontend learns about the discussion ID via
+// `ctx.metadata({ sandTableID })`, but that publishes through an Effect that
+// isn't run when `execute` is an async function (the Effect is created,
+// never awaited, and the metadata update never reaches the client). Until
+// that's fixed properly, the frontend has no way to know the discussion ID
+// mid-run. However it DOES know the tool part's `callID` from the outset.
+// We register each discussion under its callID too so polling can use that
+// as a stable key instead of waiting for metadata propagation.
+const discussionsByCallID = new Map<string, DiscussionState>()
 
 function serialize(state: DiscussionState) {
   return {
@@ -113,7 +125,9 @@ function serialize(state: DiscussionState) {
 }
 
 export function discussionGet(id: string) {
-  const state = discussions.get(id)
+  // Try primary (discussionID) first, then the callID fallback. This lets the
+  // HTTP endpoint accept either identifier interchangeably.
+  const state = discussions.get(id) ?? discussionsByCallID.get(id)
   if (!state) return
   return serialize(state)
 }
@@ -123,7 +137,9 @@ export async function discussionWrite(input: {
   content: string
   role?: DiscussionRole
 }) {
-  const state = discussions.get(input.discussionID)
+  // Accept either the real discussionID or the callID — see discussionGet.
+  const state =
+    discussions.get(input.discussionID) ?? discussionsByCallID.get(input.discussionID)
   if (!state) return
   state.messages.push({
     role: input.role ?? "orchestrator",
@@ -175,11 +191,87 @@ async function resolveModels(
 
 // ── Prompts ────────────────────────────────────────────────────────────────
 
-const PLANNER_SYSTEM =
-  "You are a plan architect in a sand table exercise. Given the user's goal and context, produce a detailed, actionable workflow plan. Structure it as a list of nodes with agent assignments, dependencies, and checkpoints. If this is a revision round, incorporate the evaluator's feedback to improve the plan. Use msg_write to share your plan."
+// NOTE: Localisation policy
+// -------------------------
+// The product is primarily used by a Chinese-speaking team, so planner and
+// evaluator must answer in Simplified Chinese (简体中文). However, `APPROVE`
+// and `REVISE` MUST stay as literal English tokens — `checkApproval` /
+// `extractFeedback` below match on them via regex. Node titles, agent names
+// (e.g. `coder`, `build-flash`) and tool invocations should also keep their
+// English/technical identifiers because downstream routing parses them.
+const PLANNER_SYSTEM = `You are a plan architect in a sand table exercise. Given the user's goal and context, produce a detailed, actionable workflow plan. If this is a revision round, incorporate the evaluator's feedback. Use msg_write to share your plan.
 
-const EVALUATOR_SYSTEM =
-  "You are a plan evaluator in a sand table exercise. Review the proposed plan critically: check for completeness, feasibility, risk, missing edge cases, and optimal agent assignment. Respond with either APPROVE (if the plan is solid) or REVISE followed by specific, actionable feedback. Use msg_write to share your evaluation."
+PLAN SHAPE (critical — this determines whether downstream execution can parallelise):
+The plan is a DAG of nodes, NOT a linear list. Each node MUST declare its predecessors via a \`depends_on\` array of node IDs. An empty \`depends_on\` means the node can start immediately. Multiple nodes with the same (or empty) \`depends_on\` run in parallel. A node with multiple entries in \`depends_on\` is a fan-in — it waits for ALL of its predecessors.
+
+DAG-FIRST DESIGN RULE:
+Before writing the plan, identify which pieces of work are truly independent and MUST run in parallel (independent files, independent subsystems, independent evidence-gathering tasks). Only serialise two nodes when one genuinely consumes the output of the other. A plan that is a single straight chain (A→B→C→D) is almost always wrong — it means you failed to spot parallelism.
+
+CANONICAL SHAPES:
+- Fan-out + fan-in (most common):  root → {A, B, C run in parallel} → merge/integrate → deploy
+    A.depends_on = [root],  B.depends_on = [root],  C.depends_on = [root]
+    merge.depends_on = [A, B, C]
+- Diamond:  analyze → {design, prototype in parallel} → validate
+- Pipeline (rare — only when truly sequential):  extract → transform → load
+
+SCHEMA (each node):
+{
+  id: string,              // stable short identifier, e.g. "fetch_logs"
+  title: string,           // short English noun phrase
+  agent: "coding" | "build-flash" | "debug" | "deploy" | ...,
+  description: string,     // Chinese: what this node does and why
+  depends_on: string[]     // REQUIRED; use [] for entry nodes. NEVER omit.
+}
+
+SELF-CHECK before you publish (apply all three):
+1. Count nodes with \`depends_on: []\` — if exactly one, ask whether two tasks could actually start in parallel from the root.
+2. Count fan-in nodes (\`depends_on.length >= 2\`) — if zero, your plan is a chain; reconsider whether an integration / aggregation / validation node is missing.
+3. For every edge A → B, ask: does B literally consume A's output? If not, delete the edge and let them run in parallel.
+
+Use msg_write to publish the plan.
+
+IMPORTANT: Always write your plan content (descriptions, rationale, checkpoints) in Simplified Chinese (简体中文). Keep technical identifiers such as node IDs, titles, agent names, tool names, file paths, and code snippets in their original form.`
+
+// Evaluator rubric — 8 dimensions the evaluator MUST explicitly score
+// on every round. This is the core anti-anchoring measure: by forcing
+// the evaluator to re-examine every dimension from scratch each round,
+// we prevent the degenerate pattern of "planner patched the 3 issues I
+// raised last round → APPROVE without thinking". Combined with the
+// fresh-session-per-round wiring in the execute() loop below, each
+// round starts with zero memory of the prior critique, so an APPROVE
+// only happens when the current plan genuinely passes the rubric — not
+// because the planner obeyed the previous round's punch-list.
+const EVALUATOR_SYSTEM = `You are an INDEPENDENT plan evaluator in a sand table exercise.
+
+Evaluate the proposed workflow plan against the rubric below. For each dimension, give a short verdict (OK / ISSUE / BLOCKER) and a one-line justification. Only return APPROVE if ALL dimensions are OK (zero ISSUE, zero BLOCKER).
+
+RUBRIC (score every dimension explicitly, in order):
+1. Goal alignment — does the plan actually solve the stated topic / user goal?
+2. Node decomposition — are the nodes right-sized (not too coarse, not too granular) and does each node have a single clear purpose?
+3. Dependency graph — is depends_on correct AND is the DAG exploiting available parallelism? Check each edge A→B: does B literally consume A's output? If not, the edge is a false dependency (ISSUE). A plan that is a single straight chain (every node has exactly one predecessor and one successor) is almost always a BLOCKER — flag it and require the planner to identify which tasks could fan out from the root or fan in at an integration node. Also check: no cycles, no missing edges, no orphan nodes.
+4. Agent assignment — is each node's agent (coding / build-flash / debug / deploy / …) the best fit for the work it will do?
+5. Checkpoints — do checkpoints cover the key decision points and risky transitions, and are they phrased so a human reviewer knows what to check?
+6. Edge cases & failure modes — does the plan anticipate the top 3 realistic ways this could go wrong, and is there a response for each?
+7. Rollback / recovery — if a middle node fails, can work be resumed or rolled back without restarting from scratch?
+8. Complexity estimate — does estimated_complexity match the actual graph size, dependency depth, and risk surface?
+
+ANTI-ANCHORING RULE (critical):
+You have NO memory of previous rounds. Do not assume the plan improved just because "the planner addressed my last feedback" — you did not give feedback, this is your first and only look. Re-evaluate every dimension from scratch. If something is still wrong, say so, even if it was wrong last round too. If something is newly wrong, flag it. Do NOT approve just because the plan has changed.
+
+WORKFLOW-DESIGN SPECIFIC CHECKS:
+- Are there orphan nodes (no dependents, not a terminal)?
+- Are there nodes that could run in parallel but are needlessly serialised?
+- Does the plan conflate "planning work" with "execution work"? (The sand table IS the planner — the resulting plan should not include meta-planning nodes.)
+- Do checkpoint placements create actual review leverage, or are they decorative?
+
+OUTPUT FORMAT:
+- Start with the literal uppercase token \`APPROVE\` or \`REVISE\` on its own line — this is parsed programmatically, do not translate or reformat it.
+- If REVISE, list the failing dimensions with the ISSUE / BLOCKER marker and concrete actionable feedback.
+- If APPROVE, still include the 8-dimension summary so the approval is auditable.
+
+LANGUAGE: Write all narrative / feedback in Simplified Chinese (简体中文). Keep technical identifiers (node titles, agent names, tool names, file paths, code snippets, and the APPROVE / REVISE token itself) in their original form.
+
+Use \`msg_write\` with the provided discussion_id to publish your evaluation.`
 
 function plannerPrompt(state: DiscussionState): string {
   const lines = [
@@ -193,6 +285,10 @@ function plannerPrompt(state: DiscussionState): string {
   }
   lines.push(
     `Generate a detailed workflow plan. Use msg_write with discussion_id="${state.id}" to publish your plan.`,
+    // Reiterated per-turn so the model doesn't drift back to English when the
+    // surrounding context (topic, feedback) is English. Technical identifiers
+    // remain exempt so orchestrator routing isn't broken.
+    `请使用简体中文撰写计划内容（节点描述、理由、风险等）。节点标题、agent 名称、工具名、文件路径、代码片段保持原样。`,
   )
   return lines.filter((l) => l !== undefined).join("\n")
 }
@@ -206,7 +302,15 @@ function evaluatorPrompt(state: DiscussionState): string {
     `Proposed plan:`,
     state.currentPlan ?? "(no plan received)",
     "",
-    `Evaluate this plan. Respond with APPROVE or REVISE + feedback. Use msg_write with discussion_id="${state.id}" to publish your evaluation.`,
+    // Anti-anchoring reminder at the call site too — even though the
+    // session is fresh (no prior messages), the prompt itself shouldn't
+    // hint at "last round" context the evaluator shouldn't have.
+    `Evaluate this plan independently using the rubric in your system prompt. You have no memory of prior rounds; score every dimension from scratch.`,
+    `Respond with APPROVE or REVISE on the first line, followed by the 8-dimension breakdown. Use msg_write with discussion_id="${state.id}" to publish.`,
+    // Verdict token MUST stay uppercase English — checkApproval regex depends
+    // on it. The rest of the response (feedback, rationale) should be in
+    // Simplified Chinese for the Chinese-speaking team.
+    `格式：第一行仅写大写英文 APPROVE 或 REVISE；随后以简体中文按 8 项 rubric 逐条给出 OK / ISSUE / BLOCKER + 理由。节点标题、agent 名称、工具名、文件路径、代码片段保持原样。`,
   ]
   return lines.join("\n")
 }
@@ -323,7 +427,10 @@ export const SandTableTool = Tool.define("sand_table", {
       evaluator: `${models.evaluator.providerID}/${models.evaluator.modelID}`,
     })
 
-    // Create child sessions
+    // Planner session is long-lived — it iterates its own plan across
+    // rounds, so it NEEDS the prior context (its last draft + the
+    // evaluator's feedback) to produce a revised draft. Creating it
+    // once and reusing is correct.
     const plannerSession = await Session.create({
       parentID: ctx.sessionID,
       title: `Sand Table Planner (@sandtable)`,
@@ -334,16 +441,10 @@ export const SandTableTool = Tool.define("sand_table", {
       ],
     })
 
-    const evaluatorSession = await Session.create({
-      parentID: ctx.sessionID,
-      title: `Sand Table Evaluator (@sandtable)`,
-      permission: [
-        { permission: "msg_read", pattern: "*", action: "allow" },
-        { permission: "msg_write", pattern: "*", action: "allow" },
-        { permission: "*" as const, pattern: "*", action: "deny" },
-      ],
-    })
-
+    // Evaluator session is created PER ROUND (see loop below). Starting
+    // state has no evaluator yet; participants[] gets the current
+    // round's evaluator pushed in as each round starts, and stays
+    // pointing at the most recent one for observability.
     const state: DiscussionState = {
       id: discussionID,
       topic: params.topic,
@@ -354,15 +455,25 @@ export const SandTableTool = Tool.define("sand_table", {
       status: "running",
       participants: [
         { role: "planner", sessionID: plannerSession.id, model: models.planner },
-        { role: "evaluator", sessionID: evaluatorSession.id, model: models.evaluator },
       ],
     }
     discussions.set(discussionID, state)
+    // Register under the tool call ID as a secondary key so the frontend can
+    // look up the discussion using the part.callID it already knows,
+    // independent of whether the ctx.metadata update reaches the client.
+    if (ctx.callID) discussionsByCallID.set(ctx.callID, state)
 
-    ctx.metadata({
-      title: `Sand table: ${params.topic.slice(0, 60)}`,
-      metadata: { sandTableID: discussionID },
-    })
+    // ctx.metadata returns a lazy Effect; calling it without running produces
+    // no side effect. We fire-and-forget via Effect.runPromise so the client
+    // *does* see the sandTableID published on the tool part state while
+    // running. Failures are swallowed because the callID-keyed fallback above
+    // keeps the UI functional even if metadata never propagates.
+    void Effect.runPromise(
+      ctx.metadata({
+        title: `Sand table: ${params.topic.slice(0, 60)}`,
+        metadata: { sandTableID: discussionID },
+      }) as Effect.Effect<void, unknown, never>,
+    ).catch((err) => log.warn("sand_table metadata publish failed", { err: String(err) }))
 
     try {
       for (let round = 1; round <= params.max_rounds; round++) {
@@ -386,8 +497,38 @@ export const SandTableTool = Tool.define("sand_table", {
           log.warn("planner timeout", { discussionID, round })
         }
 
-        // Step 2: Evaluator reviews plan
-        const evaluator = state.participants.find((p) => p.role === "evaluator")!
+        // Step 2: Evaluator reviews plan.
+        //
+        // Fresh session per round: this is the anti-anchoring fix. If
+        // we reused the evaluator session, round N+1 would see round
+        // N's critique in its own message history, and the model
+        // tends to rubber-stamp ("planner fixed the points I raised
+        // → APPROVE") regardless of what the current plan actually
+        // says. Spinning up a new session means round N+1's evaluator
+        // has zero memory of round N's critique and must re-evaluate
+        // from the rubric in EVALUATOR_SYSTEM.
+        const evaluatorSession = await Session.create({
+          parentID: ctx.sessionID,
+          title: `Sand Table Evaluator · round ${round} (@sandtable)`,
+          permission: [
+            { permission: "msg_read", pattern: "*", action: "allow" },
+            { permission: "msg_write", pattern: "*", action: "allow" },
+            { permission: "*" as const, pattern: "*", action: "deny" },
+          ],
+        })
+        const evaluator: Participant = {
+          role: "evaluator",
+          sessionID: evaluatorSession.id,
+          model: models.evaluator,
+        }
+        // Keep participants[] pointing at the CURRENT round's
+        // evaluator so the UI can show which session is running.
+        // Replace any prior evaluator entry rather than accumulating
+        // — callers read participants[] by role, not as a history.
+        state.participants = [
+          ...state.participants.filter((p) => p.role !== "evaluator"),
+          evaluator,
+        ]
         await runParticipant(state, evaluator, evaluatorPrompt(state), ctx.abort)
 
         // Wait for evaluator's msg_write
