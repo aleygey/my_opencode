@@ -116,6 +116,10 @@ export namespace Serial {
       }>
     >
     readonly write: (id: SerialID, data: string) => Effect.Effect<void>
+    readonly snapshot: (
+      id: SerialID,
+      tailBytes?: number,
+    ) => Effect.Effect<{ data: string; cursor: number; bufferCursor: number } | undefined>
   }
 
   export class Service extends Context.Service<Service, Interface>()("@opencode/Serial") {}
@@ -345,7 +349,18 @@ export namespace Serial {
         return yield* Effect.promise(() => listPorts())
       })
 
-      return Service.of({ list, get, create, update, remove, connect, listPorts, write })
+      const snapshot = Effect.fn("Serial.snapshot")(function* (id: SerialID, tailBytes?: number) {
+        const s = yield* InstanceState.get(state)
+        const session = s.sessions.get(id)
+        if (!session) return undefined
+        const data =
+          typeof tailBytes === "number" && tailBytes > 0 && tailBytes < session.buffer.length
+            ? session.buffer.slice(session.buffer.length - tailBytes)
+            : session.buffer
+        return { data, cursor: session.cursor, bufferCursor: session.bufferCursor }
+      })
+
+      return Service.of({ list, get, create, update, remove, connect, listPorts, write, snapshot })
     }),
   )
 
@@ -383,5 +398,9 @@ export namespace Serial {
 
   export async function write(id: SerialID, data: string) {
     return runPromise((svc) => svc.write(id, data))
+  }
+
+  export async function snapshot(id: SerialID, tailBytes?: number) {
+    return runPromise((svc) => svc.snapshot(id, tailBytes))
   }
 }

@@ -27,6 +27,14 @@ import { LspTool } from "./lsp"
 import { Truncate } from "./truncate"
 import { SandTableTool, MsgReadTool, MsgWriteTool } from "./sand-table"
 import {
+  SerialListPortsTool,
+  SerialListTool,
+  SerialCreateTool,
+  SerialWriteTool,
+  SerialReadRecentTool,
+  SerialCloseTool,
+} from "./serial"
+import {
   WorkflowCheckpointCreateTool,
   WorkflowControlTool,
   WorkflowCreateTool,
@@ -139,6 +147,12 @@ export namespace ToolRegistry {
       const sandtable = yield* SandTableTool
       const msgread = yield* MsgReadTool
       const msgwrite = yield* MsgWriteTool
+      const serialListPorts = yield* SerialListPortsTool
+      const serialList = yield* SerialListTool
+      const serialCreate = yield* SerialCreateTool
+      const serialWrite = yield* SerialWriteTool
+      const serialReadRecent = yield* SerialReadRecentTool
+      const serialClose = yield* SerialCloseTool
       const workflowCreate = yield* WorkflowCreateTool
       const workflowNodeCreate = yield* WorkflowNodeCreateTool
       const workflowNodeStart = yield* WorkflowNodeStartTool
@@ -230,6 +244,12 @@ export namespace ToolRegistry {
             sandtable: Tool.init(sandtable),
             msgread: Tool.init(msgread),
             msgwrite: Tool.init(msgwrite),
+            serialListPorts: Tool.init(serialListPorts),
+            serialList: Tool.init(serialList),
+            serialCreate: Tool.init(serialCreate),
+            serialWrite: Tool.init(serialWrite),
+            serialReadRecent: Tool.init(serialReadRecent),
+            serialClose: Tool.init(serialClose),
             workflowCreate: Tool.init(workflowCreate),
             workflowNodeCreate: Tool.init(workflowNodeCreate),
             workflowNodeStart: Tool.init(workflowNodeStart),
@@ -264,6 +284,12 @@ export namespace ToolRegistry {
               tool.sandtable,
               tool.msgread,
               tool.msgwrite,
+              tool.serialListPorts,
+              tool.serialList,
+              tool.serialCreate,
+              tool.serialWrite,
+              tool.serialReadRecent,
+              tool.serialClose,
               tool.workflowCreate,
               tool.workflowNodeCreate,
               tool.workflowNodeStart,

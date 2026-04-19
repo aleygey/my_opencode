@@ -16,6 +16,7 @@ import { PermissionRoutes } from "./permission"
 import { ProjectRoutes } from "./project"
 import { SessionRoutes } from "./session"
 import { PtyRoutes } from "./pty"
+import { SerialRoutes } from "./serial"
 import { McpRoutes } from "./mcp"
 import { FileRoutes } from "./file"
 import { ConfigRoutes } from "./config"
@@ -31,6 +32,7 @@ export const InstanceRoutes = (upgrade: UpgradeWebSocket): Hono =>
     .use(WorkspaceRouterMiddleware(upgrade))
     .route("/project", ProjectRoutes())
     .route("/pty", PtyRoutes(upgrade))
+    .route("/serial", SerialRoutes(upgrade))
     .route("/config", ConfigRoutes())
     .route("/experimental", ExperimentalRoutes())
     .route("/session", SessionRoutes())
