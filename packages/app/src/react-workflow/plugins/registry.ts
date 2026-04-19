@@ -1,44 +1,33 @@
-import type { ToolPlugin, PluginMatch, ToolData } from "./types"
+import type { NodeKind, ToolPlugin } from "./types"
 
-const plugins: Map<string, ToolPlugin> = new Map()
+const plugins = new Map<string, ToolPlugin<any>>()
 
-export function register(plugin: ToolPlugin) {
-  plugins.set(plugin.id, plugin)
+export function register<TDetail>(plugin: ToolPlugin<TDetail>) {
+  plugins.set(plugin.id, plugin as ToolPlugin<any>)
 }
 
-export function get(id: string): ToolPlugin | undefined {
+export function unregister(id: string) {
+  plugins.delete(id)
+}
+
+export function get(id: string): ToolPlugin<any> | undefined {
   return plugins.get(id)
 }
 
-export function all(): ToolPlugin[] {
+export function all(): ToolPlugin<any>[] {
   return Array.from(plugins.values()).sort((a, b) => b.priority - a.priority)
 }
 
-export function match(nodeType: string, detail: unknown): PluginMatch | null {
-  const sorted = all()
-  for (const plugin of sorted) {
-    if (!plugin.supportedTypes.includes(nodeType)) continue
-    if (plugin.matches && !plugin.matches(nodeType, detail)) continue
-    const data = plugin.getData?.(detail) ?? { status: "idle" }
-    return { plugin, data }
-  }
-  return null
+/** Return every plugin that claims the given node, ordered by priority. */
+export function matchAll(nodeType: NodeKind, detail: unknown): ToolPlugin<any>[] {
+  return all().filter((p) => p.match(nodeType, detail))
 }
 
-export function matchAll(nodeType: string, detail: unknown): PluginMatch[] {
-  const sorted = all()
-  const matches: PluginMatch[] = []
-  for (const plugin of sorted) {
-    if (!plugin.supportedTypes.includes(nodeType)) continue
-    if (plugin.matches && !plugin.matches(nodeType, detail)) continue
-    const data = plugin.getData?.(detail) ?? { status: "idle" }
-    matches.push({ plugin, data })
-  }
-  return matches
+/** Return the highest-priority plugin that claims the node, or undefined. */
+export function match(nodeType: NodeKind, detail: unknown): ToolPlugin<any> | undefined {
+  return matchAll(nodeType, detail)[0]
 }
 
 export function clear() {
   plugins.clear()
 }
-
-export { plugins }

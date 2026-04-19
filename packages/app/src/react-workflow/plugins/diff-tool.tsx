@@ -2,7 +2,7 @@
 import { useState } from "react"
 import { diffLines } from "diff"
 import { FileCode2, Plus, Minus, Check } from "lucide-react"
-import type { ToolPlugin, PluginContext, ToolData, ToolStatus } from "./types"
+import type { ToolPlugin, PluginContext } from "./types"
 import type { Detail } from "../app"
 
 type Change = NonNullable<Detail["codeChanges"]>[number]
@@ -33,10 +33,9 @@ function diffRows(item?: Change) {
   })
 }
 
-function DiffTool({ nodeId, nodeStatus, data, detail }: PluginContext) {
+function DiffTool({ nodeId, nodeStatus, detail }: PluginContext<Detail | null>) {
   const [tab, setTab] = useState(0)
-  const d = detail as Detail | null
-  const files = d?.codeChanges ?? []
+  const files = detail?.codeChanges ?? []
   const active = files[tab] ?? files[0]
   const changes = diffRows(active)
   const run = nodeStatus === "running"
@@ -123,24 +122,16 @@ function DiffTool({ nodeId, nodeStatus, data, detail }: PluginContext) {
   )
 }
 
-export const diffToolPlugin: ToolPlugin = {
+export const diffToolPlugin: ToolPlugin<Detail | null> = {
   id: "diff-tool",
   name: "Code Diff",
   icon: FileCode2,
-  supportedTypes: ["coding", "build-flash"],
   priority: 100,
   component: DiffTool,
-  getData: (detail: unknown): ToolData => {
+  // Claim any coding node, and any other node that already has file changes
+  // attached (e.g. a build-flash node that produced patches).
+  match: (nodeType, detail) => {
     const d = detail as Detail | null
-    const files = d?.codeChanges ?? []
-    return {
-      status: files.length > 0 ? "completed" : "idle",
-      progress: files.length,
-      rawData: files,
-    }
-  },
-  matches: (nodeType: string, detail: unknown): boolean => {
-    const d = detail as Detail | null
-    return (d?.codeChanges?.length ?? 0) > 0 || nodeType === "coding"
+    return nodeType === "coding" || (d?.codeChanges?.length ?? 0) > 0
   },
 }

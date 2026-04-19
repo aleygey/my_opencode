@@ -16,7 +16,14 @@ import { SplitBar, useSplit } from "./components/split"
 import type { WorkflowPlan } from "./components/plan-card"
 import type { SandTableResult } from "./components/sand-table-card"
 import { ChevronUp } from "lucide-react"
+import { initPlugins } from "./plugins"
 import "./styles/theme.css"
+
+// Register the built-in middle-column plugins once at module load. This is a
+// small, idempotent side effect (the registry clears itself first); keeping
+// it next to the component tree means `react-workflow` is self-bootstrapping
+// and callers don't need to remember to wire it up.
+initPlugins()
 
 type State = "running" | "completed" | "failed" | "idle"
 type Role = "system" | "assistant" | "user" | "tool"

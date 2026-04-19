@@ -20,7 +20,7 @@ import {
   Pause,
   SkipForward,
 } from "lucide-react"
-import type { ToolPlugin, PluginContext, ToolData } from "./types"
+import type { ToolPlugin, PluginContext } from "./types"
 import type { Detail } from "../app"
 import { Spin } from "../components/spin"
 
@@ -103,7 +103,7 @@ function StepRow({ step, depth = 0 }: { step: ExecStep; depth?: number }) {
   )
 }
 
-function ExecutionTool({ nodeId, nodeStatus, data, detail, onAction }: PluginContext) {
+function ExecutionTool({ nodeStatus, onAction }: PluginContext<Detail | null>) {
   const [metrics, setMetrics] = useState<ExecMetrics>({
     totalSteps: 0,
     completedSteps: 0,
@@ -113,7 +113,6 @@ function ExecutionTool({ nodeId, nodeStatus, data, detail, onAction }: PluginCon
   })
   const [started, setStarted] = useState<string | null>(null)
   const run = nodeStatus === "running"
-  const d = detail as Detail | null
 
   const mockSteps: ExecStep[] = useMemo(
     () => [
@@ -294,23 +293,11 @@ function ExecutionTool({ nodeId, nodeStatus, data, detail, onAction }: PluginCon
   )
 }
 
-export const executionToolPlugin: ToolPlugin = {
+export const executionToolPlugin: ToolPlugin<Detail | null> = {
   id: "execution-tool",
   name: "Execution Pipeline",
   icon: Rocket,
-  supportedTypes: ["deploy", "debug"],
   priority: 80,
   component: ExecutionTool,
-  getData: (detail: unknown): ToolData => {
-    const d = detail as Detail | null
-    const logs = d?.executionLog ?? []
-    return {
-      status: logs.length > 0 ? "running" : "idle",
-      progress: logs.length,
-      rawData: logs,
-    }
-  },
-  matches: (nodeType: string, detail: unknown): boolean => {
-    return nodeType === "deploy" || nodeType === "debug"
-  },
+  match: (nodeType) => nodeType === "deploy" || nodeType === "debug",
 }

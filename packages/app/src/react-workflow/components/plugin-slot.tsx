@@ -2,14 +2,12 @@
 import { useState } from "react"
 import { Puzzle } from "lucide-react"
 import { matchAll } from "../plugins/registry"
-import type { PluginContext, PluginMatch } from "../plugins/types"
+import type { NodeKind } from "../plugins/types"
 import type { Status } from "../app"
-
-type Kind = "coding" | "build-flash" | "debug" | "deploy" | "plan"
 
 interface PluginSlotProps {
   nodeId: string
-  nodeType: Kind
+  nodeType: NodeKind
   nodeStatus: Status
   detail: unknown
   onAction?: (action: string, payload?: unknown) => void
@@ -40,17 +38,9 @@ export function PluginSlot({ nodeId, nodeType, nodeStatus, detail, onAction }: P
     return <FallbackPanel />
   }
 
-  const current = matches[activeIdx] ?? matches[0]
-  const ctx: PluginContext = {
-    nodeId,
-    nodeType,
-    nodeStatus,
-    data: current.data,
-    detail,
-    onAction,
-  }
-
-  const ToolComponent = current.plugin.component
+  const plugin = matches[activeIdx] ?? matches[0]
+  const ctx = { nodeId, nodeType, nodeStatus, detail, onAction }
+  const ToolComponent = plugin.component
 
   // Single plugin — render directly, no wrapper
   if (matches.length === 1) {
@@ -61,18 +51,18 @@ export function PluginSlot({ nodeId, nodeType, nodeStatus, detail, onAction }: P
   return (
     <>
       <div className="wf-plugin-tabs">
-        {matches.map((m, idx) => {
-          const Icon = m.plugin.icon
+        {matches.map((p, idx) => {
+          const Icon = p.icon
           const isActive = idx === activeIdx
           return (
             <button
-              key={m.plugin.id}
+              key={p.id}
               className={`wf-plugin-tab ${isActive ? "wf-plugin-tab--active" : ""}`}
               onClick={() => setActiveIdx(idx)}
-              title={m.plugin.name}
+              title={p.name}
             >
               <Icon className="h-3 w-3" strokeWidth={1.8} />
-              <span>{m.plugin.name}</span>
+              <span>{p.name}</span>
             </button>
           )
         })}

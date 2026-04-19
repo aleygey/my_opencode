@@ -1,7 +1,7 @@
 /** @jsxImportSource react */
 import { useState, useEffect, useRef } from "react"
 import { Cpu, Activity, Terminal, Wifi, WifiOff, Send, RotateCcw, Settings, Trash2, ChevronUp } from "lucide-react"
-import type { ToolPlugin, PluginContext, ToolData } from "./types"
+import type { ToolPlugin, PluginContext } from "./types"
 import type { Detail } from "../app"
 import { Spin } from "../components/spin"
 
@@ -17,7 +17,7 @@ function formatTime() {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}.${String(d.getMilliseconds()).padStart(3, "0")}`
 }
 
-function SerialTool({ nodeId, nodeStatus, data, detail, onAction }: PluginContext) {
+function SerialTool({ nodeStatus, detail, onAction }: PluginContext<Detail | null>) {
   const [lines, setLines] = useState<SerialLine[]>([])
   const [input, setInput] = useState("")
   const [connected, setConnected] = useState(false)
@@ -27,7 +27,6 @@ function SerialTool({ nodeId, nodeStatus, data, detail, onAction }: PluginContex
   const [autoScroll, setAutoScroll] = useState(true)
   const scrollRef = useRef<HTMLDivElement>(null)
   const run = nodeStatus === "running"
-  const d = detail as Detail | null
 
   useEffect(() => {
     if (run && connected) {
@@ -158,7 +157,7 @@ function SerialTool({ nodeId, nodeStatus, data, detail, onAction }: PluginContex
 
       <div className="flex items-center gap-2 border-b border-[var(--wf-line)] bg-[var(--wf-bg)] px-5 py-2">
         <Activity className="h-3 w-3 text-[var(--wf-dim)]" strokeWidth={1.8} />
-        <span className="font-mono text-[11px] text-[var(--wf-dim)]">{d?.type ?? "embedded"} device</span>
+        <span className="font-mono text-[11px] text-[var(--wf-dim)]">{detail?.type ?? "embedded"} device</span>
         <span className="text-[var(--wf-line-strong)]">·</span>
         <span className="text-[11px] text-[var(--wf-dim)]">{lines.length} lines</span>
       </div>
@@ -228,21 +227,11 @@ function SerialTool({ nodeId, nodeStatus, data, detail, onAction }: PluginContex
   )
 }
 
-export const serialToolPlugin: ToolPlugin = {
+export const serialToolPlugin: ToolPlugin<Detail | null> = {
   id: "serial-tool",
   name: "Serial Monitor",
   icon: Terminal,
-  supportedTypes: ["build-flash", "debug"],
   priority: 90,
   component: SerialTool,
-  getData: (detail: unknown): ToolData => {
-    const d = detail as Detail | null
-    return {
-      status: "idle",
-      rawData: d?.executionLog ?? [],
-    }
-  },
-  matches: (nodeType: string, detail: unknown): boolean => {
-    return nodeType === "build-flash" || nodeType === "debug"
-  },
+  match: (nodeType) => nodeType === "build-flash" || nodeType === "debug",
 }
