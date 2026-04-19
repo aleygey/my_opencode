@@ -157,7 +157,10 @@ const localeMatchers: Array<{ locale: Locale; match: (language: string) => boole
 ]
 
 function detectLocale(): Locale {
-  if (typeof navigator !== "object") return "en"
+  // Project default is Simplified Chinese — product is primarily used by a
+  // Chinese-speaking team. We still honour the browser language when it
+  // matches a supported locale, so users on an en-US system get English.
+  if (typeof navigator !== "object") return "zh"
 
   const languages = navigator.languages?.length ? navigator.languages : [navigator.language]
   for (const language of languages) {
@@ -167,7 +170,7 @@ function detectLocale(): Locale {
     if (match) return match.locale
   }
 
-  return "en"
+  return "zh"
 }
 
 export function normalizeLocale(value: string): Locale {
