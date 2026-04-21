@@ -98,17 +98,23 @@ if (!(root instanceof HTMLElement) && import.meta.env.DEV) {
 }
 
 const getCurrentUrl = () => {
+  // Production (firmware / embedded web UI): the API is always served from the
+  // same origin as the page, so ignore any build-time overrides that might have
+  // leaked into the bundle from a stray VITE_OPENCODE_SERVER_* env var.
+  if (!import.meta.env.DEV) return location.origin
   const host = location.hostname || "localhost"
   if (import.meta.env.VITE_OPENCODE_SERVER_HOST || import.meta.env.VITE_OPENCODE_SERVER_PORT) {
     return `http://${import.meta.env.VITE_OPENCODE_SERVER_HOST ?? host}:${import.meta.env.VITE_OPENCODE_SERVER_PORT ?? "4096"}`
   }
   if (location.hostname.includes("opencode.ai")) return "http://localhost:4096"
-  if (import.meta.env.DEV)
-    return `http://${import.meta.env.VITE_OPENCODE_SERVER_HOST ?? host}:${import.meta.env.VITE_OPENCODE_SERVER_PORT ?? "4096"}`
-  return location.origin
+  return `http://${host}:4096`
 }
 
 const getDefaultUrl = () => {
+  // In production, always use the page's origin. Any persisted value in
+  // localStorage would be from a previous environment and would point the
+  // frontend at the wrong host (e.g. 127.0.0.1 when opened cross-machine).
+  if (!import.meta.env.DEV) return getCurrentUrl()
   const lsDefault = readDefaultServerUrl()
   if (lsDefault) return lsDefault
   return getCurrentUrl()
