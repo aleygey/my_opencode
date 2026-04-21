@@ -469,4 +469,98 @@ describe("Refiner", () => {
       },
     })
   })
+
+  // A single user message can contain several independent reusable ideas.
+  // The route LLM (mocked here) emits an array of decisions and the runtime
+  // must create / attach / reject each one independently. This guards the
+  // schema upgrade from single-decision to {decisions: [...]}.
+  test("fans out a single message into multiple experiences when route returns an array", async () => {
+    await using tmp = await tmpdir({ git: true })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        Refiner.setRouteOverrideForTest(async () => [
+          {
+            action: "new",
+            reason: "规则 A",
+            kind: "workflow_rule",
+            title: "提交前必须执行 lint",
+            abstract: "提交代码前必须先跑 lint 校验再推送。",
+            scope: "repo",
+          },
+          {
+            action: "new",
+            reason: "规则 B",
+            kind: "constraint_or_policy",
+            title: "UI 文案禁用 emoji",
+            abstract: "所有用户可见的界面文案均不允许使用 emoji 字符。",
+            scope: "project",
+          },
+          {
+            action: "noise",
+            reason: "礼貌性结尾",
+          },
+        ])
+
+        const session = await Session.create({})
+        const messageID = await addUserMessage(
+          session.id,
+          "帮忙改下：commit 前要跑 lint；UI 文字别用 emoji。辛苦啦",
+        )
+        await Refiner.observeUserMessage({ sessionID: session.id, messageID })
+
+        const base = path.join(tmp.path, ".opencode", "refiner-memory")
+        const files = await waitForCount("experiences/**/*.md", base, 2)
+        expect(files.length).toBe(2)
+        const kinds = await Promise.all(
+          files.map(async (f) => String(matter(await Filesystem.readText(f)).data.kind)),
+        )
+        expect(kinds.sort()).toEqual(["constraint_or_policy", "workflow_rule"])
+
+        const rejectedPath = path.join(base, "rejected.ndjson")
+        const rejected = await readFile(rejectedPath, "utf8").catch(() => "")
+        expect(rejected.split("\n").filter(Boolean).length).toBe(1)
+      },
+    })
+  })
+
+  // When the array contains duplicates, attachAndRefine / createExperience
+  // must be called only once per target. A chatty model shouldn't double-
+  // apply.
+  test("dedupes repeated decisions in the same fan-out", async () => {
+    await using tmp = await tmpdir({ git: true })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        Refiner.setRouteOverrideForTest(async () => [
+          {
+            action: "new",
+            reason: "A",
+            kind: "know_how",
+            title: "跑测试的正确姿势",
+            abstract: "使用 bun test 并加 30 秒超时以避免 flaky 案例卡死。",
+            scope: "repo",
+          },
+          {
+            action: "new",
+            reason: "A-dup",
+            kind: "know_how",
+            title: "跑测试的正确姿势",
+            abstract: "同上。",
+            scope: "repo",
+          },
+        ])
+
+        const session = await Session.create({})
+        const messageID = await addUserMessage(session.id, "bun test --timeout 30000")
+        await Refiner.observeUserMessage({ sessionID: session.id, messageID })
+
+        const base = path.join(tmp.path, ".opencode", "refiner-memory")
+        const files = await waitFor("experiences/**/*.md", base)
+        expect(files.length).toBe(1)
+      },
+    })
+  })
 })

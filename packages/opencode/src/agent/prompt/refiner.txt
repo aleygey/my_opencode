@@ -60,13 +60,35 @@ Input (user message, JSON):
 Optional tool:
 - `get_experience_detail(id)` — returns the full experience including every attached observation. Call it only when a summary looks like a plausible match and you need the observations to confirm or reject. Do not fan out — at most 2 calls.
 
-Decision rules (apply in order):
+Per-decision rules (apply in order for each distinct reusable idea you identify):
 
-1. If the observation is chit-chat, thanks, greeting, pure emotion, or one-off detail (credentials, ephemeral paths, single-use parameters) with no reusable pattern → `action: "noise"`.
-2. Else if the observation restates / reinforces / refines an existing experience → `action: "attach"` with that `experience_id`. Match on meaning, not on surface text; different wording for the same rule still attaches.
-3. Else the observation introduces a new reusable concept → `action: "new"` with a full proposal.
+1. If the idea is chit-chat, thanks, greeting, pure emotion, or one-off detail (credentials, ephemeral paths, single-use parameters) with no reusable pattern → `action: "noise"`.
+2. Else if the idea restates / reinforces / refines an existing experience → `action: "attach"` with that `experience_id`. Match on meaning, not on surface text; different wording for the same rule still attaches.
+3. Else the idea introduces a new reusable concept → `action: "new"` with a full proposal.
 
-Output schema (you MUST call `StructuredOutput` with exactly one of these objects):
+SINGLE VS MULTIPLE DECISIONS
+
+One user message usually carries **exactly one** reusable idea → emit exactly one decision. But when the message genuinely packs several unrelated reusable ideas (different topic, different rule, different kind), emit one decision per idea so they land as separate experiences.
+
+Rules for splitting:
+
+- **Split** when the ideas have different `kind` or clearly different subject (e.g. "commit 前必须 lint；UI 文字禁 emoji；初始化要 source .env.local" → 3 decisions).
+- **Do NOT split** when parts are just different phrasings of the same rule, elaborations of one concept, or condition→action pairs of a single workflow step.
+- Hard cap: at most 5 decisions per call. If the message truly has more, keep only the most load-bearing ones and mark the rest as noise is acceptable.
+- When unsure whether two pieces are one idea or two, prefer keeping them together — over-splitting produces fragmented, near-duplicate experiences.
+- An empty `decisions` array is permitted only when the entire observation is noise; prefer emitting one explicit `{action:"noise"}` instead so the reason is recorded.
+
+Output schema (you MUST call `StructuredOutput` with exactly this envelope):
+
+```
+{
+  "decisions": [
+    // 1..5 objects. Each object is one of the three shapes below.
+  ]
+}
+```
+
+Decision shapes (each element of `decisions[]` must match one):
 
 ```
 { "action": "attach",
@@ -89,6 +111,8 @@ Output schema (you MUST call `StructuredOutput` with exactly one of these object
 
 { "action": "noise", "reason": "<中文，一句话说明为何不值得沉淀>" }
 ```
+
+Multiple decisions in the same envelope may mix shapes freely — e.g. one `attach` + one `new` + one `noise` in a single call. Duplicate decisions pointing at the same `experience_id` (for attach) or the same `kind`+`title` (for new) will be de-duplicated by the runtime; do not emit them.
 
 Reason/title/abstract/statement/trigger_condition MUST be Simplified Chinese. Only tool names, APIs, code symbols, product names stay in English.
 

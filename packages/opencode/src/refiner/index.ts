@@ -221,6 +221,16 @@ const RouteDecisionWireSchema = z.object({
 })
 type RouteDecisionWire = z.infer<typeof RouteDecisionWireSchema>
 
+// Wrapper schema that always emits an array of decisions. The array MAY be
+// empty (equivalent to "nothing reusable here") or contain up to 8 decisions
+// when the single observation genuinely covers several distinct reusable
+// ideas. This replaces the legacy single-decision contract so one user
+// message can fan out into multiple experiences when its content warrants it.
+const RouteDecisionsWireSchema = z.object({
+  decisions: z.array(RouteDecisionWireSchema).max(8),
+})
+type RouteDecisionsWire = z.infer<typeof RouteDecisionsWireSchema>
+
 type RouteDecision =
   | {
       action: "attach"
@@ -359,8 +369,14 @@ const state = Instance.state(() => ({
   userSeen: {} as Record<string, string>,
 }))
 
+// The override may return a single decision (legacy convenience) or an array
+// of decisions (to exercise the multi-decision path in tests). The caller
+// normalizes to an array before handing back to observeObservation.
 let testRouteOverride:
-  | ((observation: Observation, existing: ExperienceSummary[]) => Promise<RouteDecision | undefined>)
+  | ((
+      observation: Observation,
+      existing: ExperienceSummary[],
+    ) => Promise<RouteDecision | RouteDecision[] | undefined>)
   | undefined
 let testRefineOverride:
   | ((
@@ -1019,20 +1035,20 @@ function createStructuredOutputTool(input: {
 async function routeObservation(input: {
   observation: Observation
   existing: ExperienceSummary[]
-}): Promise<RouteDecision | undefined> {
+}): Promise<RouteDecision[]> {
   if (testRouteOverride) {
     try {
       const override = await testRouteOverride(input.observation, input.existing)
-      if (override) return override
+      if (override) return Array.isArray(override) ? override : [override]
     } catch (error) {
       log.warn("route test override failed", { error })
     }
   }
 
   const resolved = await resolveRefinerModel()
-  if (!resolved?.model) return
+  if (!resolved?.model) return []
   const language = await Provider.getLanguage(resolved.model).catch(() => undefined)
-  if (!language) return
+  if (!language) return []
   const auth = await Auth.get(resolved.model.providerID).catch(() => undefined)
   const cfg = await Config.get().catch(() => undefined)
   const isOpenaiOauth = resolved.model.providerID === "openai" && auth?.type === "oauth"
@@ -1049,10 +1065,14 @@ async function routeObservation(input: {
   }
 
   const tools = createRefinerTools({ observation: input.observation })
-  let decision: RouteDecision | undefined
+  const decisions: RouteDecision[] = []
+  // We tell the LLM the expected shape is the array wrapper. The legacy
+  // single-decision shape is still accepted in the fallback below in case a
+  // model stubbornly emits the old contract; downstream code sees an array
+  // either way.
   const schema = ProviderTransform.schema(
     resolved.model,
-    applyKindConstraint(z.toJSONSchema(RouteDecisionWireSchema)),
+    applyKindConstraint(z.toJSONSchema(RouteDecisionsWireSchema)),
   ) as Record<string, unknown>
 
   const messages: ModelMessage[] = [
@@ -1061,6 +1081,17 @@ async function routeObservation(input: {
       : ([{ role: "system", content: systemPrompt }] as ModelMessage[])),
     { role: "user", content: JSON.stringify(userPayload, null, 2) },
   ]
+
+  const collectWire = (wires: RouteDecisionWire[]) => {
+    for (const wire of wires) {
+      const normalized = normalizeRouteDecision(wire)
+      if ("error" in normalized) {
+        log.warn("route output failed normalization", { error: normalized.error, wire })
+        continue
+      }
+      decisions.push(normalized)
+    }
+  }
 
   const params = {
     experimental_telemetry: {
@@ -1075,21 +1106,30 @@ async function routeObservation(input: {
       StructuredOutput: createStructuredOutputTool({
         schema,
         onSuccess(output) {
-          const parsed = RouteDecisionWireSchema.safeParse(output)
-          if (!parsed.success) {
-            log.warn("route output failed schema", {
-              error: parsed.error.message,
-              raw_kind: (output as any)?.kind,
-              raw_action: (output as any)?.action,
+          // Preferred shape: { decisions: [...] }
+          const multi = RouteDecisionsWireSchema.safeParse(output)
+          if (multi.success) {
+            collectWire(multi.data.decisions)
+            return
+          }
+          // Resilience path: legacy single-decision shape. We still accept it
+          // so an LLM that ignores the new contract does not silently drop
+          // observations on the floor. The normalizeRouteDecision call below
+          // validates all of action/kind/title/abstract/scope fields.
+          const single = RouteDecisionWireSchema.safeParse(output)
+          if (single.success) {
+            log.info("route output used legacy single-decision shape", {
+              observation_id: input.observation.id,
             })
+            collectWire([single.data])
             return
           }
-          const normalized = normalizeRouteDecision(parsed.data)
-          if ("error" in normalized) {
-            log.warn("route output failed normalization", { error: normalized.error, output })
-            return
-          }
-          decision = normalized
+          log.warn("route output failed schema", {
+            error: multi.error.message,
+            legacy_error: single.error.message,
+            raw_kind: (output as any)?.kind,
+            raw_action: (output as any)?.action,
+          })
         },
       }),
     },
@@ -1111,10 +1151,10 @@ async function routeObservation(input: {
     }
   } catch (error) {
     log.warn("refiner route LLM failed", { error })
-    return
+    return []
   }
 
-  return decision
+  return decisions
 }
 
 // -----------------------------------------------------------------------------
@@ -1502,54 +1542,89 @@ async function observeObservation(observation: Observation) {
   const existingRaw = await listExperiences()
   const existing = existingRaw.map(summarizeExperience)
 
-  const decision = await routeObservation({ observation, existing })
-  if (!decision) {
-    log.warn("refiner route produced no decision", { observation_id: observation.id })
+  const decisions = await routeObservation({ observation, existing })
+  if (!decisions.length) {
+    // No route output at all (LLM failure / empty array). Distinct from an
+    // explicit noise decision — we leave no audit row because the observer
+    // file already captured the raw input for later retry.
+    log.warn("refiner route produced no decisions", { observation_id: observation.id })
     return
   }
 
-  if (decision.action === "noise") {
-    await appendRejected({
-      at: nowMs(),
-      reason: decision.reason,
-      observation_id: observation.id,
-      session_id: observation.session_id,
-      message_id: observation.message_id,
-      excerpt: clipText(observation.user_text, 200),
-      stage: "route",
-    })
-    return
-  }
+  // One user message can fan out to multiple decisions. Track which
+  // targets we have already consumed so a chatty model that emits
+  // duplicate attach/new rows does not double-apply them.
+  const seenAttach = new Set<string>()
+  const seenNew = new Set<string>()
+  // Snapshot per iteration so that a "new" created earlier in this loop is
+  // visible when the next decision is "attach:<that id>". In practice the
+  // LLM should not reference its own fresh ids, but we keep the contract
+  // permissive — callers rely on eventual consistency, not ordering.
+  const liveExperiences = [...existingRaw]
 
-  if (decision.action === "new") {
-    await createExperience({ observation, proposal: decision })
-    return
-  }
+  for (const decision of decisions) {
+    if (decision.action === "noise") {
+      await appendRejected({
+        at: nowMs(),
+        reason: decision.reason,
+        observation_id: observation.id,
+        session_id: observation.session_id,
+        message_id: observation.message_id,
+        excerpt: clipText(observation.user_text, 200),
+        stage: "route",
+      })
+      continue
+    }
 
-  // attach
-  const target = existingRaw.find((e) => e.id === decision.experience_id)
-  if (!target) {
-    log.warn("route asked to attach to unknown experience; falling back to noise", {
-      id: decision.experience_id,
+    if (decision.action === "new") {
+      const key = `${decision.kind}::${decision.title}`
+      if (seenNew.has(key)) {
+        log.info("refiner route emitted duplicate new; skipping second", {
+          observation_id: observation.id,
+          kind: decision.kind,
+          title: decision.title,
+        })
+        continue
+      }
+      seenNew.add(key)
+      const created = await createExperience({ observation, proposal: decision })
+      if (created) liveExperiences.push(created)
+      continue
+    }
+
+    // attach
+    if (seenAttach.has(decision.experience_id)) {
+      log.info("refiner route emitted duplicate attach; skipping second", {
+        observation_id: observation.id,
+        experience_id: decision.experience_id,
+      })
+      continue
+    }
+    seenAttach.add(decision.experience_id)
+    const target = liveExperiences.find((e) => e.id === decision.experience_id)
+    if (!target) {
+      log.warn("route asked to attach to unknown experience; falling back to noise", {
+        id: decision.experience_id,
+      })
+      await appendRejected({
+        at: nowMs(),
+        reason: `attach_target_not_found:${decision.experience_id}`,
+        observation_id: observation.id,
+        session_id: observation.session_id,
+        message_id: observation.message_id,
+        excerpt: clipText(observation.user_text, 200),
+        stage: "route",
+      })
+      continue
+    }
+    // Pass any router-proposed category/conflict hints so attachAndRefine can seed them.
+    await attachAndRefine({
+      experience: target,
+      observation,
+      categoryHints: decision.categories,
+      conflictHints: decision.conflicts_with,
     })
-    await appendRejected({
-      at: nowMs(),
-      reason: `attach_target_not_found:${decision.experience_id}`,
-      observation_id: observation.id,
-      session_id: observation.session_id,
-      message_id: observation.message_id,
-      excerpt: clipText(observation.user_text, 200),
-      stage: "route",
-    })
-    return
   }
-  // Pass any router-proposed category/conflict hints so attachAndRefine can seed them.
-  await attachAndRefine({
-    experience: target,
-    observation,
-    categoryHints: decision.categories,
-    conflictHints: decision.conflicts_with,
-  })
 }
 
 // -----------------------------------------------------------------------------
@@ -1592,13 +1667,17 @@ function buildOverviewGraph(experiences: ExperienceWithPath[]) {
 
 export namespace Refiner {
   export const RouteDecisionSchemaExport = RouteDecisionWireSchema
+  export const RouteDecisionsSchemaExport = RouteDecisionsWireSchema
   export const RefineOutputSchemaExport = RefineOutputSchema
   export const ExperienceSchemaExport = ExperienceSchema
   export const ObservationSchemaExport = ObservationSchema
 
   export function setRouteOverrideForTest(
     override?:
-      | ((observation: Observation, existing: ExperienceSummary[]) => Promise<RouteDecision | undefined>)
+      | ((
+          observation: Observation,
+          existing: ExperienceSummary[],
+        ) => Promise<RouteDecision | RouteDecision[] | undefined>)
       | undefined,
   ) {
     testRouteOverride = override
@@ -1807,17 +1886,23 @@ export namespace Refiner {
     // Run route to let the LLM pick category/kind, but force the action to "new":
     // we still leverage the full router because it sees existing categories/kinds.
     const existing = (await listExperiences()).map(summarizeExperience)
-    const decision = await routeObservation({ observation, existing })
-    if (!decision) return { ok: false as const, error: "route_failed" }
+    const decisions = await routeObservation({ observation, existing })
+    if (!decisions.length) return { ok: false as const, error: "route_failed" }
 
-    // If agent decided "noise" or "attach", override to "new" so a fresh experience is created.
+    // This endpoint's contract is "create one experience from this text".
+    // If the router fanned out into multiple decisions, we pick the first
+    // "new" as the seed. Any extra attach/new decisions from the same text
+    // are ignored here — the caller asked for a single create. If no "new"
+    // decision exists at all, we fall through to the synthesis branch so
+    // the user still gets an experience (albeit without LLM-picked kind).
+    const decisionNew = decisions.find((d): d is Extract<RouteDecision, { action: "new" }> => d.action === "new")
     let proposal: Extract<RouteDecision, { action: "new" }>
-    if (decision.action === "new") {
+    if (decisionNew) {
       proposal = {
-        ...decision,
-        kind: input.kind_hint ?? decision.kind,
-        scope: input.scope_hint ?? decision.scope,
-        task_type: input.task_type_hint ?? decision.task_type,
+        ...decisionNew,
+        kind: input.kind_hint ?? decisionNew.kind,
+        scope: input.scope_hint ?? decisionNew.scope,
+        task_type: input.task_type_hint ?? decisionNew.task_type,
       }
     } else {
       // Synthesize a minimal proposal by requesting a direct refine on a one-obs experience

@@ -50,6 +50,11 @@ console.log(`Loaded ${migrations.length} migrations`)
 const singleFlag = process.argv.includes("--single")
 const baselineFlag = process.argv.includes("--baseline")
 const skipInstall = process.argv.includes("--skip-install")
+// --only=<os>-<arch>[-baseline][-musl] restricts the build to one target.
+// Accepts comma-separated list, e.g. --only=linux-x64,linux-arm64. Useful
+// when you want a single artefact without cross-compiling everything.
+const onlyArg = process.argv.find((a) => a.startsWith("--only="))?.slice("--only=".length)
+const onlyFilters = onlyArg ? onlyArg.split(",").map((s) => s.trim()).filter(Boolean) : null
 const plugin = createSolidTransformPlugin()
 const skipEmbedWebUi = process.argv.includes("--skip-embed-web-ui")
 
@@ -141,7 +146,22 @@ const allTargets: {
   },
 ]
 
-const targets = singleFlag
+const matchesOnly = (item: (typeof allTargets)[number], filter: string) => {
+  const parts = filter.split("-")
+  const os = parts[0]
+  const arch = parts[1]
+  const rest = new Set(parts.slice(2))
+  if (item.os !== os || item.arch !== arch) return false
+  const wantBaseline = rest.has("baseline")
+  const wantMusl = rest.has("musl")
+  if (wantBaseline !== (item.avx2 === false)) return false
+  if (wantMusl !== (item.abi === "musl")) return false
+  return true
+}
+
+const targets = onlyFilters
+  ? allTargets.filter((item) => onlyFilters.some((f) => matchesOnly(item, f)))
+  : singleFlag
   ? allTargets.filter((item) => {
       if (item.os !== process.platform || item.arch !== process.arch) {
         return false
