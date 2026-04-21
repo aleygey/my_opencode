@@ -189,6 +189,19 @@ const KIND_PALETTE: Record<CoreKind, PaletteName> = {
   pitfall_or_caveat: "solaris",
 }
 
+// OKLCH hue per palette — mirrors the CSS palette blocks in refiner-page.css.
+// Used by the StarGraph SVG which emits inline oklch() fills for theme parity.
+const PALETTE_HUE: Record<PaletteName, number> = {
+  cobalt: 250,
+  amber: 35,
+  mint: 155,
+  ember: 295,
+  blue: 200,
+  lilac: 340,
+  solaris: 85,
+  gray: 235,
+}
+
 const KIND_LABEL: Record<CoreKind, string> = {
   workflow_rule: "流程规则",
   workflow_gap: "流程缺口",
@@ -227,6 +240,22 @@ const clip = (value?: string, size = 120) => {
   const text = String(value ?? "").replace(/\s+/g, " ").trim()
   if (!text) return "—"
   return text.length <= size ? text : `${text.slice(0, size - 1).trimEnd()}…`
+}
+
+// Short keyword label for StarGraph chip nodes — first clause (up to
+// comma/period/semicolon/middle-dot), whitespace collapsed, capped at maxChars.
+const shortLabel = (text?: string, maxChars = 10): string => {
+  if (!text) return ""
+  const firstClause = text.split(/[，,。.;；：:·]/)[0]?.trim() ?? ""
+  const src = firstClause || text.trim()
+  const cleaned = src.replace(/\s+/g, "")
+  if (cleaned.length <= maxChars) return cleaned
+  return cleaned.slice(0, maxChars) + "…"
+}
+
+const hhmm = (ts: number): string => {
+  const d = new Date(ts)
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`
 }
 
 const modelLabel = (model?: { providerID: string; modelID: string }) =>
@@ -1855,6 +1884,470 @@ function IngestModal(props: {
 }
 
 /* ──────────────────────────────────────────────────────
+   StarGraph — chip-shaped obs nodes around a center experience,
+   with mouse-follow flow (halo drifts, rings parallax, edges
+   bend toward cursor, nodes lean & scale on hover). Hover state
+   lifts back to the parent via the onHover accessor so the info
+   column can echo highlights on the matching obs card.
+
+   Rendering pattern notes (carried from the design's React prototype):
+   - Per-node hover scale is animated by writing `transform` attribute
+     via setAttribute inside a rAF loop — CSS transform on SVG <g> is
+     unreliable in Safari/WebKit when combined with transform-box.
+   - Mouse smoothing and per-node lean both run in their own rAF loops
+     so that lerp math stays frame-rate capped.
+   ────────────────────────────────────────────────────── */
+
+type MouseState = { x: number; y: number; active: boolean }
+
+type StarNode = {
+  id: string
+  x: number
+  y: number
+  idx: number
+  label: string
+  time: string
+  message_id: string
+  session_id: string
+  user_text: string
+}
+
+function StarObsNode(props: {
+  node: StarNode
+  idx: number
+  hovered: boolean
+  hue: number
+  smoothed: () => MouseState
+  onHover: (id: string | null) => void
+  onClick?: () => void
+}) {
+  let gRef: SVGGElement | undefined
+  const state = {
+    scale: 1,
+    tx: 0,
+    ty: 0,
+    targetScale: 1,
+    targetTx: 0,
+    targetTy: 0,
+  }
+
+  onMount(() => {
+    let raf = 0
+    const tick = () => {
+      const k = 0.18
+      state.scale += (state.targetScale - state.scale) * k
+      state.tx += (state.targetTx - state.tx) * k
+      state.ty += (state.targetTy - state.ty) * k
+      if (gRef) {
+        gRef.setAttribute(
+          "transform",
+          `translate(${state.tx.toFixed(3)} ${state.ty.toFixed(3)}) scale(${state.scale.toFixed(4)})`,
+        )
+      }
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    onCleanup(() => cancelAnimationFrame(raf))
+  })
+
+  createEffect(() => {
+    const s = props.hovered ? 1.14 : 1
+    const sm = props.smoothed()
+    const leanX = sm.active ? (sm.x - props.node.x) * 0.06 : 0
+    const leanY = sm.active ? (sm.y - props.node.y) * 0.06 : 0
+    state.targetScale = s
+    state.targetTx = props.node.x + leanX - props.node.x * s
+    state.targetTy = props.node.y + leanY - props.node.y * s
+  })
+
+  const chipW = 92
+  const chipH = 34
+  const CY_REF = 160 // viewBox center; used to decide label above/below
+
+  return (
+    <g
+      ref={gRef}
+      class={`rf-star-node${props.hovered ? " is-hover" : ""}`}
+      transform="translate(0 0) scale(1)"
+      style={{
+        cursor: "pointer",
+        "animation-delay": `${220 + props.idx * 90}ms`,
+        filter: props.hovered
+          ? `drop-shadow(0 6px 14px oklch(0.5 0.10 ${props.hue} / 0.28))`
+          : "none",
+        transition: "filter .22s",
+      }}
+      onMouseEnter={() => props.onHover(props.node.id)}
+      onMouseLeave={() => props.onHover(null)}
+      onClick={() => props.onClick?.()}
+    >
+      <rect
+        x={props.node.x - chipW / 2}
+        y={props.node.y - chipH / 2}
+        width={chipW}
+        height={chipH}
+        rx={chipH / 2}
+        fill={props.hovered ? `oklch(0.97 0.02 ${props.hue})` : "var(--rf-card)"}
+        stroke={`oklch(0.62 0.08 ${props.hue})`}
+        stroke-width={props.hovered ? 1.5 : 1}
+        style={{ transition: "stroke-width .18s, fill .18s" }}
+      />
+      <circle
+        cx={props.node.x - chipW / 2 + 9}
+        cy={props.node.y}
+        r={3}
+        fill={`oklch(0.58 0.10 ${props.hue})`}
+      />
+      <text
+        x={props.node.x - chipW / 2 + 17}
+        y={props.node.y + 1}
+        font-size="11"
+        fill="var(--rf-ink)"
+        font-weight="500"
+        dominant-baseline="middle"
+        style={{ "letter-spacing": "-0.003em" }}
+      >
+        {props.node.label}
+      </text>
+      <text
+        x={props.node.x}
+        y={props.node.y + (props.node.y > CY_REF ? 30 : -22)}
+        text-anchor="middle"
+        font-size="9.5"
+        fill="var(--rf-dim)"
+        font-family="var(--font-family-mono)"
+      >
+        {props.node.id.slice(0, 6)} · {props.node.time}
+      </text>
+    </g>
+  )
+}
+
+function StarGraph(props: {
+  experience: Experience
+  hoveredObs: () => string | null
+  onHover: (id: string | null) => void
+  onClickObs?: (obs: Observation) => void
+}) {
+  const W = 480
+  const H = 320
+  const cx = W / 2
+  const cy = H / 2
+  const hue = () => PALETTE_HUE[paletteFor(props.experience.kind)]
+
+  const nodes = createMemo<StarNode[]>(() => {
+    const obs = props.experience.observations
+    const n = obs.length
+    if (n === 0) return []
+    const radius = n <= 2 ? 100 : n <= 4 ? 118 : 130
+    const angleOffset = -Math.PI / 2 - (n > 1 ? Math.PI / n : 0) * 0.15
+    return obs.map((o, i) => {
+      const a = angleOffset + (i / Math.max(1, n)) * Math.PI * 2
+      return {
+        id: o.id,
+        x: cx + Math.cos(a) * radius,
+        y: cy + Math.sin(a) * radius,
+        idx: i,
+        label: shortLabel(o.user_text, 10),
+        time: hhmm(o.observed_at),
+        message_id: o.message_id,
+        session_id: o.session_id,
+        user_text: o.user_text,
+      }
+    })
+  })
+  const radius = () => {
+    const n = nodes().length
+    return n <= 2 ? 100 : n <= 4 ? 118 : 130
+  }
+
+  let svgRef: SVGSVGElement | undefined
+  const [mouse, setMouse] = createSignal<MouseState>({ x: cx, y: cy, active: false })
+  const [smoothed, setSmoothed] = createSignal<MouseState>({ x: cx, y: cy, active: false })
+
+  onMount(() => {
+    let raf = 0
+    const tick = () => {
+      const m = mouse()
+      setSmoothed((prev) => ({
+        x: prev.x + (m.x - prev.x) * 0.12,
+        y: prev.y + (m.y - prev.y) * 0.12,
+        active: m.active,
+      }))
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    onCleanup(() => cancelAnimationFrame(raf))
+  })
+
+  const onMove = (e: MouseEvent) => {
+    if (!svgRef) return
+    const rect = svgRef.getBoundingClientRect()
+    const sx = ((e.clientX - rect.left) / rect.width) * W
+    const sy = ((e.clientY - rect.top) / rect.height) * H
+    setMouse({ x: sx, y: sy, active: true })
+  }
+  const onLeave = () => setMouse((m) => ({ ...m, active: false, x: cx, y: cy }))
+
+  const parallax = (strength: number) => {
+    const s = smoothed()
+    return { tx: (s.x - cx) * strength, ty: (s.y - cy) * strength }
+  }
+
+  // Halo gradient id — namespaced by experience id so multiple modals
+  // (unlikely, but cheap to guard) do not collide.
+  const gradId = () => `rf-star-halo-${props.experience.id}`
+
+  // Tooltip source (center or an obs node)
+  type TipSource = {
+    kind: "exp" | "obs"
+    x: number
+    y: number
+    meta: string
+    title: string | null
+    text: string
+    halfH: number
+  }
+  const tooltip = createMemo<TipSource | null>(() => {
+    const id = props.hoveredObs()
+    if (!id) return null
+    if (id === "__center__") {
+      const n = nodes().length
+      return {
+        kind: "exp",
+        x: cx,
+        y: cy,
+        meta: `${props.experience.id.slice(0, 10).toUpperCase()} · ${kindDisplay(props.experience.kind)} · ${n} obs`,
+        title: props.experience.title,
+        text: props.experience.abstract,
+        halfH: 24,
+      }
+    }
+    const nd = nodes().find((nn) => nn.id === id)
+    if (!nd) return null
+    return {
+      kind: "obs",
+      x: nd.x,
+      y: nd.y,
+      meta: `${nd.id.slice(0, 6)} · ${nd.time}`,
+      title: null,
+      text: nd.user_text,
+      halfH: 17,
+    }
+  })
+
+  const wrapLines = (text: string, perLine = 22, max = 3): string[] => {
+    const words = text.replace(/\s+/g, "")
+    const lines: string[] = []
+    for (let i = 0; i < words.length && lines.length < max; i += perLine) {
+      lines.push(words.slice(i, i + perLine))
+    }
+    if (words.length > lines.length * perLine && lines.length > 0) {
+      lines[lines.length - 1] =
+        lines[lines.length - 1].slice(0, perLine - 1) + "…"
+    }
+    return lines
+  }
+
+  return (
+    <svg
+      ref={svgRef}
+      class="rf-star-svg"
+      viewBox={`0 0 ${W} ${H}`}
+      width="100%"
+      height={H}
+      onMouseMove={onMove}
+      onMouseLeave={onLeave}
+    >
+      <defs>
+        <radialGradient id={gradId()} cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stop-color={`oklch(0.74 0.045 ${hue()})`} stop-opacity="0.25" />
+          <stop offset="60%" stop-color={`oklch(0.74 0.045 ${hue()})`} stop-opacity="0.05" />
+          <stop offset="100%" stop-color={`oklch(0.74 0.045 ${hue()})`} stop-opacity="0" />
+        </radialGradient>
+      </defs>
+
+      {/* halo — drifts with cursor */}
+      {(() => {
+        const p = parallax(0.12)
+        return (
+          <circle
+            cx={cx + p.tx}
+            cy={cy + p.ty}
+            r={110}
+            fill={`url(#${gradId()})`}
+            class="rf-star-halo"
+            style={{ transition: "cx .4s ease-out, cy .4s ease-out" }}
+          />
+        )
+      })()}
+
+      {/* rings — gentle drift */}
+      {(() => {
+        const p = parallax(0.05)
+        return (
+          <g
+            style={{
+              transform: `translate(${p.tx}px, ${p.ty}px)`,
+              transition: "transform .4s ease-out",
+            }}
+          >
+            <circle cx={cx} cy={cy} r={radius()} fill="none" stroke="var(--rf-line)" stroke-dasharray="2 4" opacity="0.6" />
+            <circle cx={cx} cy={cy} r={radius() - 30} fill="none" stroke="var(--rf-line-soft)" stroke-dasharray="2 4" opacity="0.4" />
+          </g>
+        )
+      })()}
+
+      {/* edges — bend toward cursor */}
+      <For each={nodes()}>
+        {(nd, i) => {
+          const midX = (cx + nd.x) / 2
+          const midY = (cy + nd.y) / 2
+          const ctrlX = () => {
+            const sm = smoothed()
+            const bend = sm.active ? 0.25 : 0
+            return midX + (sm.x - midX) * bend
+          }
+          const ctrlY = () => {
+            const sm = smoothed()
+            const bend = sm.active ? 0.25 : 0
+            return midY + (sm.y - midY) * bend
+          }
+          const active = () => props.hoveredObs() === nd.id
+          return (
+            <g class="rf-star-edge-wrap" style={{ "animation-delay": `${120 + i() * 80}ms` }}>
+              <path
+                d={`M ${cx} ${cy} Q ${ctrlX()} ${ctrlY()} ${nd.x} ${nd.y}`}
+                fill="none"
+                stroke={active() ? `oklch(0.55 0.12 ${hue()})` : `oklch(0.78 0.04 ${hue()})`}
+                stroke-width={active() ? 1.6 : 1}
+                class="rf-star-edge"
+                style={{ transition: "stroke .25s, stroke-width .25s" }}
+              />
+            </g>
+          )
+        }}
+      </For>
+
+      {/* center chip */}
+      {(() => {
+        const hov = () => props.hoveredObs() === "__center__"
+        const scale = () => (hov() ? 1.1 : 1)
+        const transform = () => {
+          const p = parallax(0.03)
+          const s = scale()
+          const tx = cx + p.tx - cx * s
+          const ty = cy + p.ty - cy * s
+          return `translate(${tx} ${ty}) scale(${s})`
+        }
+        return (
+          <g
+            class={`rf-star-center${hov() ? " is-hover" : ""}`}
+            transform={transform()}
+            style={{
+              cursor: "pointer",
+              transition: "transform .28s cubic-bezier(0.2, 0.9, 0.25, 1.25)",
+              filter: hov()
+                ? `drop-shadow(0 6px 14px oklch(0.5 0.10 ${hue()} / 0.3))`
+                : "none",
+            }}
+            onMouseEnter={() => props.onHover("__center__")}
+            onMouseLeave={() => props.onHover(null)}
+          >
+            <rect x={cx - 62} y={cy - 22} width={124} height={44} rx={22} fill="var(--rf-card)" stroke={`oklch(0.55 0.10 ${hue()})`} stroke-width={1.3} />
+            <rect x={cx - 58} y={cy - 18} width={116} height={36} rx={18} fill={`oklch(0.97 0.018 ${hue()})`} />
+            <text x={cx} y={cy - 2} text-anchor="middle" font-size="11" fill={`oklch(0.34 0.08 ${hue()})`} font-weight="600">
+              {kindDisplay(props.experience.kind)}
+            </text>
+            <text x={cx} y={cy + 13} text-anchor="middle" font-size="9" fill="var(--rf-dim)" font-family="var(--font-family-mono)">
+              {props.experience.id.slice(0, 8).toUpperCase()} · {nodes().length} obs
+            </text>
+          </g>
+        )
+      })()}
+
+      {/* obs nodes */}
+      <For each={nodes()}>
+        {(nd, i) => (
+          <StarObsNode
+            node={nd}
+            idx={i()}
+            hovered={props.hoveredObs() === nd.id}
+            hue={hue()}
+            smoothed={smoothed}
+            onHover={props.onHover}
+            onClick={() => {
+              const found = props.experience.observations.find((oo) => oo.id === nd.id)
+              if (found) props.onClickObs?.(found)
+            }}
+          />
+        )}
+      </For>
+
+      {/* tooltip — rendered last so it sits on top */}
+      <Show when={tooltip()} keyed>
+        {(t) => {
+          const lines = wrapLines(t.text)
+          const tw = 264
+          const headerH = 22
+          const titleH = t.title ? 18 : 0
+          const bodyH = lines.length * 16
+          const th = headerH + titleH + bodyH + 10
+          const gap = t.halfH + 12
+          let ty = t.y - gap - th
+          if (ty < 6) ty = t.y + gap
+          if (ty + th > H - 6) ty = Math.max(6, H - 6 - th)
+          let tx = t.x - tw / 2
+          tx = Math.max(8, Math.min(W - tw - 8, tx))
+          return (
+            <g class="rf-star-tooltip" style={{ "pointer-events": "none" }}>
+              <rect
+                x={tx}
+                y={ty}
+                width={tw}
+                height={th}
+                rx={8}
+                fill="var(--rf-card)"
+                stroke="var(--rf-line-strong)"
+                stroke-width={1}
+                style={{ filter: "drop-shadow(0 6px 16px oklch(0.22 0.03 235 / 0.22))" }}
+              />
+              <text
+                x={tx + 12}
+                y={ty + 15}
+                font-size="9.5"
+                fill="var(--rf-dim)"
+                font-family="var(--font-family-mono)"
+                style={{ "letter-spacing": "0.05em", "text-transform": "uppercase" }}
+              >
+                {t.meta}
+              </text>
+              <Show when={t.title}>
+                <text x={tx + 12} y={ty + 32} font-size="12" fill="var(--rf-ink)" font-weight="600">
+                  {t.title && t.title.length > 22 ? t.title.slice(0, 22) + "…" : t.title}
+                </text>
+              </Show>
+              <For each={lines}>
+                {(ln, i) => (
+                  <text
+                    x={tx + 12}
+                    y={ty + headerH + titleH + 12 + i() * 16}
+                    font-size="12"
+                    fill={t.title ? "var(--rf-ink-soft)" : "var(--rf-ink)"}
+                  >
+                    {ln}
+                  </text>
+                )}
+              </For>
+            </g>
+          )
+        }}
+      </Show>
+    </svg>
+  )
+}
+
+/* ──────────────────────────────────────────────────────
    Peek panel — experience-centric (schema v2)
    ────────────────────────────────────────────────────── */
 
@@ -1879,6 +2372,9 @@ function ExperiencePeek(props: ExperiencePeekProps) {
   const exp = () => props.experience
   const palette = () => paletteFor(exp().kind)
   const [acting, setActing] = createSignal<string | undefined>()
+  // Hover-linking between StarGraph nodes and observation cards in the info
+  // column. An obs.id matches; "__center__" is the experience summary chip.
+  const [hoveredObs, setHoveredObs] = createSignal<string | null>(null)
 
   const run = async (tag: string, fn: () => Promise<void> | void) => {
     if (acting()) return
@@ -1921,42 +2417,40 @@ function ExperiencePeek(props: ExperiencePeekProps) {
 
   return (
     <>
-      <div class="rf-peek-hero" data-palette={palette()}>
-        <span class="rf-peek-kind">
-          <span class="rf-dot" />
-          {kindDisplay(exp().kind)}
-        </span>
-        <div class="rf-peek-heading">{exp().title}</div>
-        <div class="rf-peek-metrow">
+      <div class="rf-peek-head" data-palette={palette()}>
+        <div class="rf-peek-head-l">
+          <span class="rf-peek-catpill">
+            <span class="rf-peek-catpill-dot" />
+            {kindDisplay(exp().kind)}
+          </span>
           <Show when={exp().archived}>
-            <span class="rf-tag rf-tag-archived">Archived</span>
+            <span class="rf-peek-head-archived">Archived</span>
           </Show>
           <Show when={exp().task_type}>
-            <span class="rf-tag">
-              <span class="rf-tag-k">task</span>
-              <span class="rf-tag-v">{exp().task_type}</span>
+            <span class="rf-peek-head-tag">
+              <b>task</b>
+              {exp().task_type}
             </span>
           </Show>
-          <span class="rf-tag">
-            <span class="rf-tag-k">scope</span>
-            <span class="rf-tag-v">{exp().scope}</span>
-          </span>
-          <span class="rf-tag">
-            <span class="rf-tag-k">obs</span>
-            <span class="rf-tag-v">{exp().observations.length}</span>
+          <span class="rf-peek-head-tag">
+            <b>scope</b>
+            {exp().scope}
           </span>
           <Show when={referenceTotals().sessions > 1}>
-            <span class="rf-tag">
-              <span class="rf-tag-k">sessions</span>
-              <span class="rf-tag-v">{referenceTotals().sessions}</span>
+            <span class="rf-peek-head-tag">
+              <b>sessions</b>
+              {referenceTotals().sessions}
             </span>
           </Show>
           <Show when={refCount() > 0}>
-            <span class="rf-tag">
-              <span class="rf-tag-k">refined</span>
-              <span class="rf-tag-v">{refCount()}×</span>
+            <span class="rf-peek-head-tag">
+              <b>refined</b>
+              {refCount()}×
             </span>
           </Show>
+          <span class="rf-peek-id">
+            {exp().id.slice(0, 10).toUpperCase()}
+          </span>
         </div>
         <button
           type="button"
@@ -1968,7 +2462,346 @@ function ExperiencePeek(props: ExperiencePeekProps) {
         </button>
       </div>
 
-      <div class="rf-peek-actions">
+      <h2 class="rf-peek-title">{exp().title}</h2>
+
+      <div class="rf-peek-grid">
+        <div class="rf-peek-graph-col" data-palette={palette()}>
+          <div class="rf-peek-graph-label">Observation Graph</div>
+          <Show
+            when={exp().observations.length > 0}
+            fallback={
+              <div class="rf-peek-graph-empty">
+                尚未挂载任何 observation。
+              </div>
+            }
+          >
+            <StarGraph
+              experience={exp()}
+              hoveredObs={hoveredObs}
+              onHover={setHoveredObs}
+              onClickObs={(o) =>
+                props.onPickObservation({
+                  sessionID: o.session_id,
+                  messageID: o.message_id,
+                })
+              }
+            />
+          </Show>
+          <div class="rf-peek-graph-legend">
+            <span>
+              <span class="rf-peek-graph-dot" />
+              experience
+            </span>
+            <span>
+              <span class="rf-peek-graph-ring" />
+              observation ({exp().observations.length})
+            </span>
+          </div>
+        </div>
+
+        <div class="rf-peek-info-col">
+          <section class="rf-peek-field">
+            <div class="rf-peek-field-head">
+              <span class="rf-peek-field-label">Abstract</span>
+              <span class="rf-peek-field-hint">LLM 精炼出的核心摘要</span>
+            </div>
+            <div class="rf-peek-field-body rf-peek-field-lead">
+              {exp().abstract}
+            </div>
+          </section>
+
+          <Show when={(exp().categories ?? []).length > 0}>
+            <section class="rf-peek-field rf-peek-field-inline">
+              <span class="rf-peek-field-label">Tags</span>
+              <div class="rf-peek-tags">
+                <For each={exp().categories ?? []}>
+                  {(cat) => <span class="rf-peek-tag-chip">#{cat}</span>}
+                </For>
+              </div>
+            </section>
+          </Show>
+
+          <Show when={exp().trigger_condition}>
+            <section class="rf-peek-field">
+              <div class="rf-peek-field-head">
+                <span class="rf-peek-field-label">Trigger</span>
+                <span class="rf-peek-field-hint">
+                  何时应触发（Phase 2 注入用）
+                </span>
+              </div>
+              <div class="rf-peek-field-body rf-peek-field-muted">
+                {exp().trigger_condition}
+              </div>
+            </section>
+          </Show>
+
+          <Show when={exp().statement}>
+            <section class="rf-peek-field">
+              <div class="rf-peek-field-head">
+                <span class="rf-peek-field-label">Statement</span>
+                <span class="rf-peek-field-hint">
+                  机器可读陈述（e.g. <code>after:commit → require:lint</code>）
+                </span>
+              </div>
+              <pre class="rf-peek-field-mono">{exp().statement}</pre>
+            </section>
+          </Show>
+
+          <Show when={(exp().conflicts_with ?? []).length > 0}>
+            <section class="rf-peek-field">
+              <div class="rf-peek-field-head">
+                <span class="rf-peek-field-label">Conflicts with</span>
+              </div>
+              <div class="rf-peek-related">
+                <For each={exp().conflicts_with ?? []}>
+                  {(id) => {
+                    const c = () => relatedLookup().get(id)
+                    return (
+                      <Show
+                        when={c()}
+                        fallback={
+                          <span class="rf-peek-chip rf-peek-chip-muted">
+                            <b>missing</b>
+                            {id.slice(0, 10)}…
+                          </span>
+                        }
+                      >
+                        <button
+                          type="button"
+                          class="rf-peek-related-chip rf-peek-conflict-chip"
+                          data-palette={paletteFor(c()!.kind)}
+                          onClick={() => props.onPickExperience(c()!.id)}
+                        >
+                          <span class="rf-peek-related-kind">
+                            ⚠ {kindDisplay(c()!.kind)}
+                          </span>
+                          <span class="rf-peek-related-title">
+                            {clip(c()!.title, 60)}
+                          </span>
+                        </button>
+                      </Show>
+                    )
+                  }}
+                </For>
+              </div>
+            </section>
+          </Show>
+
+          <section class="rf-peek-field">
+            <div class="rf-peek-field-head">
+              <span class="rf-peek-field-label">Source observations</span>
+              <span class="rf-peek-field-count">
+                {exp().observations.length}
+              </span>
+              <span class="rf-peek-field-hint">
+                这些原始用户消息是 abstract 归纳的来源
+              </span>
+            </div>
+            <Show
+              when={exp().observations.length > 0}
+              fallback={
+                <div class="rf-peek-field-body rf-peek-field-muted">
+                  尚未挂载任何 observation。
+                </div>
+              }
+            >
+              <div class="rf-peek-obs-list">
+                <For
+                  each={[...exp().observations].sort(
+                    (a, b) => b.observed_at - a.observed_at,
+                  )}
+                >
+                  {(obs, i) => {
+                    const node = () =>
+                      obs.agent_context.workflow_snapshot?.node_id
+                    const isHov = () => hoveredObs() === obs.id
+                    const isManual = () =>
+                      (obs as any).source === "manual_create" ||
+                      (obs as any).source === "manual_augment"
+                    return (
+                      <div
+                        class="rf-peek-obs"
+                        data-hovered={isHov() ? "true" : "false"}
+                        style={{
+                          "animation-delay": `${140 + i() * 60}ms`,
+                        }}
+                        onMouseEnter={() => setHoveredObs(obs.id)}
+                        onMouseLeave={() => setHoveredObs(null)}
+                      >
+                        <div class="rf-peek-obs-head">
+                          <span class="rf-peek-obs-sig">
+                            {obs.id.slice(0, 6)}
+                          </span>
+                          <span class="rf-peek-obs-dot">·</span>
+                          <span class="rf-peek-obs-time">
+                            {fmtTime(obs.observed_at)}
+                          </span>
+                          <Show when={node()}>
+                            <span class="rf-peek-chip rf-peek-chip-tight">
+                              <b>节点</b>
+                              {node()}
+                            </span>
+                          </Show>
+                          <Show when={isManual()}>
+                            <span class="rf-peek-chip rf-peek-chip-tight">
+                              <b>来源</b>手动
+                            </span>
+                          </Show>
+                          <span class="rf-peek-obs-actions">
+                            <button
+                              type="button"
+                              class="rf-peek-iconbtn"
+                              title="移到另一个 experience"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                props.onAction({
+                                  type: "moveObservation",
+                                  experience: exp(),
+                                  observation: obs,
+                                })
+                              }}
+                            >
+                              ↻
+                            </button>
+                            <button
+                              type="button"
+                              class="rf-peek-iconbtn rf-peek-iconbtn-danger"
+                              title="删除该 observation"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                props.onAction({
+                                  type: "deleteObservation",
+                                  experience: exp(),
+                                  observation: obs,
+                                })
+                              }}
+                            >
+                              ✕
+                            </button>
+                          </span>
+                        </div>
+                        <div class="rf-peek-obs-body">
+                          {clip(obs.user_text, 220)}
+                        </div>
+                        <a
+                          class="rf-peek-obs-link"
+                          href={props.sessionHref({
+                            sessionID: obs.session_id,
+                            messageID: obs.message_id,
+                          })}
+                          onClick={(e) => {
+                            e.preventDefault()
+                            props.onPickObservation({
+                              sessionID: obs.session_id,
+                              messageID: obs.message_id,
+                            })
+                          }}
+                        >
+                          会话 {obs.session_id.slice(0, 10)}… · 消息{" "}
+                          {obs.message_id.slice(0, 10)}…
+                          <span class="rf-peek-obs-link-arrow">→</span>
+                        </a>
+                      </div>
+                    )
+                  }}
+                </For>
+              </div>
+            </Show>
+          </section>
+
+          <Show when={refCount() > 0}>
+            <section class="rf-peek-field">
+              <div class="rf-peek-field-head">
+                <span class="rf-peek-field-label">Refinement history</span>
+                <span class="rf-peek-field-count">{refCount()}</span>
+                <span class="rf-peek-field-hint">
+                  <Show when={refFirst()}>
+                    first {fmtTime(refFirst())}
+                  </Show>
+                  <Show when={refLast() && refLast() !== refFirst()}>
+                    <span> · last {fmtTime(refLast())}</span>
+                  </Show>
+                </span>
+              </div>
+              <div class="rf-peek-history">
+                <For each={[...(exp().refinement_history ?? [])].reverse()}>
+                  {(rec) => (
+                    <div class="rf-peek-history-row">
+                      <span class="rf-peek-history-time">
+                        {fmtTime(rec.at)}
+                      </span>
+                      <span class="rf-peek-history-kind">
+                        {rec.kind ?? "refine"}
+                      </span>
+                      <span class="rf-peek-history-model">
+                        {rec.model ?? "—"}
+                      </span>
+                    </div>
+                  )}
+                </For>
+              </div>
+            </section>
+          </Show>
+
+          <Show when={exp().related_experience_ids.length > 0}>
+            <section class="rf-peek-field">
+              <div class="rf-peek-field-head">
+                <span class="rf-peek-field-label">Related experiences</span>
+              </div>
+              <div class="rf-peek-related">
+                <For each={exp().related_experience_ids}>
+                  {(id) => {
+                    const related = () => relatedLookup().get(id)
+                    return (
+                      <Show
+                        when={related()}
+                        fallback={
+                          <span class="rf-peek-chip rf-peek-chip-muted">
+                            <b>missing</b>
+                            {id.slice(0, 10)}…
+                          </span>
+                        }
+                      >
+                        <button
+                          type="button"
+                          class="rf-peek-related-chip"
+                          data-palette={paletteFor(related()!.kind)}
+                          onClick={() => props.onPickExperience(related()!.id)}
+                        >
+                          <span class="rf-peek-related-kind">
+                            {kindDisplay(related()!.kind)}
+                          </span>
+                          <span class="rf-peek-related-title">
+                            {clip(related()!.title, 60)}
+                          </span>
+                        </button>
+                      </Show>
+                    )
+                  }}
+                </For>
+              </div>
+            </section>
+          </Show>
+
+          <section class="rf-peek-field rf-peek-field-meta">
+            <div class="rf-peek-meta-row">
+              <span class="rf-peek-meta-k">created</span>
+              <span class="rf-peek-meta-v">
+                {fmtTime(exp().created_at)}
+              </span>
+            </div>
+            <div class="rf-peek-meta-row">
+              <span class="rf-peek-meta-k">refined</span>
+              <span class="rf-peek-meta-v">
+                {fmtTime(exp().last_refined_at)}
+              </span>
+            </div>
+            <div class="rf-peek-meta-path">{exp().path}</div>
+          </section>
+        </div>
+      </div>
+
+      <div class="rf-peek-foot">
         <button
           type="button"
           class="rf-actbtn"
@@ -1990,7 +2823,9 @@ function ExperiencePeek(props: ExperiencePeekProps) {
         <button
           type="button"
           class="rf-actbtn"
-          disabled={!!acting() || exp().observations.length === 0 || exp().archived}
+          disabled={
+            !!acting() || exp().observations.length === 0 || exp().archived
+          }
           onClick={() => void run("refine", () => props.onReRefine())}
           title="基于当前 observations 重新运行 refiner 模型"
         >
@@ -2004,16 +2839,6 @@ function ExperiencePeek(props: ExperiencePeekProps) {
           title={undoable() ? "回滚到上一次快照" : "没有可回滚的快照"}
         >
           ⤺ Undo
-        </button>
-        <button
-          type="button"
-          class="rf-actbtn"
-          data-selected={props.mergeSelected ? "true" : "false"}
-          disabled={!!acting() || exp().archived}
-          onClick={() => props.onToggleMergeSelect(exp().id)}
-          title={props.mergeSelected ? "从合并队列移除" : "加入合并队列"}
-        >
-          {props.mergeSelected ? "✓ Selected" : "⚭ Merge…"}
         </button>
         <button
           type="button"
@@ -2035,266 +2860,19 @@ function ExperiencePeek(props: ExperiencePeekProps) {
           ✕ Delete
         </button>
       </div>
-
-      <div class="rf-peek-body">
-        <div class="rf-sec" data-accent="abstract">
-          <div class="rf-sec-head">
-            <span class="rf-sec-title">Abstract</span>
-            <span class="rf-sec-hint">LLM 精炼出的核心摘要</span>
-          </div>
-          <div class="rf-sec-prose rf-sec-prose-lead">{exp().abstract}</div>
-        </div>
-
-        <Show when={(exp().categories ?? []).length > 0}>
-          <div class="rf-sec rf-sec-inline" data-accent="categories">
-            <span class="rf-sec-title rf-sec-title-inline">Tags</span>
-            <div class="rf-cats">
-              <For each={exp().categories ?? []}>
-                {(cat) => <span class="rf-cat-chip">#{cat}</span>}
-              </For>
-            </div>
-          </div>
-        </Show>
-
-        <Show when={exp().trigger_condition}>
-          <div class="rf-sec" data-accent="trigger">
-            <div class="rf-sec-head">
-              <span class="rf-sec-title">Trigger</span>
-              <span class="rf-sec-hint">何时应触发该条 experience（Phase 2 注入用）</span>
-            </div>
-            <div class="rf-sec-prose">{exp().trigger_condition}</div>
-          </div>
-        </Show>
-
-        <Show when={exp().statement}>
-          <details class="rf-sec rf-sec-details" data-accent="statement">
-            <summary class="rf-sec-summary">
-              <span class="rf-sec-title">Statement</span>
-              <span class="rf-sec-hint">LLM 产出的机器可读陈述（e.g. `after:commit → require:lint`）</span>
-              <span class="rf-sec-caret">▾</span>
-            </summary>
-            <pre class="rf-sec-mono">{exp().statement}</pre>
-          </details>
-        </Show>
-
-        <Show when={(exp().conflicts_with ?? []).length > 0}>
-          <div class="rf-sec" data-accent="conflicts">
-            <div class="rf-sec-head">
-              <span class="rf-sec-title">Conflicts with</span>
-            </div>
-            <div class="rf-related">
-              <For each={exp().conflicts_with ?? []}>
-                {(id) => {
-                  const c = () => relatedLookup().get(id)
-                  return (
-                    <Show
-                      when={c()}
-                      fallback={
-                        <span class="rf-chip rf-chip-muted">
-                          <b>missing</b>
-                          {id.slice(0, 10)}…
-                        </span>
-                      }
-                    >
-                      <button
-                        type="button"
-                        class="rf-related-chip rf-conflict-chip"
-                        data-palette={paletteFor(c()!.kind)}
-                        onClick={() => props.onPickExperience(c()!.id)}
-                      >
-                        <span class="rf-related-kind">⚠ {kindDisplay(c()!.kind)}</span>
-                        <span class="rf-related-title">{clip(c()!.title, 60)}</span>
-                      </button>
-                    </Show>
-                  )
-                }}
-              </For>
-            </div>
-          </div>
-        </Show>
-
-        <details class="rf-sec rf-sec-details" data-accent="observations">
-          <summary class="rf-sec-summary">
-            <span class="rf-sec-title">
-              Source observations
-              <span class="rf-sec-count">{exp().observations.length}</span>
-            </span>
-            <span class="rf-sec-hint">这些原始用户消息是 abstract 归纳的来源</span>
-            <span class="rf-sec-caret">▾</span>
-          </summary>
-          <Show
-            when={exp().observations.length > 0}
-            fallback={<div class="rf-sec-prose rf-muted">尚未挂载任何 observation。</div>}
-          >
-            <div class="rf-observations">
-              <For each={[...exp().observations].sort((a, b) => b.observed_at - a.observed_at)}>
-                {(obs) => {
-                  const node = () => obs.agent_context.workflow_snapshot?.node_id
-                  return (
-                    <div class="rf-observation-wrap">
-                      <a
-                        class="rf-observation"
-                        href={props.sessionHref({
-                          sessionID: obs.session_id,
-                          messageID: obs.message_id,
-                        })}
-                        onClick={(e) => {
-                          e.preventDefault()
-                          props.onPickObservation({
-                            sessionID: obs.session_id,
-                            messageID: obs.message_id,
-                          })
-                        }}
-                      >
-                        <div class="rf-observation-head">
-                          <span class="rf-observation-time">
-                            {fmtTime(obs.observed_at)}
-                          </span>
-                          <Show when={node()}>
-                            <span class="rf-chip rf-chip-tight">
-                              <b>节点</b>
-                              {node()}
-                            </span>
-                          </Show>
-                          <Show when={(obs as any).source === "manual_create" || (obs as any).source === "manual_augment"}>
-                            <span class="rf-chip rf-chip-tight">
-                              <b>来源</b>手动
-                            </span>
-                          </Show>
-                        </div>
-                        <div class="rf-observation-body">
-                          {clip(obs.user_text, 220)}
-                        </div>
-                        <div class="rf-observation-foot">
-                          <span class="rf-mono-dim">
-                            会话 {obs.session_id.slice(0, 10)}… · 消息 {obs.message_id.slice(0, 10)}…
-                          </span>
-                        </div>
-                      </a>
-                      <div class="rf-observation-actions">
-                        <button
-                          type="button"
-                          class="rf-iconbtn"
-                          title="Move to another experience"
-                          onClick={() =>
-                            props.onAction({
-                              type: "moveObservation",
-                              experience: exp(),
-                              observation: obs,
-                            })
-                          }
-                        >
-                          ↻
-                        </button>
-                        <button
-                          type="button"
-                          class="rf-iconbtn rf-iconbtn-danger"
-                          title="Delete this observation"
-                          onClick={() =>
-                            props.onAction({
-                              type: "deleteObservation",
-                              experience: exp(),
-                              observation: obs,
-                            })
-                          }
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    </div>
-                  )
-                }}
-              </For>
-            </div>
-          </Show>
-        </details>
-
-        <Show when={refCount() > 0}>
-          <details class="rf-sec rf-sec-details" data-accent="history">
-            <summary class="rf-sec-summary">
-              <span class="rf-sec-title">
-                Refinement history
-                <span class="rf-sec-count">{refCount()}</span>
-              </span>
-              <span class="rf-sec-hint">
-                <Show when={refFirst()}>first {fmtTime(refFirst())}</Show>
-                <Show when={refLast() && refLast() !== refFirst()}>
-                  <span> · last {fmtTime(refLast())}</span>
-                </Show>
-              </span>
-              <span class="rf-sec-caret">▾</span>
-            </summary>
-            <div class="rf-history">
-              <For each={[...(exp().refinement_history ?? [])].reverse()}>
-                {(rec) => (
-                  <div class="rf-history-row">
-                    <span class="rf-history-time">{fmtTime(rec.at)}</span>
-                    <span class="rf-history-kind">{rec.kind ?? "refine"}</span>
-                    <span class="rf-history-model rf-mono-dim">{rec.model ?? "—"}</span>
-                  </div>
-                )}
-              </For>
-            </div>
-          </details>
-        </Show>
-
-        <Show when={exp().related_experience_ids.length > 0}>
-          <div class="rf-sec" data-accent="related">
-            <div class="rf-sec-head">
-              <span class="rf-sec-title">Related experiences</span>
-            </div>
-            <div class="rf-related">
-              <For each={exp().related_experience_ids}>
-                {(id) => {
-                  const related = () => relatedLookup().get(id)
-                  return (
-                    <Show
-                      when={related()}
-                      fallback={
-                        <span class="rf-chip rf-chip-muted">
-                          <b>missing</b>
-                          {id.slice(0, 10)}…
-                        </span>
-                      }
-                    >
-                      <button
-                        type="button"
-                        class="rf-related-chip"
-                        data-palette={paletteFor(related()!.kind)}
-                        onClick={() => props.onPickExperience(related()!.id)}
-                      >
-                        <span class="rf-related-kind">
-                          {kindDisplay(related()!.kind)}
-                        </span>
-                        <span class="rf-related-title">
-                          {clip(related()!.title, 60)}
-                        </span>
-                      </button>
-                    </Show>
-                  )
-                }}
-              </For>
-            </div>
-          </div>
-        </Show>
-
-        <div class="rf-peek-foot">
-          <span class="rf-peek-foot-item">
-            <span class="rf-peek-foot-k">created</span>
-            <span class="rf-peek-foot-v">{fmtTime(exp().created_at)}</span>
-          </span>
-          <span class="rf-peek-foot-item">
-            <span class="rf-peek-foot-k">refined</span>
-            <span class="rf-peek-foot-v">{fmtTime(exp().last_refined_at)}</span>
-          </span>
-          <span class="rf-peek-foot-path">{exp().path}</span>
-        </div>
-      </div>
     </>
   )
 }
 
-function PeekPanel(props: {
+/* ──────────────────────────────────────────────────────
+   Experience modal — centered overlay that replaces the old
+   right-hand peek aside. Handles:
+     • scrim click-to-close
+     • Escape key-to-close (global listener, only while mounted)
+     • palette-aware card border + body-scroll lock
+   ────────────────────────────────────────────────────── */
+
+function ExperienceModal(props: {
   experience?: Experience
   allExperiences: Experience[]
   onClose: () => void
@@ -2308,11 +2886,37 @@ function PeekPanel(props: {
   onToggleMergeSelect: (id: string) => void
   mergeSelected: (id: string) => boolean
 }) {
+  // Lock <body> scroll + bind Escape while open; releases on close.
+  createEffect(() => {
+    if (!props.experience) return
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = "hidden"
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") props.onClose()
+    }
+    document.addEventListener("keydown", onKey)
+    onCleanup(() => {
+      document.removeEventListener("keydown", onKey)
+      document.body.style.overflow = prevOverflow
+    })
+  })
+
   return (
-    <aside class="rf-peek" data-open={props.experience ? "true" : "false"}>
-      <div class="rf-peek-inner">
-        <Show when={props.experience}>
-          {(exp) => (
+    <Show when={props.experience}>
+      {(exp) => (
+        <div
+          class="rf-peek-scrim"
+          onClick={() => props.onClose()}
+          role="presentation"
+        >
+          <div
+            class="rf-peek-modal"
+            data-palette={paletteFor(exp().kind)}
+            role="dialog"
+            aria-modal="true"
+            aria-label={exp().title}
+            onClick={(e) => e.stopPropagation()}
+          >
             <ExperiencePeek
               experience={exp()}
               allExperiences={props.allExperiences}
@@ -2329,10 +2933,10 @@ function PeekPanel(props: {
               onToggleMergeSelect={props.onToggleMergeSelect}
               mergeSelected={props.mergeSelected(exp().id)}
             />
-          )}
-        </Show>
-      </div>
-    </aside>
+          </div>
+        </div>
+      )}
+    </Show>
   )
 }
 
@@ -3406,21 +4010,22 @@ export default function RefinerPage() {
           </div>
         </div>
 
-        <PeekPanel
-          experience={selectedExperience()}
-          allExperiences={overview()?.experiences ?? []}
-          onClose={() => setSelection(undefined)}
-          onPickExperience={pickExperienceByID}
-          onPickObservation={navigateToObservation}
-          sessionHref={sessionHref}
-          onAction={setAction}
-          onReRefine={(id) => handleReRefine(id)}
-          onUndo={(id) => handleUndo(id)}
-          onArchiveToggle={(id, archived) => handleArchiveToggle(id, archived)}
-          onToggleMergeSelect={toggleMergeSelect}
-          mergeSelected={(id) => mergeIDs().has(id)}
-        />
       </div>
+
+      <ExperienceModal
+        experience={selectedExperience()}
+        allExperiences={overview()?.experiences ?? []}
+        onClose={() => setSelection(undefined)}
+        onPickExperience={pickExperienceByID}
+        onPickObservation={navigateToObservation}
+        sessionHref={sessionHref}
+        onAction={setAction}
+        onReRefine={(id) => handleReRefine(id)}
+        onUndo={(id) => handleUndo(id)}
+        onArchiveToggle={(id, archived) => handleArchiveToggle(id, archived)}
+        onToggleMergeSelect={toggleMergeSelect}
+        mergeSelected={(id) => mergeIDs().has(id)}
+      />
 
       <MergeTray
         selected={mergeSelectedExperiences()}
