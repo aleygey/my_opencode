@@ -7,20 +7,22 @@
    ────────────────────────────────────────────────────── */
 
 .refiner-page {
-  /* Local role tokens — resolve to design tokens from
-     packages/ui/src/styles/{colors.css, theme.css}. */
-  --rf-bg: light-dark(var(--gray-light-2), var(--gray-dark-2));
-  --rf-bg-deep: light-dark(var(--gray-light-3), var(--gray-dark-3));
-  --rf-card: light-dark(var(--gray-light-1), var(--gray-dark-3));
-  --rf-chip: light-dark(var(--gray-light-3), var(--gray-dark-4));
-  --rf-chip-strong: light-dark(var(--gray-light-4), var(--gray-dark-5));
+  /* Local role tokens — cool engineering slate (hue 235-245, very low chroma).
+     Dark surfaces derived by mirroring lightness against ~0.50. */
+  --rf-bg:          light-dark(oklch(0.975 0.006 235), oklch(0.180 0.012 240));
+  --rf-bg-deep:     light-dark(oklch(0.958 0.008 235), oklch(0.142 0.014 240));
+  --rf-card:        light-dark(oklch(0.988 0.005 235), oklch(0.210 0.011 240));
+  --rf-chip:        light-dark(oklch(0.962 0.008 235), oklch(0.240 0.012 240));
+  --rf-chip-strong: light-dark(oklch(0.936 0.011 235), oklch(0.285 0.013 240));
 
-  --rf-line: light-dark(var(--gray-light-alpha-4), var(--gray-dark-alpha-4));
-  --rf-line-strong: light-dark(var(--gray-light-alpha-6), var(--gray-dark-alpha-6));
+  --rf-line:        light-dark(oklch(0.895 0.012 235), oklch(0.300 0.016 240));
+  --rf-line-soft:   light-dark(oklch(0.928 0.010 235), oklch(0.260 0.014 240));
+  --rf-line-strong: light-dark(oklch(0.830 0.015 235), oklch(0.380 0.020 240));
 
-  --rf-ink: light-dark(var(--gray-light-12), var(--gray-dark-12));
-  --rf-ink-soft: light-dark(var(--gray-light-11), var(--gray-dark-11));
-  --rf-dim: light-dark(var(--gray-light-10), var(--gray-dark-10));
+  --rf-ink:      light-dark(oklch(0.22 0.018 245), oklch(0.920 0.010 240));
+  --rf-ink-soft: light-dark(oklch(0.40 0.018 240), oklch(0.760 0.014 240));
+  --rf-dim:      light-dark(oklch(0.56 0.015 235), oklch(0.600 0.016 240));
+  --rf-dim-2:    light-dark(oklch(0.70 0.012 235), oklch(0.480 0.014 240));
 
   --rf-shadow-xs: var(--shadow-xs);
   --rf-shadow-sm: var(--shadow-xs);
@@ -33,6 +35,7 @@
   font-size: var(--font-size-base);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  letter-spacing: -0.003em;
 }
 
 /* ── Kind palette resolution ──────────────────────────
@@ -41,60 +44,74 @@
    background) and --rf-k-ink (readable text on soft bg).
    ─────────────────────────────────────────────────── */
 
+/* Kind palettes overridden for refiner page: low-saturation pastels keyed to
+   a fixed lightness/chroma envelope. Only hue varies across the 7 kinds so
+   the colour language stays coherent on the cool neutral ground.
+
+   Mapping (tsx/paletteFor → design category):
+     cobalt  = workflow_rule       hue 250 (periwinkle)
+     amber   = workflow_gap        hue  35 (terracotta)
+     mint    = know_how            hue 155 (sage)
+     ember   = constraint_or_policy hue 295 (mauve)
+     blue    = domain_knowledge    hue 200 (stone-blue)
+     lilac   = preference_style    hue 340 (dusty-rose)
+     solaris = pitfall_or_caveat   hue  85 (olive)
+     gray    = custom / fallback   hue 235 (slate)
+*/
 .refiner-page [data-palette="cobalt"] {
-  --rf-k: light-dark(var(--cobalt-light-8), var(--cobalt-dark-8));
-  --rf-k-soft: light-dark(var(--cobalt-light-alpha-2), var(--cobalt-dark-alpha-3));
-  --rf-k-ink: light-dark(var(--cobalt-light-11), var(--cobalt-dark-11));
-  --rf-k-border: light-dark(var(--cobalt-light-alpha-5), var(--cobalt-dark-alpha-5));
+  --rf-k:        light-dark(oklch(0.74 0.055 250), oklch(0.68 0.070 250));
+  --rf-k-soft:   light-dark(oklch(0.965 0.014 250), oklch(0.260 0.030 250));
+  --rf-k-ink:    light-dark(oklch(0.38 0.055 250), oklch(0.80 0.050 250));
+  --rf-k-border: light-dark(oklch(0.62 0.080 250), oklch(0.48 0.070 250));
 }
 
 .refiner-page [data-palette="amber"] {
-  --rf-k: light-dark(var(--amber-light-8), var(--amber-dark-8));
-  --rf-k-soft: light-dark(var(--amber-light-alpha-2), var(--amber-dark-alpha-3));
-  --rf-k-ink: light-dark(var(--amber-light-11), var(--amber-dark-11));
-  --rf-k-border: light-dark(var(--amber-light-alpha-5), var(--amber-dark-alpha-5));
+  --rf-k:        light-dark(oklch(0.74 0.065 35), oklch(0.68 0.080 35));
+  --rf-k-soft:   light-dark(oklch(0.965 0.014 35), oklch(0.260 0.030 35));
+  --rf-k-ink:    light-dark(oklch(0.38 0.060 35), oklch(0.80 0.055 35));
+  --rf-k-border: light-dark(oklch(0.62 0.080 35), oklch(0.48 0.070 35));
 }
 
 .refiner-page [data-palette="mint"] {
-  --rf-k: light-dark(var(--mint-light-8), var(--mint-dark-8));
-  --rf-k-soft: light-dark(var(--mint-light-alpha-2), var(--mint-dark-alpha-3));
-  --rf-k-ink: light-dark(var(--mint-light-11), var(--mint-dark-11));
-  --rf-k-border: light-dark(var(--mint-light-alpha-5), var(--mint-dark-alpha-5));
+  --rf-k:        light-dark(oklch(0.74 0.055 155), oklch(0.68 0.065 155));
+  --rf-k-soft:   light-dark(oklch(0.965 0.014 155), oklch(0.260 0.028 155));
+  --rf-k-ink:    light-dark(oklch(0.38 0.055 155), oklch(0.80 0.050 155));
+  --rf-k-border: light-dark(oklch(0.62 0.075 155), oklch(0.48 0.065 155));
 }
 
 .refiner-page [data-palette="ember"] {
-  --rf-k: light-dark(var(--ember-light-8), var(--ember-dark-8));
-  --rf-k-soft: light-dark(var(--ember-light-alpha-2), var(--ember-dark-alpha-3));
-  --rf-k-ink: light-dark(var(--ember-light-11), var(--ember-dark-11));
-  --rf-k-border: light-dark(var(--ember-light-alpha-5), var(--ember-dark-alpha-5));
+  --rf-k:        light-dark(oklch(0.74 0.060 295), oklch(0.68 0.075 295));
+  --rf-k-soft:   light-dark(oklch(0.965 0.014 295), oklch(0.260 0.030 295));
+  --rf-k-ink:    light-dark(oklch(0.38 0.060 295), oklch(0.80 0.050 295));
+  --rf-k-border: light-dark(oklch(0.62 0.080 295), oklch(0.48 0.070 295));
 }
 
 .refiner-page [data-palette="blue"] {
-  --rf-k: light-dark(var(--blue-light-8), var(--blue-dark-8));
-  --rf-k-soft: light-dark(var(--blue-light-alpha-2), var(--blue-dark-alpha-3));
-  --rf-k-ink: light-dark(var(--blue-light-11), var(--blue-dark-11));
-  --rf-k-border: light-dark(var(--blue-light-alpha-5), var(--blue-dark-alpha-5));
+  --rf-k:        light-dark(oklch(0.74 0.055 200), oklch(0.68 0.070 200));
+  --rf-k-soft:   light-dark(oklch(0.965 0.014 200), oklch(0.260 0.030 200));
+  --rf-k-ink:    light-dark(oklch(0.38 0.055 200), oklch(0.80 0.050 200));
+  --rf-k-border: light-dark(oklch(0.62 0.075 200), oklch(0.48 0.065 200));
 }
 
 .refiner-page [data-palette="lilac"] {
-  --rf-k: light-dark(var(--lilac-light-8), var(--lilac-dark-8));
-  --rf-k-soft: light-dark(var(--lilac-light-alpha-2), var(--lilac-dark-alpha-3));
-  --rf-k-ink: light-dark(var(--lilac-light-11), var(--lilac-dark-11));
-  --rf-k-border: light-dark(var(--lilac-light-alpha-5), var(--lilac-dark-alpha-5));
+  --rf-k:        light-dark(oklch(0.74 0.060 340), oklch(0.68 0.075 340));
+  --rf-k-soft:   light-dark(oklch(0.965 0.014 340), oklch(0.260 0.030 340));
+  --rf-k-ink:    light-dark(oklch(0.38 0.060 340), oklch(0.80 0.050 340));
+  --rf-k-border: light-dark(oklch(0.62 0.080 340), oklch(0.48 0.070 340));
 }
 
 .refiner-page [data-palette="solaris"] {
-  --rf-k: light-dark(var(--solaris-light-8), var(--solaris-dark-8));
-  --rf-k-soft: light-dark(var(--solaris-light-alpha-2), var(--solaris-dark-alpha-3));
-  --rf-k-ink: light-dark(var(--solaris-light-11), var(--solaris-dark-11));
-  --rf-k-border: light-dark(var(--solaris-light-alpha-5), var(--solaris-dark-alpha-5));
+  --rf-k:        light-dark(oklch(0.74 0.055 85), oklch(0.68 0.070 85));
+  --rf-k-soft:   light-dark(oklch(0.965 0.014 85), oklch(0.260 0.028 85));
+  --rf-k-ink:    light-dark(oklch(0.38 0.055 85), oklch(0.80 0.050 85));
+  --rf-k-border: light-dark(oklch(0.62 0.075 85), oklch(0.48 0.065 85));
 }
 
 .refiner-page [data-palette="gray"] {
-  --rf-k: light-dark(var(--gray-light-8), var(--gray-dark-8));
-  --rf-k-soft: light-dark(var(--gray-light-alpha-2), var(--gray-dark-alpha-3));
-  --rf-k-ink: light-dark(var(--gray-light-11), var(--gray-dark-11));
-  --rf-k-border: light-dark(var(--gray-light-alpha-5), var(--gray-dark-alpha-5));
+  --rf-k:        light-dark(oklch(0.72 0.015 235), oklch(0.55 0.018 240));
+  --rf-k-soft:   light-dark(oklch(0.955 0.008 235), oklch(0.260 0.014 240));
+  --rf-k-ink:    light-dark(oklch(0.46 0.018 235), oklch(0.78 0.015 240));
+  --rf-k-border: light-dark(oklch(0.80 0.014 235), oklch(0.42 0.016 240));
 }
 
 /* Default (unset palette): neutral accent */
