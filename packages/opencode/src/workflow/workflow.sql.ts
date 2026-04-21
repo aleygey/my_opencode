@@ -3,6 +3,28 @@ import { SessionTable } from "../session/session.sql"
 import { Timestamps } from "../storage/schema.sql"
 
 export type WorkflowStatus = "pending" | "running" | "paused" | "interrupted" | "completed" | "failed" | "cancelled"
+
+/**
+ * Structured summary for a workflow. Kept in sync with `Workflow.Summary` zod
+ * schema in `workflow/index.ts`. Unknown keys are tolerated so existing rows
+ * with free-form summary JSON still load.
+ */
+export type WorkflowSummary = {
+  /** High-level objective shown at the top of the workflow panel. */
+  objective?: string
+  /** Plan steps rendered as badges. */
+  plan?: Array<{
+    label: string
+    status?: "todo" | "doing" | "done" | "blocked"
+    node_id?: string
+  }>
+  /** Free-form badge strings displayed inline. */
+  badges?: string[]
+  /** Agent-private scratchpad; UI does not guarantee rendering. */
+  scratch?: Record<string, unknown>
+  /** Tolerated unknown keys (matches zod `.loose()`). */
+  [key: string]: unknown
+}
 export type WorkflowNodeStatus =
   | "pending"
   | "ready"
@@ -29,7 +51,7 @@ export const WorkflowTable = sqliteTable(
     selected_node_id: text(),
     version: integer().notNull().default(0),
     config: text({ mode: "json" }).$type<Record<string, unknown>>(),
-    summary: text({ mode: "json" }).$type<Record<string, unknown>>(),
+    summary: text({ mode: "json" }).$type<WorkflowSummary>(),
     time_paused: integer(),
     time_completed: integer(),
     ...Timestamps,

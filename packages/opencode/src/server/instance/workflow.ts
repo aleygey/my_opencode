@@ -292,7 +292,13 @@ export function WorkflowRoutes() {
             description: "Control accepted",
             content: {
               "application/json": {
-                schema: resolver(z.boolean()),
+                schema: resolver(
+                  z.object({
+                    ok: z.literal(true),
+                    deduped: z.boolean(),
+                    command_id: z.string().optional(),
+                  }),
+                ),
               },
             },
           },

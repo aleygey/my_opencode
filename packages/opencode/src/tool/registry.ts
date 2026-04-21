@@ -39,6 +39,7 @@ import {
   WorkflowControlTool,
   WorkflowCreateTool,
   WorkflowEdgeCreateTool,
+  WorkflowNeedFulfillTool,
   WorkflowNodeAbortTool,
   WorkflowNodeCreateTool,
   WorkflowNodePauseTool,
@@ -164,6 +165,7 @@ export namespace ToolRegistry {
       const workflowControl = yield* WorkflowControlTool
       const workflowUpdate = yield* WorkflowUpdateTool
       const workflowPull = yield* WorkflowPullTool
+      const workflowNeedFulfill = yield* WorkflowNeedFulfillTool
 
       const state = yield* InstanceState.make<State>(
         Effect.fn("ToolRegistry.state")(function* (ctx) {
@@ -261,6 +263,7 @@ export namespace ToolRegistry {
             workflowControl: Tool.init(workflowControl),
             workflowUpdate: Tool.init(workflowUpdate),
             workflowPull: Tool.init(workflowPull),
+            workflowNeedFulfill: Tool.init(workflowNeedFulfill),
           })
 
           return {
@@ -301,6 +304,7 @@ export namespace ToolRegistry {
               tool.workflowControl,
               tool.workflowUpdate,
               tool.workflowPull,
+              tool.workflowNeedFulfill,
               ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [tool.lsp] : []),
               ...(Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE && Flag.OPENCODE_CLIENT === "cli" ? [tool.plan] : []),
             ],

@@ -121,7 +121,7 @@ export const WorkflowCreateTool = Tool.define("workflow_create", {
     title: z.string(),
     session_id: z.string().optional(),
     config: z.record(z.string(), z.any()).optional(),
-    summary: z.record(z.string(), z.any()).optional(),
+    summary: Workflow.Summary.optional(),
     nodes: Workflow.create.schema.shape.nodes,
     edges: Workflow.create.schema.shape.edges,
     checkpoints: Workflow.create.schema.shape.checkpoints,
@@ -202,7 +202,7 @@ export const WorkflowNodeCreateTool = Tool.define("workflow_node_create", {
 })
 
 export const WorkflowNodeStartTool = Tool.define("workflow_node_start", {
-  description: "Start an existing workflow node by creating and attaching its child session, then optionally send the initial prompt.",
+  description: "Start an existing workflow node by creating and attaching its child session, then optionally send the initial prompt. Idempotent — calling on an already-running node returns the current state without re-prompting.",
   parameters: z.object({
     node_id: z.string(),
     title: z.string().optional(),
@@ -215,6 +215,33 @@ export const WorkflowNodeStartTool = Tool.define("workflow_node_start", {
     if (current.status === "cancelled") {
       throw new Error(`Workflow node ${current.id} is cancelled and cannot be started again.`)
     }
+    if (current.status === "completed") {
+      throw new Error(`Workflow node ${current.id} is already completed; use workflow_control with retry to re-run.`)
+    }
+
+    // P0.3 idempotent start: if the node is already running / waiting with an
+    // attached session, skip session creation and re-prompting. This keeps
+    // accidental double-calls from spawning another LLM round mid-execution.
+    if (
+      current.session_id &&
+      (current.status === "running" || current.status === "waiting")
+    ) {
+      return {
+        title: current.title,
+        metadata: {
+          workflowID: current.workflow_id,
+          nodeID: current.id,
+          sessionID: current.session_id,
+        },
+        output: format({
+          node: current,
+          session_id: current.session_id,
+          idempotent: true,
+          reason: `node already ${current.status}; skipped re-prompt`,
+        }),
+      }
+    }
+
     const picked = input.model ?? current.model
     if (!configured(picked)) {
       throw new Error(
@@ -407,7 +434,7 @@ export const WorkflowReadTool = Tool.define("workflow_read", {
 })
 
 export const WorkflowControlTool = Tool.define("workflow_control", {
-  description: "Send a soft control command to a workflow node, such as continue, resume, retry, or context injection.",
+  description: "Send a soft control command to a workflow node, such as continue, resume, retry, or context injection. Duplicates within a 5s window are silently absorbed.",
   parameters: z.object({
     workflow_id: z.string(),
     node_id: z.string(),
@@ -415,7 +442,7 @@ export const WorkflowControlTool = Tool.define("workflow_control", {
     payload: z.record(z.string(), z.any()).optional(),
   }),
   async execute(input) {
-    await Workflow.control({
+    const result = await Workflow.control({
       workflowID: input.workflow_id,
       nodeID: input.node_id,
       source: "orchestrator",
@@ -423,7 +450,9 @@ export const WorkflowControlTool = Tool.define("workflow_control", {
       payload: input.payload,
     })
     const node = await Workflow.getNode(input.node_id)
-    if (node.session_id) {
+    // Only re-prompt the slave if we actually enqueued a new command.
+    // Deduped commands already have an in-flight slave round.
+    if (!result.deduped && node.session_id) {
       void prompt({
         workflowID: input.workflow_id,
         nodeID: input.node_id,
@@ -431,9 +460,9 @@ export const WorkflowControlTool = Tool.define("workflow_control", {
         sessionID: node.session_id,
         model: node.model,
         text: [
-          `Runtime command: ${input.command}`,
+          `Runtime command: ${input.command} (command_id: ${result.command_id})`,
           input.payload ? JSON.stringify(input.payload, null, 2) : "",
-          "Call workflow_pull now, apply the command, and continue execution in this node session.",
+          "Call workflow_pull now, apply the command, ack it via workflow_update.patch.ack, and continue execution.",
         ]
           .filter(Boolean)
           .join("\n\n"),
@@ -444,22 +473,41 @@ export const WorkflowControlTool = Tool.define("workflow_control", {
       metadata: {
         workflowID: input.workflow_id,
         nodeID: input.node_id,
+        commandID: result.command_id,
+        deduped: result.deduped,
       },
       output: format({
         ok: true,
         command: input.command,
+        command_id: result.command_id,
+        deduped: result.deduped,
       }),
     }
   },
 })
 
 export const WorkflowUpdateTool = Tool.define("workflow_update", {
-  description: "Update the current workflow node state from inside a subagent session. Only changed fields need to be sent.",
+  description: "Update the current workflow node state from inside a subagent session. Only changed fields need to be sent. Pass `ack` to acknowledge runtime command_ids surfaced by workflow_pull. Pass `open_need` to structurally raise a blocker that the orchestrator must fulfill.",
   parameters: z.object({
     node_id: z.string().optional(),
     patch: nodePatch,
     event_kind: z.string().optional(),
     event_payload: z.record(z.string(), z.any()).optional(),
+    /** List of runtime command_ids this update acknowledges. Removes them
+     *  from pending_commands and emits node.command_acked. */
+    ack: z.array(z.string()).optional(),
+    ack_note: z.string().optional(),
+    /** Optional structured need. When set, the node auto-transitions to
+     *  waiting (unless already terminal) and pushes an entry into
+     *  state_json.open_needs for the orchestrator to fulfill. */
+    open_need: z
+      .object({
+        title: z.string(),
+        prompt: z.string().optional(),
+        kind: z.enum(["context", "approval", "tool", "other"]).optional(),
+        required_by: z.string().optional(),
+      })
+      .optional(),
   }),
   async execute(input, ctx) {
     const node = input.node_id ? await Workflow.getNode(input.node_id) : await Workflow.nodeBySession(ctx.sessionID)
@@ -475,13 +523,68 @@ export const WorkflowUpdateTool = Tool.define("workflow_update", {
           }
         : undefined,
     })
+    let acked: string[] = []
+    if (input.ack && input.ack.length > 0) {
+      const result = await Workflow.ackCommand({
+        nodeID: node.id,
+        source: "node",
+        command_ids: input.ack as [string, ...string[]],
+        note: input.ack_note,
+      })
+      acked = result.acked
+    }
+    let opened_need_id: string | undefined
+    if (input.open_need) {
+      const result = await Workflow.openNeed({
+        nodeID: node.id,
+        source: "node",
+        title: input.open_need.title,
+        prompt: input.open_need.prompt,
+        kind: input.open_need.kind,
+        required_by: input.open_need.required_by,
+      })
+      opened_need_id = result.need_id
+    }
     return {
       title: updated.title,
       metadata: {
         workflowID: updated.workflow_id,
         nodeID: updated.id,
+        acked,
+        opened_need_id,
       },
-      output: format(updated),
+      output: format({ ...updated, acked, opened_need_id }),
+    }
+  },
+})
+
+export const WorkflowNeedFulfillTool = Tool.define("workflow_need_fulfill", {
+  description: "Orchestrator fulfills a structured need raised by a slave. Moves the need from open to resolved, injects the supplied context, and wakes the slave.",
+  parameters: z.object({
+    node_id: z.string(),
+    need_id: z.string(),
+    context: z.string(),
+    resolution_note: z.string().optional(),
+  }),
+  async execute(input) {
+    const node = await Workflow.getNode(input.node_id)
+    const result = await Workflow.fulfillNeed({
+      nodeID: node.id,
+      source: "orchestrator",
+      need_id: input.need_id,
+      context: input.context,
+      resolution_note: input.resolution_note,
+    })
+    return {
+      title: `need ${input.need_id} fulfilled`,
+      metadata: {
+        workflowID: node.workflow_id,
+        nodeID: node.id,
+        needID: input.need_id,
+        commandID: result.command_id,
+        remainingOpen: result.remaining_open,
+      },
+      output: format(result),
     }
   },
 })

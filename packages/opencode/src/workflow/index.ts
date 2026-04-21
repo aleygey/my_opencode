@@ -1,6 +1,6 @@
 import { BusEvent } from "@/bus/bus-event"
 import { Bus } from "@/bus"
-import { Database, eq, desc, and, inArray, gt, sql } from "@/storage/db"
+import { Database, eq, desc, asc, and, inArray, notInArray, gt, sql } from "@/storage/db"
 import { AppRuntime } from "@/effect/app-runtime"
 import { Identifier } from "@/id/id"
 import { Instance } from "@/project/instance"
@@ -23,6 +23,7 @@ import {
   type WorkflowNodeResultStatus,
   type WorkflowNodeStatus,
   type WorkflowStatus,
+  type WorkflowSummary,
 } from "./workflow.sql"
 
 const log = Log.create({ service: "workflow" })
@@ -85,6 +86,9 @@ const WorkflowEventKind = z.enum([
   "node.pulled",
   "node.command_acked",
   "node.command_timeout",
+  // P3 #15 — node or workflow has breached a configured budget limit.
+  // Logged but NOT auto-aborted; the orchestrator decides how to react.
+  "node.budget_exceeded",
   // Needs (P1.3)
   "node.need_opened",
   "node.need_fulfilled",
@@ -173,6 +177,60 @@ export class InvalidNodeTransitionError extends Error {
   }
 }
 
+/** Thrown when a node tries to transition to `completed` but the guards
+ *  (output_schema / outstanding checkpoints) reject it. Emits a structured
+ *  event so the orchestrator can inject context and retry. */
+export class NodeCompletionBlockedError extends Error {
+  constructor(
+    readonly nodeID: string,
+    readonly reason: string,
+    readonly detail?: Record<string, unknown>,
+  ) {
+    super(`Workflow node ${nodeID} cannot complete: ${reason}`)
+    this.name = "NodeCompletionBlockedError"
+  }
+}
+
+/** Shape of `config.output_schema`. Intentionally minimal — we keep it a
+ *  lightweight contract rather than embedding a full JSON-schema validator.
+ *  Callers that need richer checks can layer them on top via checkpoints. */
+type OutputSchema = {
+  required?: string[]
+  forbid_empty?: boolean
+}
+
+function extractOutputSchema(config: Record<string, unknown> | null | undefined): OutputSchema | undefined {
+  if (!config || typeof config !== "object") return undefined
+  const raw = (config as Record<string, unknown>).output_schema
+  if (!raw || typeof raw !== "object") return undefined
+  const rec = raw as Record<string, unknown>
+  const required = Array.isArray(rec.required)
+    ? (rec.required as unknown[]).filter((x): x is string => typeof x === "string")
+    : undefined
+  const forbid_empty = rec.forbid_empty === true
+  if (!required && !forbid_empty) return undefined
+  return { required, forbid_empty }
+}
+
+function validateOutput(
+  resultJson: Record<string, unknown> | null | undefined,
+  schema: OutputSchema,
+): { ok: true } | { ok: false; reason: string; missing?: string[] } {
+  if (!resultJson || typeof resultJson !== "object") {
+    return { ok: false, reason: "result_json_missing" }
+  }
+  if (schema.required && schema.required.length > 0) {
+    const missing = schema.required.filter(
+      (k) => !(k in resultJson) || resultJson[k] === null || resultJson[k] === undefined,
+    )
+    if (missing.length > 0) return { ok: false, reason: "required_fields_missing", missing }
+  }
+  if (schema.forbid_empty === true && Object.keys(resultJson).length === 0) {
+    return { ok: false, reason: "result_json_empty" }
+  }
+  return { ok: true }
+}
+
 function mergeJSON(
   current: Record<string, unknown> | undefined,
   next: Record<string, unknown> | undefined,
@@ -182,6 +240,37 @@ function mergeJSON(
   if (mode === "replace") return next
   return { ...(current ?? {}), ...next }
 }
+
+/** Deterministic JSON stringifier used for the command dedup hash. Keys are
+ *  sorted so `{ a, b }` and `{ b, a }` collide. Not cryptographically strong
+ *  — we only need identity for short retry windows. */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value)
+  if (Array.isArray(value)) return `[${value.map((v) => stableStringify(v)).join(",")}]`
+  const obj = value as Record<string, unknown>
+  const keys = Object.keys(obj).sort()
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(",")}}`
+}
+
+/** Small deterministic hash (djb2 variant). Good enough for command dedup. */
+function shortHash(raw: string): string {
+  let h = 5381
+  for (let i = 0; i < raw.length; i++) {
+    h = ((h << 5) + h + raw.charCodeAt(i)) | 0
+  }
+  return (h >>> 0).toString(16)
+}
+
+function commandFingerprint(command: string, payload: Record<string, unknown> | undefined): string {
+  return `${command}:${shortHash(stableStringify(payload ?? {}))}`
+}
+
+/** Duplicate-command suppression window. Orchestrators that re-queue the same
+ *  command back-to-back (typical LLM retry glitch) inside this window get a
+ *  single event in the log instead of N. */
+const COMMAND_DEDUP_WINDOW_MS = 5_000
+/** Hard cap of how many recent commands we remember per node in state_json. */
+const RECENT_COMMANDS_KEEP = 16
 
 function normalizeWorkflowStatus(status: WorkflowNodeStatus | WorkflowStatus): WorkflowStatus {
   if (status === "running" || status === "waiting") return "running"
@@ -196,6 +285,39 @@ function normalizeWorkflowStatus(status: WorkflowNodeStatus | WorkflowStatus): W
 const wakeDelay = 15_000
 const stallEvery = 15_000
 const stallAfter = 45_000
+/** If a pending command sits un-acked for this long we emit
+ *  `node.command_timeout` so the orchestrator can retry or escalate. */
+const commandAckTimeout = 60_000
+/** P3 #11 — soft retention for the `workflow_event` log. Once a workflow
+ *  accumulates more than this many events we prune the oldest rows whose
+ *  kind is NOT a terminal/critical marker. Keeps long-running workflows
+ *  from growing the event log without bound. */
+const EVENT_RETENTION_HARD_CAP = 500
+const EVENT_RETENTION_PRUNE_BATCH = 100
+/** Kinds we never prune — they are the forensic trail a human or the
+ *  orchestrator will want later. */
+const EVENT_RETENTION_PROTECTED: ReadonlySet<string> = new Set<string>([
+  "workflow.created",
+  "workflow.updated",
+  "workflow.completed",
+  "workflow.failed",
+  "workflow.cancelled",
+  "node.failed",
+  "node.completed",
+  "node.interrupted",
+  "node.action_limit_reached",
+  "node.attempt_limit_reached",
+  "node.output_invalid",
+  "node.blocked",
+  "node.transition_rejected",
+  "node.command_timeout",
+  "node.budget_exceeded",
+  "checkpoint.failed",
+])
+/** P3 #11 — after this long a `timed_out_at`-stamped entry in
+ *  `pending_commands` is removed. Acked entries are already removed
+ *  eagerly by `ackCommand`; only timed-out entries can accumulate. */
+const PENDING_COMMAND_TTL_MS = 60 * 60 * 1000
 
 type Wake = {
   workflowID: string
@@ -277,6 +399,30 @@ type Run = {
   recent_actions?: RunAction[]
   last_attempt?: Attempt
   attempt_history?: Attempt[]
+  /** P3 #15 — per-node budget accounting, rolled up from assistant
+   *  message usage. Master reads the aggregated total via the workflow
+   *  `Runtime.usage` rollup; per-node drill-down lives here. */
+  usage?: RunUsage
+  /** Message id of the most recent assistant message whose tokens/cost
+   *  have already been folded into `usage`. Used to dedup across in-memory
+   *  restarts so we don't double-count on a replayed `message.updated`. */
+  usage_last_message_id?: string
+  /** True once we have emitted `node.budget_exceeded` for the current
+   *  crossing. Reset when the operator raises the limit or retries the
+   *  node (attempt bump clears it). Keeps the event from spamming every
+   *  subsequent tool call after the threshold is crossed. */
+  budget_alerted?: boolean
+}
+
+type RunUsage = {
+  input_tokens: number
+  output_tokens: number
+  reasoning_tokens: number
+  cache_read_tokens: number
+  cache_write_tokens: number
+  cost_usd: number
+  tool_calls: number
+  updated_at: number
 }
 
 const isRec = (value: unknown): value is Record<string, unknown> =>
@@ -420,6 +566,29 @@ const mergeActions = (items: AttemptAction[]) => {
 
 const recoverable = (value: string) => /missing|need|required|blocked|timeout|not found|permission|缺少|需要|阻塞|找不到|权限/i.test(value)
 
+/** P3 #15 — derive a single-message usage delta from a completed assistant
+ *  message. The message tokens are absolute-for-this-round (not cumulative),
+ *  so callers can fold the result into the running total with `addUsage`.
+ *  Tool calls counted here are "completed or errored" — in-flight tool parts
+ *  get counted next time the message re-emits with a final state. */
+const messageUsage = (msg: MessageV2.WithParts): RunUsage | undefined => {
+  if (msg.info.role !== "assistant") return undefined
+  const t = msg.info.tokens
+  const toolCalls = msg.parts.filter(
+    (part) => part.type === "tool" && (part.state.status === "completed" || part.state.status === "error"),
+  ).length
+  return {
+    input_tokens: typeof t?.input === "number" ? t.input : 0,
+    output_tokens: typeof t?.output === "number" ? t.output : 0,
+    reasoning_tokens: typeof t?.reasoning === "number" ? t.reasoning : 0,
+    cache_read_tokens: typeof t?.cache?.read === "number" ? t.cache.read : 0,
+    cache_write_tokens: typeof t?.cache?.write === "number" ? t.cache.write : 0,
+    cost_usd: typeof msg.info.cost === "number" ? msg.info.cost : 0,
+    tool_calls: toolCalls,
+    updated_at: msg.info.time.completed ?? msg.info.time.created,
+  }
+}
+
 const report = (node: WNode, msg: MessageV2.WithParts) => {
   const text = summary(msg.parts)
   const errs = msg.parts
@@ -506,7 +675,51 @@ const runState = (node: WNode) => {
       : [],
     last_attempt: isRec(item?.last_attempt) ? (item.last_attempt as Attempt) : undefined,
     attempt_history: Array.isArray(item?.attempt_history) ? (item.attempt_history as Attempt[]) : [],
+    usage: isRec(item?.usage) ? normalizeUsage(item.usage as Record<string, unknown>) : undefined,
+    usage_last_message_id:
+      typeof item?.usage_last_message_id === "string" ? (item.usage_last_message_id as string) : undefined,
+    budget_alerted: item?.budget_alerted === true,
   } satisfies Run
+}
+
+function normalizeUsage(raw: Record<string, unknown>): RunUsage {
+  const pick = (key: string) => (typeof raw[key] === "number" ? (raw[key] as number) : 0)
+  return {
+    input_tokens: pick("input_tokens"),
+    output_tokens: pick("output_tokens"),
+    reasoning_tokens: pick("reasoning_tokens"),
+    cache_read_tokens: pick("cache_read_tokens"),
+    cache_write_tokens: pick("cache_write_tokens"),
+    cost_usd: typeof raw.cost_usd === "number" ? (raw.cost_usd as number) : 0,
+    tool_calls: pick("tool_calls"),
+    updated_at: typeof raw.updated_at === "number" ? (raw.updated_at as number) : 0,
+  }
+}
+
+const EMPTY_USAGE: RunUsage = {
+  input_tokens: 0,
+  output_tokens: 0,
+  reasoning_tokens: 0,
+  cache_read_tokens: 0,
+  cache_write_tokens: 0,
+  cost_usd: 0,
+  tool_calls: 0,
+  updated_at: 0,
+}
+
+function addUsage(a: RunUsage | undefined, b: RunUsage | undefined): RunUsage {
+  const x = a ?? EMPTY_USAGE
+  const y = b ?? EMPTY_USAGE
+  return {
+    input_tokens: x.input_tokens + y.input_tokens,
+    output_tokens: x.output_tokens + y.output_tokens,
+    reasoning_tokens: x.reasoning_tokens + y.reasoning_tokens,
+    cache_read_tokens: x.cache_read_tokens + y.cache_read_tokens,
+    cache_write_tokens: x.cache_write_tokens + y.cache_write_tokens,
+    cost_usd: x.cost_usd + y.cost_usd,
+    tool_calls: x.tool_calls + y.tool_calls,
+    updated_at: Math.max(x.updated_at, y.updated_at),
+  }
 }
 
 const withRun = (node: WNode, patch: Partial<Run>) => {
@@ -528,10 +741,39 @@ const withRun = (node: WNode, patch: Partial<Run>) => {
     recent_actions: next.recent_actions?.slice(-16),
     last_attempt: next.last_attempt,
     attempt_history: next.attempt_history?.slice(-5),
+    usage: next.usage,
+    usage_last_message_id: next.usage_last_message_id,
+    budget_alerted: next.budget_alerted,
   } satisfies Run
 }
 
 export namespace Workflow {
+  // Structured summary for a workflow. `.loose()` tolerates unknown keys so
+  // legacy rows with free-form JSON still parse; known fields are typed.
+  // Mirrors `WorkflowSummary` TS type in workflow.sql.ts — keep them in sync.
+  export const Summary = z
+    .object({
+      // High-level objective displayed at the top of the workflow panel.
+      objective: z.string().optional(),
+      // Plan steps rendered as badges / progress indicators.
+      plan: z
+        .array(
+          z.object({
+            label: z.string(),
+            status: z.enum(["todo", "doing", "done", "blocked"]).optional(),
+            node_id: z.string().optional(),
+          }),
+        )
+        .optional(),
+      // Free-form badge strings displayed inline.
+      badges: z.array(z.string()).optional(),
+      // Agent-private scratchpad; UI does not guarantee rendering.
+      scratch: z.record(z.string(), z.any()).optional(),
+    })
+    .loose()
+    .meta({ ref: "WorkflowSummary" })
+  export type Summary = z.infer<typeof Summary>
+
   export const Info = z
     .object({
       id: z.string(),
@@ -542,7 +784,7 @@ export namespace Workflow {
       selected_node_id: z.string().optional(),
       version: z.number().int().nonnegative(),
       config: z.record(z.string(), z.any()).optional(),
-      summary: z.record(z.string(), z.any()).optional(),
+      summary: Summary.optional(),
       time: z.object({
         created: z.number(),
         updated: z.number(),
@@ -635,6 +877,24 @@ export namespace Workflow {
     .meta({ ref: "WorkflowEvent" })
   export type EventInfo = z.infer<typeof EventInfo>
 
+  /** P3 #15 — token / cost rollup. `Usage` on `Runtime` is the per-workflow
+   *  total summed across all nodes; individual node usage lives on
+   *  `node.state_json.runtime.usage`. All counters are monotonic over the
+   *  workflow lifetime (resetting would break "how much did this run cost"). */
+  export const Usage = z
+    .object({
+      input_tokens: z.number().nonnegative(),
+      output_tokens: z.number().nonnegative(),
+      reasoning_tokens: z.number().nonnegative(),
+      cache_read_tokens: z.number().nonnegative(),
+      cache_write_tokens: z.number().nonnegative(),
+      cost_usd: z.number().nonnegative(),
+      tool_calls: z.number().int().nonnegative(),
+      updated_at: z.number().nonnegative(),
+    })
+    .meta({ ref: "WorkflowUsage" })
+  export type Usage = z.infer<typeof Usage>
+
   export const Runtime = z
     .object({
       phase: z.enum(["planning", "running", "waiting", "interrupted", "failed", "completed"]),
@@ -645,6 +905,20 @@ export namespace Workflow {
       update_count: z.number().int().nonnegative(),
       pull_count: z.number().int().nonnegative(),
       last_event_id: z.number().int().nonnegative(),
+      /** Sum of token / cost usage across all nodes in this workflow.
+       *  Omitted when no node has accumulated any usage yet (keeps the
+       *  snapshot payload small for freshly-created workflows). */
+      usage: Usage.optional(),
+      /** Optional advisory budget caps read from `workflow.config.limits`.
+       *  The runtime does NOT auto-cancel on breach — it only emits a
+       *  `node.budget_exceeded` event so the master can decide policy. */
+      limits: z
+        .object({
+          max_input_tokens: z.number().nonnegative().optional(),
+          max_output_tokens: z.number().nonnegative().optional(),
+          max_cost_usd: z.number().nonnegative().optional(),
+        })
+        .optional(),
     })
     .meta({ ref: "WorkflowRuntime" })
   export type Runtime = z.infer<typeof Runtime>
@@ -980,22 +1254,56 @@ export namespace Workflow {
     }).catch(() => undefined)
     if (!msg) return
     const rep = report(node, msg)
+    const delta = messageUsage(msg)
+    // P3 #15 — pull advisory limits from workflow.config once per message.
+    // `limitsFromConfig` returns undefined when none are set, in which case
+    // the breach check below becomes a no-op. `get()` returns the full
+    // snapshot shape `{ workflow, runtime, nodes, ... }`, so we drill into
+    // `.workflow.config` — not `.config` directly.
+    const snapshot = await get(node.workflow_id).catch(() => undefined)
+    const limits = snapshot ? limitsFromConfig(snapshot.workflow.config) : undefined
     // Bump the top-level attempt counter on every definitive result so
     // the inspector "attempt X/Y" badge actually moves. "waiting" is
     // excluded — those are in-flight pauses, not completed tries. The
     // orchestrator can still override via workflow_update if it wants
     // to force a specific count after a manual retry.
     const shouldBumpAttempt = rep.result !== "waiting"
+    // Captured in the run closure and inspected after the patch lands, so
+    // we can emit the `node.budget_exceeded` event outside the transaction
+    // (the patch itself already carries `node.attempt_reported`, and
+    // patchRun/patchNode only accepts one event per call).
+    let breachedNow: { reasons: string[]; usage: RunUsage; limits: NonNullable<Runtime["limits"]> } | undefined
     await patchRun({
       nodeID: node.id,
       attempt_delta: shouldBumpAttempt ? 1 : undefined,
       run: (node) => {
         const curr = runState(node)
         const hist = [...(curr.attempt_history ?? []).filter((item) => item.message_id !== rep.message_id), rep]
+        // P3 #15 — fold assistant-message tokens/cost into the running total.
+        // Dedup by message id so a replayed `message.updated` after a
+        // restart can't double-count; attempt bumps clear `budget_alerted`
+        // so each retry starts fresh.
+        let nextUsage = curr.usage
+        let nextLastMsg = curr.usage_last_message_id
+        if (delta && curr.usage_last_message_id !== rep.message_id) {
+          nextUsage = addUsage(curr.usage, delta)
+          nextLastMsg = rep.message_id
+        }
+        let nextAlerted = shouldBumpAttempt ? false : curr.budget_alerted === true
+        if (limits && nextUsage && !nextAlerted) {
+          const reasons = budgetBreach(limits, nextUsage)
+          if (reasons) {
+            nextAlerted = true
+            breachedNow = { reasons, usage: nextUsage, limits }
+          }
+        }
         return {
           last_at: rep.time,
           last_attempt: rep,
           attempt_history: hist,
+          usage: nextUsage,
+          usage_last_message_id: nextLastMsg,
+          budget_alerted: nextAlerted,
         } satisfies Partial<Run>
       },
       event: {
@@ -1011,6 +1319,22 @@ export namespace Workflow {
         },
       },
     })
+    if (breachedNow) {
+      await writeEvent({
+        workflowID: node.workflow_id,
+        nodeID: node.id,
+        source: "runtime",
+        kind: "node.budget_exceeded",
+        payload: {
+          reasons: breachedNow.reasons,
+          usage: breachedNow.usage,
+          limits: breachedNow.limits,
+          message_id: rep.message_id,
+        },
+      }).catch((error) => {
+        log.warn("failed to emit budget_exceeded event", { nodeID: node.id, error })
+      })
+    }
   }
 
   async function queueWake(input: Wake) {
@@ -1109,6 +1433,10 @@ export namespace Workflow {
       delete current.stall[id]
     })
     for (const node of nodes) {
+      // P1.1 command ACK timeout — do this before the stall short-circuit so a
+      // fresh stall timer can't hide a much older un-acked command.
+      await detectCommandTimeouts(node, now)
+
       if (now - node.time.updated < stallAfter) {
         delete current.stall[node.id]
         continue
@@ -1127,6 +1455,78 @@ export namespace Workflow {
           status: node.status,
           updated_at: node.time.updated,
           stalled_for_ms: now - node.time.updated,
+        },
+      })
+    }
+  }
+
+  /** Scan pending_commands on a node and emit `node.command_timeout` for any
+   *  entry older than `commandAckTimeout`. Timed-out entries are marked
+   *  `timed_out_at` so we don't keep re-firing for them.
+   *
+   *  P3 #11 — also drops entries whose `timed_out_at` is older than
+   *  `PENDING_COMMAND_TTL_MS` so the queue does not accumulate stale
+   *  records forever. Acked entries are removed eagerly by `ackCommand`,
+   *  so only timed-out entries can pile up here. */
+  async function detectCommandTimeouts(node: Node, now: number) {
+    const runtimeState = isRec(node.state_json) ? node.state_json : {}
+    const pending = Array.isArray(runtimeState.pending_commands)
+      ? (runtimeState.pending_commands as Array<Record<string, unknown>>)
+      : []
+    if (pending.length === 0) return
+
+    const timedOutNow: Array<Record<string, unknown>> = []
+    // First pass: stamp newly-timed-out entries AND drop long-expired ones.
+    const stamped = pending
+      .map((entry) => {
+        if (!isRec(entry)) return entry
+        const issuedAt = typeof entry.issued_at === "number" ? (entry.issued_at as number) : now
+        if (entry.timed_out_at) return entry
+        if (now - issuedAt < commandAckTimeout) return entry
+        const next = { ...entry, timed_out_at: now }
+        timedOutNow.push(next)
+        return next
+      })
+      .filter((entry) => {
+        if (!isRec(entry)) return true
+        const stampedAt = typeof entry.timed_out_at === "number" ? (entry.timed_out_at as number) : undefined
+        if (stampedAt === undefined) return true
+        // Keep entries that were just stamped (we still want to emit the
+        // event for them); drop ones that have aged past the TTL.
+        return now - stampedAt < PENDING_COMMAND_TTL_MS
+      })
+    const nextPending = stamped
+    const changed = nextPending.length !== pending.length || timedOutNow.length > 0
+
+    if (!changed) return
+
+    // Persist the stamped `timed_out_at` (and the pruned list) so the next
+    // tick doesn't re-fire or re-evaluate stale records.
+    await patchNode({
+      nodeID: node.id,
+      source: "runtime",
+      patch: {
+        state_json: {
+          mode: "merge",
+          value: { pending_commands: nextPending },
+        },
+      },
+    })
+
+    if (timedOutNow.length === 0) return
+    for (const entry of timedOutNow) {
+      await writeEvent({
+        workflowID: node.workflow_id,
+        nodeID: node.id,
+        sessionID: node.session_id,
+        target_node_id: node.id,
+        source: "runtime",
+        kind: "node.command_timeout",
+        payload: {
+          command_id: entry.command_id,
+          command: entry.command,
+          issued_at: entry.issued_at,
+          age_ms: now - ((entry.issued_at as number) ?? now),
         },
       })
     }
@@ -1318,6 +1718,23 @@ export namespace Workflow {
               : active
                 ? "running"
                 : "planning"
+    // P3 #15 — roll up per-node usage. We only emit the field when at least
+    // one node has non-zero usage so new workflows don't carry a no-op stub.
+    let total: RunUsage | undefined
+    for (const node of input.nodes) {
+      const u = runState(node).usage
+      if (!u) continue
+      total = addUsage(total, u)
+    }
+    const hasUsage =
+      !!total &&
+      (total.input_tokens > 0 ||
+        total.output_tokens > 0 ||
+        total.reasoning_tokens > 0 ||
+        total.cache_read_tokens > 0 ||
+        total.cache_write_tokens > 0 ||
+        total.cost_usd > 0 ||
+        total.tool_calls > 0)
     return {
       phase,
       active_node_id: active?.id,
@@ -1327,7 +1744,48 @@ export namespace Workflow {
       update_count: input.events.filter((event) => event.kind === "node.updated").length,
       pull_count: input.events.filter((event) => event.kind === "node.pulled").length,
       last_event_id: input.events.at(-1)?.id ?? 0,
+      usage: hasUsage ? total : undefined,
+      limits: limitsFromConfig(input.workflow.config),
     }
+  }
+
+  /** Compare an accumulated usage total against the advisory limits. Returns
+   *  the list of breached dimensions (as strings) or undefined when the
+   *  total is still under every configured cap. */
+  function budgetBreach(
+    limits: NonNullable<Runtime["limits"]> | undefined,
+    usage: RunUsage | undefined,
+  ): string[] | undefined {
+    if (!limits || !usage) return undefined
+    const reasons: string[] = []
+    if (typeof limits.max_input_tokens === "number" && usage.input_tokens > limits.max_input_tokens)
+      reasons.push("input_tokens")
+    if (typeof limits.max_output_tokens === "number" && usage.output_tokens > limits.max_output_tokens)
+      reasons.push("output_tokens")
+    if (typeof limits.max_cost_usd === "number" && usage.cost_usd > limits.max_cost_usd) reasons.push("cost_usd")
+    return reasons.length > 0 ? reasons : undefined
+  }
+
+  /** Extract optional `limits` advisory from `workflow.config.limits`. We
+   *  treat it as purely advisory (read-only from the runtime's perspective) —
+   *  the master decides whether to cancel / retry / raise the cap when the
+   *  `node.budget_exceeded` event fires. */
+  function limitsFromConfig(config: Record<string, unknown> | undefined): Runtime["limits"] {
+    if (!isRec(config)) return undefined
+    const raw = isRec(config.limits) ? (config.limits as Record<string, unknown>) : undefined
+    if (!raw) return undefined
+    const pick = (key: string) => {
+      const v = raw[key]
+      return typeof v === "number" && v >= 0 ? v : undefined
+    }
+    const out = {
+      max_input_tokens: pick("max_input_tokens"),
+      max_output_tokens: pick("max_output_tokens"),
+      max_cost_usd: pick("max_cost_usd"),
+    }
+    if (out.max_input_tokens === undefined && out.max_output_tokens === undefined && out.max_cost_usd === undefined)
+      return undefined
+    return out
   }
 
   async function writeEvent(input: {
@@ -1372,7 +1830,55 @@ export namespace Workflow {
     if (!row) throw new Error("Failed to create workflow event")
     const info = fromEventRow(row)
     Database.effect(() => Bus.publish(Event.EventCreated, { info }))
+    // P3 #11 — soft event retention. Counting + pruning is cheap relative to
+    // LLM-driven write frequency; doing it inline keeps the cap tight without
+    // needing a separate GC timer.
+    pruneOldEvents(input.workflowID)
     return info
+  }
+
+  /** P3 #11 — keep the event log bounded per workflow. We count current
+   *  rows; when over the cap we delete the oldest non-protected rows in a
+   *  batch so we only pay the write cost once every `PRUNE_BATCH` inserts. */
+  function pruneOldEvents(workflowID: string) {
+    try {
+      const totalRow = Database.use((db) =>
+        db
+          .select({ count: sql<number>`count(*)` })
+          .from(WorkflowEventTable)
+          .where(eq(WorkflowEventTable.workflow_id, workflowID))
+          .get(),
+      )
+      const total = totalRow?.count ?? 0
+      if (total <= EVENT_RETENTION_HARD_CAP) return
+
+      // Fetch ids of the oldest prunable rows. We exclude protected kinds so
+      // the forensic trail (completed / failed / limits breached) is preserved
+      // even on a very long workflow.
+      const protectedList = Array.from(EVENT_RETENTION_PROTECTED)
+      const overflow = Math.min(total - EVENT_RETENTION_HARD_CAP, EVENT_RETENTION_PRUNE_BATCH)
+      const victims = Database.use((db) =>
+        db
+          .select({ id: WorkflowEventTable.id })
+          .from(WorkflowEventTable)
+          .where(
+            and(
+              eq(WorkflowEventTable.workflow_id, workflowID),
+              notInArray(WorkflowEventTable.kind, protectedList),
+            ),
+          )
+          .orderBy(asc(WorkflowEventTable.id))
+          .limit(overflow)
+          .all(),
+      )
+      if (victims.length === 0) return
+      const ids = victims.map((v) => v.id)
+      Database.use((db) => db.delete(WorkflowEventTable).where(inArray(WorkflowEventTable.id, ids)).run())
+    } catch (error) {
+      // Retention is best-effort; never let a cleanup failure interfere
+      // with the main write path.
+      log.warn("failed to prune workflow events", { workflowID, error })
+    }
   }
 
   async function touchWorkflow(input: {
@@ -1381,7 +1887,7 @@ export namespace Workflow {
       status: WorkflowStatus
       current_node_id: string | null
       selected_node_id: string | null
-      summary: Record<string, unknown> | null
+      summary: WorkflowSummary | null
     }>
   }) {
     const row = Database.use((db) =>
@@ -1410,7 +1916,7 @@ export namespace Workflow {
       session_id: z.string(),
       title: z.string(),
       config: z.record(z.string(), z.any()).optional(),
-      summary: z.record(z.string(), z.any()).optional(),
+      summary: Summary.optional(),
       nodes: z
         .array(
           z.object({
@@ -1925,9 +2431,28 @@ export namespace Workflow {
       // orchestrator / node sources must walk legal transitions only. On
       // rejection we emit `node.transition_rejected` so the orchestrator
       // learns about it instead of silently dropping the intent.
-      let rejection:
-        | { from: WorkflowNodeStatus; to: WorkflowNodeStatus; nodeID: string; workflow_id: string }
-        | undefined
+      type Rejection =
+        | {
+            type: "transition"
+            from: WorkflowNodeStatus
+            to: WorkflowNodeStatus
+            nodeID: string
+            workflow_id: string
+          }
+        | {
+            type: "output_invalid"
+            nodeID: string
+            workflow_id: string
+            reason: string
+            missing?: string[]
+          }
+        | {
+            type: "checkpoint_blocked"
+            nodeID: string
+            workflow_id: string
+            blockers: Array<{ id: string; label: string; status: string }>
+          }
+      let rejection: Rejection | undefined
       const row = Database.transaction((tx) => {
         const found = tx.select().from(WorkflowNodeTable).where(eq(WorkflowNodeTable.id, input.nodeID)).get()
         if (!found) throw new NotFoundError({ message: `Workflow node not found: ${input.nodeID}` })
@@ -1940,12 +2465,80 @@ export namespace Workflow {
           !isLegalNodeTransition(current.status, requestedStatus)
         ) {
           rejection = {
+            type: "transition",
             from: current.status,
             to: requestedStatus,
             nodeID: current.id,
             workflow_id: current.workflow_id,
           }
           return current
+        }
+
+        // P1.2 completion guards. Only apply when the caller is trying to
+        // mark the node `completed`. runtime-sourced forces still bypass —
+        // stall/limit handlers may need to end a node with partial output.
+        if (
+          requestedStatus === "completed" &&
+          current.status !== "completed" &&
+          input.source !== "runtime"
+        ) {
+          // Simulate the result_json merge so we validate the final value,
+          // not the existing one.
+          const mergedResult =
+            input.patch.result_json === undefined
+              ? current.result_json
+              : mergeJSON(
+                  current.result_json,
+                  input.patch.result_json.value,
+                  input.patch.result_json.mode ?? "merge",
+                )
+          const mergedConfig =
+            input.patch.config === undefined
+              ? current.config
+              : mergeJSON(
+                  current.config,
+                  input.patch.config.value,
+                  input.patch.config.mode ?? "merge",
+                )
+          const schema = extractOutputSchema(mergedConfig as Record<string, unknown> | null | undefined)
+          if (schema) {
+            const result = validateOutput(mergedResult as Record<string, unknown> | null | undefined, schema)
+            if (!result.ok) {
+              rejection = {
+                type: "output_invalid",
+                nodeID: current.id,
+                workflow_id: current.workflow_id,
+                reason: result.reason,
+                missing: result.missing,
+              }
+              return current
+            }
+          }
+          // Block completion if any attached checkpoint is still pending or
+          // explicitly failed. `skipped` and `passed` are both acceptable.
+          const openCheckpoints = tx
+            .select()
+            .from(WorkflowCheckpointTable)
+            .where(
+              and(
+                eq(WorkflowCheckpointTable.node_id, current.id),
+                inArray(WorkflowCheckpointTable.status, ["pending", "failed"]),
+              ),
+            )
+            .all()
+          if (openCheckpoints.length > 0) {
+            rejection = {
+              type: "checkpoint_blocked",
+              nodeID: current.id,
+              workflow_id: current.workflow_id,
+              blockers: openCheckpoints.map((cp) => ({
+                id: cp.id,
+                label: cp.label,
+                status: cp.status,
+              })),
+            }
+            return current
+          }
         }
         const nextStatus = requestedStatus
         const attempt = current.attempt + (input.patch.attempt_delta ?? 0)
@@ -2007,19 +2600,55 @@ export namespace Workflow {
       })
 
       if (rejection) {
-        await writeEvent({
-          workflowID: rejection.workflow_id,
-          nodeID: rejection.nodeID,
-          target_node_id: rejection.nodeID,
-          source: input.source,
-          kind: "node.transition_rejected",
-          payload: {
-            from: rejection.from,
-            to: rejection.to,
-            requested_by: input.source,
-          },
-        })
-        throw new InvalidNodeTransitionError(rejection.nodeID, rejection.from, rejection.to)
+        if (rejection.type === "transition") {
+          await writeEvent({
+            workflowID: rejection.workflow_id,
+            nodeID: rejection.nodeID,
+            target_node_id: rejection.nodeID,
+            source: input.source,
+            kind: "node.transition_rejected",
+            payload: {
+              from: rejection.from,
+              to: rejection.to,
+              requested_by: input.source,
+            },
+          })
+          throw new InvalidNodeTransitionError(rejection.nodeID, rejection.from, rejection.to)
+        }
+        if (rejection.type === "output_invalid") {
+          await writeEvent({
+            workflowID: rejection.workflow_id,
+            nodeID: rejection.nodeID,
+            target_node_id: rejection.nodeID,
+            source: input.source,
+            kind: "node.output_invalid",
+            payload: {
+              reason: rejection.reason,
+              missing: rejection.missing ?? [],
+              requested_by: input.source,
+            },
+          })
+          throw new NodeCompletionBlockedError(rejection.nodeID, rejection.reason, {
+            missing: rejection.missing,
+          })
+        }
+        if (rejection.type === "checkpoint_blocked") {
+          await writeEvent({
+            workflowID: rejection.workflow_id,
+            nodeID: rejection.nodeID,
+            target_node_id: rejection.nodeID,
+            source: input.source,
+            kind: "node.blocked",
+            payload: {
+              reason: "checkpoint_blocked",
+              blockers: rejection.blockers,
+              requested_by: input.source,
+            },
+          })
+          throw new NodeCompletionBlockedError(rejection.nodeID, "checkpoint_blocked", {
+            blockers: rejection.blockers,
+          })
+        }
       }
 
       const workflow = await touchWorkflow({
@@ -2088,10 +2717,83 @@ export namespace Workflow {
       source: z.string(),
       command: z.enum(["continue", "resume", "retry", "inject_context"]),
       payload: z.record(z.string(), z.any()).optional(),
+      /** Optional caller-supplied command id. Mostly for tests; control
+       *  always generates one when omitted so ACK tracking works. */
+      command_id: z.string().optional(),
+      /** Skip dedup guard. Only the stall detector / tests should need this. */
+      force: z.boolean().optional(),
     }),
     async (input) => {
       await state()
-      await getNode(input.nodeID)
+      const node = await getNode(input.nodeID)
+      const fingerprint = commandFingerprint(input.command, input.payload)
+      const now = Date.now()
+
+      // P0.3 dedup: if the same (command, payload) was enqueued within the
+      // dedup window, return the prior command_id without writing a new event.
+      // This absorbs LLM-retry-loop noise where the master fires the same
+      // `continue` twice because it forgot it already called the tool.
+      const runtimeState = isRec(node.state_json) ? node.state_json : {}
+      const recent = Array.isArray(runtimeState.recent_commands)
+        ? (runtimeState.recent_commands as Array<Record<string, unknown>>)
+        : []
+      const duplicate = !input.force
+        ? recent.find(
+            (entry) =>
+              typeof entry?.fingerprint === "string" &&
+              entry.fingerprint === fingerprint &&
+              typeof entry?.time === "number" &&
+              now - (entry.time as number) < COMMAND_DEDUP_WINDOW_MS,
+          )
+        : undefined
+      if (duplicate) {
+        log.info("workflow.control deduped", {
+          workflowID: input.workflowID,
+          nodeID: input.nodeID,
+          command: input.command,
+          fingerprint,
+        })
+        return {
+          ok: true as const,
+          deduped: true as const,
+          command_id: typeof duplicate.command_id === "string" ? (duplicate.command_id as string) : undefined,
+        }
+      }
+
+      const command_id = input.command_id ?? `cmd_${Identifier.create("workspace", false).slice(4)}`
+
+      // P1.1 ACK: track the command in state_json.pending_commands so the
+      // slave sees it via pull and can ack it via workflow_update.patch.ack.
+      const pending = Array.isArray(runtimeState.pending_commands)
+        ? (runtimeState.pending_commands as Array<Record<string, unknown>>).filter((c) =>
+            isRec(c) && typeof c.command_id === "string" ? c.command_id !== command_id : true,
+          )
+        : []
+      pending.push({
+        command_id,
+        command: input.command,
+        payload: input.payload ?? {},
+        fingerprint,
+        issued_by: input.source,
+        issued_at: now,
+      })
+
+      const nextRecent = [...recent, { command_id, fingerprint, time: now }].slice(-RECENT_COMMANDS_KEEP)
+
+      await patchNode({
+        nodeID: input.nodeID,
+        source: "runtime",
+        patch: {
+          state_json: {
+            mode: "merge",
+            value: {
+              pending_commands: pending,
+              recent_commands: nextRecent,
+            },
+          },
+        },
+      })
+
       await writeEvent({
         workflowID: input.workflowID,
         nodeID: input.nodeID,
@@ -2099,11 +2801,236 @@ export namespace Workflow {
         source: input.source,
         kind: "node.control",
         payload: {
+          command_id,
           command: input.command,
           ...(input.payload ?? {}),
         },
       })
-      return true
+      return { ok: true as const, deduped: false as const, command_id }
+    },
+  )
+
+  /** P1.1 — Acknowledge one or more runtime commands. Slave calls this from
+   *  the node session after it has actually applied the command. The entry
+   *  is removed from `pending_commands`, and a `node.command_acked` event is
+   *  emitted so the orchestrator learns the command reached the slave. */
+  export const ackCommand = fn(
+    z.object({
+      nodeID: z.string(),
+      source: z.string(),
+      command_ids: z.array(z.string()).nonempty(),
+      note: z.string().optional(),
+    }),
+    async (input) => {
+      await state()
+      const node = await getNode(input.nodeID)
+      const runtimeState = isRec(node.state_json) ? node.state_json : {}
+      const pending = Array.isArray(runtimeState.pending_commands)
+        ? (runtimeState.pending_commands as Array<Record<string, unknown>>)
+        : []
+      if (pending.length === 0) {
+        return { ok: true as const, acked: [] as string[] }
+      }
+      const toAck = new Set(input.command_ids)
+      const acked: Array<Record<string, unknown>> = []
+      const remaining: Array<Record<string, unknown>> = []
+      for (const entry of pending) {
+        if (isRec(entry) && typeof entry.command_id === "string" && toAck.has(entry.command_id as string)) {
+          acked.push(entry)
+        } else {
+          remaining.push(entry)
+        }
+      }
+      if (acked.length === 0) {
+        return { ok: true as const, acked: [] as string[] }
+      }
+      await patchNode({
+        nodeID: node.id,
+        source: "runtime",
+        patch: {
+          state_json: {
+            mode: "merge",
+            value: { pending_commands: remaining },
+          },
+        },
+      })
+      for (const entry of acked) {
+        await writeEvent({
+          workflowID: node.workflow_id,
+          nodeID: node.id,
+          sessionID: node.session_id,
+          source: input.source,
+          kind: "node.command_acked",
+          payload: {
+            command_id: entry.command_id,
+            command: entry.command,
+            ack_note: input.note,
+            acked_at: Date.now(),
+          },
+        })
+      }
+      return {
+        ok: true as const,
+        acked: acked.map((e) => e.command_id as string),
+      }
+    },
+  )
+
+  /** P1.3 — Slave opens a structured need. Creates an entry in
+   *  state_json.open_needs, emits `node.need_opened`, and auto-transitions
+   *  the node to `waiting` so the orchestrator reacts. `required_by` lets the
+   *  slave state which action is blocked. */
+  export const openNeed = fn(
+    z.object({
+      nodeID: z.string(),
+      source: z.string(),
+      title: z.string(),
+      prompt: z.string().optional(),
+      kind: z.enum(["context", "approval", "tool", "other"]).optional(),
+      required_by: z.string().optional(),
+      /** If omitted, a fresh need_id is generated. */
+      need_id: z.string().optional(),
+    }),
+    async (input) => {
+      await state()
+      const node = await getNode(input.nodeID)
+      const runtimeState = isRec(node.state_json) ? node.state_json : {}
+      const open = Array.isArray(runtimeState.open_needs)
+        ? (runtimeState.open_needs as Array<Record<string, unknown>>)
+        : []
+      // Dedup by title so a slave that repeatedly reports the same need
+      // doesn't stack up duplicates. New prompt overrides the old one.
+      const existing = open.find((entry) => isRec(entry) && entry.title === input.title && !entry.resolved_at)
+      const need_id = existing && typeof existing.need_id === "string"
+        ? (existing.need_id as string)
+        : (input.need_id ?? `nd_${Identifier.create("workspace", false).slice(4)}`)
+      const entry = {
+        need_id,
+        title: input.title,
+        prompt: input.prompt ?? null,
+        kind: input.kind ?? "context",
+        required_by: input.required_by ?? null,
+        opened_by: input.source,
+        opened_at: Date.now(),
+      }
+      const nextOpen = existing
+        ? open.map((e) => (isRec(e) && e.need_id === need_id ? entry : e))
+        : [...open, entry]
+
+      // Transition to waiting if currently running. patchNode merges the
+      // state_json and writes the transition atomically.
+      const shouldWait = node.status === "running"
+      const updated = await patchNode({
+        nodeID: node.id,
+        source: "node",
+        patch: {
+          ...(shouldWait ? { status: "waiting" as const } : {}),
+          state_json: {
+            mode: "merge",
+            value: { open_needs: nextOpen },
+          },
+        },
+        event: {
+          kind: "node.need_opened",
+          payload: {
+            need_id,
+            title: input.title,
+            kind: entry.kind,
+            required_by: entry.required_by,
+          },
+        },
+      })
+      return { ok: true as const, need_id, node: updated }
+    },
+  )
+
+  /** P1.3 — Orchestrator fulfills a need by supplying context. Moves the
+   *  entry from open_needs to resolved_needs, emits `node.need_fulfilled`,
+   *  and injects the fulfillment as an `inject_context` control command so
+   *  the slave wakes up and continues. */
+  export const fulfillNeed = fn(
+    z.object({
+      nodeID: z.string(),
+      source: z.string(),
+      need_id: z.string(),
+      context: z.string(),
+      resolution_note: z.string().optional(),
+    }),
+    async (input) => {
+      await state()
+      const node = await getNode(input.nodeID)
+      const runtimeState = isRec(node.state_json) ? node.state_json : {}
+      const open = Array.isArray(runtimeState.open_needs)
+        ? (runtimeState.open_needs as Array<Record<string, unknown>>)
+        : []
+      const resolved = Array.isArray(runtimeState.resolved_needs)
+        ? (runtimeState.resolved_needs as Array<Record<string, unknown>>)
+        : []
+      const entry = open.find((e) => isRec(e) && e.need_id === input.need_id)
+      if (!entry) {
+        throw new Error(`No open need with id ${input.need_id} for node ${input.nodeID}.`)
+      }
+      const stamped = {
+        ...entry,
+        resolved_by: input.source,
+        resolved_at: Date.now(),
+        resolution_note: input.resolution_note ?? null,
+        context: input.context,
+      }
+      const nextOpen = open.filter((e) => !isRec(e) || e.need_id !== input.need_id)
+      const nextResolved = [...resolved, stamped].slice(-RECENT_COMMANDS_KEEP * 2)
+
+      await patchNode({
+        nodeID: node.id,
+        source: "runtime",
+        patch: {
+          state_json: {
+            mode: "merge",
+            value: { open_needs: nextOpen, resolved_needs: nextResolved },
+          },
+        },
+        event: {
+          kind: "node.need_fulfilled",
+          payload: {
+            need_id: input.need_id,
+            title: entry.title,
+            resolved_by: input.source,
+          },
+        },
+      })
+
+      // Auto-wake via inject_context. If there are no remaining open needs
+      // we also want to flip the node back to running so the slave picks up.
+      const command = await control({
+        workflowID: node.workflow_id,
+        nodeID: node.id,
+        source: input.source,
+        command: "inject_context",
+        payload: {
+          need_id: input.need_id,
+          context: input.context,
+          resolution_note: input.resolution_note,
+        },
+      })
+
+      if (nextOpen.length === 0 && node.status === "waiting") {
+        await patchNode({
+          nodeID: node.id,
+          source: "runtime",
+          patch: { status: "running" },
+          event: {
+            kind: "node.need_resolved",
+            payload: { need_id: input.need_id },
+          },
+        })
+      }
+
+      return {
+        ok: true as const,
+        need_id: input.need_id,
+        remaining_open: nextOpen.length,
+        command_id: command.command_id,
+      }
     },
   )
 
