@@ -553,16 +553,58 @@ export default function Page() {
     selectWorkflowSession(snapshot.workflow.session_id)
   }
 
-  // Clicking "New Task" inside the workflow task-sidebar: drop the :id from
-  // the URL so the session page falls into its "no active session" branch and
-  // renders the NewSessionView composer. The user's next message will spin up
-  // a fresh session + workflow. We also reset the workflow root-view state so
-  // the new page doesn't inherit a stale "graph" flag.
-  const newWorkflowTask = () => {
-    const slug = params.dir ?? base64Encode(sdk.directory)
-    setStore("workflow", "session")
-    local.agent.set("orchestrator")
-    navigate(`/${slug}/session`)
+  // Clicking "New Task" inside the workflow task-sidebar: spin up a fresh
+  // workflow root session in the current directory and jump to it, keeping
+  // the user inside the react-workflow graph view instead of dropping them
+  // into the legacy NewSessionView composer.
+  const newWorkflowTask = async () => {
+    try {
+      const session = await sdk.client.session.create({ title: "Workflow" }).then((res) => res.data)
+      if (!session?.id) throw new Error("Failed to create root session")
+      await sdk.client.workflow.create({
+        session_id: session.id,
+        title: session.title || "Workflow",
+      })
+      const slug = params.dir ?? base64Encode(sdk.directory)
+      setStore("workflow", "graph")
+      local.agent.set("orchestrator")
+      navigate(`/${slug}/session/${session.id}`)
+    } catch (err) {
+      console.error("create workflow task failed", err)
+    }
+  }
+
+  // Clicking "Select workspace" inside the workflow chat-panel: pick a
+  // directory, then create a new workflow root session there and navigate
+  // to it. Mirrors WorkflowScreen.pickWorkspace from app.tsx.
+  const pickWorkspace = () => {
+    void import("@/components/dialog-select-directory").then((mod) => {
+      dialog.show(() => (
+        <mod.DialogSelectDirectory
+          title="Select workspace"
+          onSelect={(result) => {
+            if (typeof result !== "string" || !result) return
+            dialog.close()
+            void (async () => {
+              try {
+                const next = sdk.createClient({ directory: result, throwOnError: true })
+                const session = await next.session.create({ title: "Workflow" }).then((res) => res.data)
+                if (!session?.id) throw new Error("Failed to create root session")
+                await next.workflow.create({
+                  session_id: session.id,
+                  title: session.title || "Workflow",
+                })
+                setStore("workflow", "graph")
+                local.agent.set("orchestrator")
+                navigate(`/${base64Encode(result)}/session/${session.id}`)
+              } catch (err) {
+                console.error("switch workspace failed", err)
+              }
+            })()
+          }}
+        />
+      ))
+    })
   }
 
   createEffect(() => {
@@ -1829,7 +1871,8 @@ export default function Page() {
             currentSessionID={params.id}
             onSelectSession={selectWorkflowSession}
             onSelectRootView={selectWorkflowRoot}
-            onNewTask={newWorkflowTask}
+            onNewTask={() => void newWorkflowTask()}
+            onWorkspaceClick={pickWorkspace}
           />
         </div>
       </Match>
@@ -1938,7 +1981,8 @@ export default function Page() {
                               currentSessionID={params.id}
                               onSelectSession={selectWorkflowSession}
                               onSelectRootView={selectWorkflowRoot}
-                              onNewTask={newWorkflowTask}
+                              onNewTask={() => void newWorkflowTask()}
+                              onWorkspaceClick={pickWorkspace}
                             />
                           </Match>
                         </Switch>
