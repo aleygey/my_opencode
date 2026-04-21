@@ -2436,6 +2436,278 @@ function CategoryStrip(props: {
 }
 
 /* ──────────────────────────────────────────────────────
+   ExperienceRow — redesigned list row
+   ────────────────────────────────────────────────────── */
+
+function highlightMatch(text: string, q: string) {
+  if (!q) return text
+  const i = text.toLowerCase().indexOf(q.toLowerCase())
+  if (i < 0) return text
+  return (
+    <>
+      {text.slice(0, i)}
+      <mark>{text.slice(i, i + q.length)}</mark>
+      {text.slice(i + q.length)}
+    </>
+  )
+}
+
+const touchedLabel = (ts?: number) => {
+  if (!ts) return "—"
+  const diffSec = Math.max(0, (Date.now() - ts) / 1000)
+  if (diffSec < 60) return "just now"
+  if (diffSec < 3600) return `${Math.round(diffSec / 60)}m ago`
+  if (diffSec < 86400) return `${Math.round(diffSec / 3600)}h ago`
+  if (diffSec < 86400 * 30) return `${Math.round(diffSec / 86400)}d ago`
+  return new Date(ts).toLocaleDateString([], { month: "short", day: "numeric" })
+}
+
+function ExperienceRow(props: {
+  item: Experience
+  query: string
+  selected: boolean
+  mergeSel: boolean
+  anySelected: boolean
+  onOpen: () => void
+  onToggleCheck: () => void
+}) {
+  const palette = () => paletteFor(props.item.kind)
+  const abstract = () =>
+    props.item.abstract ? clip(props.item.abstract, 120) : ""
+  const categories = () => (props.item.categories ?? []).slice(0, 3)
+  return (
+    <div
+      class="rf-row"
+      data-palette={palette()}
+      data-selected={props.selected ? "true" : "false"}
+      data-archived={props.item.archived ? "true" : "false"}
+      data-checked={props.mergeSel ? "true" : "false"}
+      data-any-selected={props.anySelected ? "true" : "false"}
+      onClick={props.onOpen}
+    >
+      <span
+        class="rf-row-check"
+        data-checked={props.mergeSel ? "true" : "false"}
+        onClick={(e) => {
+          e.stopPropagation()
+          props.onToggleCheck()
+        }}
+        title="加入合并选择"
+      >
+        <Show when={props.mergeSel}>
+          <svg class="rf-row-check-ic" viewBox="0 0 16 16" aria-hidden="true">
+            <path
+              d="M3 8.5l3 3 7-7"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </Show>
+      </span>
+      <span class="rf-row-cat-bar" />
+      <div class="rf-row-body">
+        <div class="rf-row-title" title={props.item.title}>
+          {highlightMatch(props.item.title, props.query)}
+          <Show when={props.item.archived}>
+            <span class="rf-row-archived">archived</span>
+          </Show>
+        </div>
+        <div class="rf-row-sub">
+          <For each={categories()}>
+            {(cat, i) => (
+              <>
+                <Show when={i() > 0}>
+                  <span class="rf-row-dot" />
+                </Show>
+                <span class="rf-row-tag">#{cat}</span>
+              </>
+            )}
+          </For>
+          <Show when={categories().length > 0 && abstract()}>
+            <span class="rf-row-dot" />
+          </Show>
+          <Show when={abstract()}>
+            <span class="rf-row-summary">{abstract()}</span>
+          </Show>
+        </div>
+      </div>
+      <div class="rf-row-meta">
+        <span class="rf-row-scope">{props.item.scope}</span>
+        <span class="rf-row-obs">
+          {props.item.observations.length} obs
+        </span>
+        <span class="rf-row-touched">{touchedLabel(props.item.last_refined_at)}</span>
+      </div>
+    </div>
+  )
+}
+
+/* ──────────────────────────────────────────────────────
+   Filterbar — unified kind + category + sort + search row
+   Replaces TaxonomyStrip + CategoryStrip when the new layout
+   is active. Kind chips become first-class filters instead of
+   passive readouts; category chips keep their toggle behaviour;
+   a sort toggle and a search input round out the row.
+   ────────────────────────────────────────────────────── */
+
+function Filterbar(props: {
+  taxonomy?: TaxonomyResponse
+  countsByKind: Map<Kind, number>
+  categories: CategoryEntry[]
+  totalCount: number
+  activeKind?: Kind
+  setActiveKind: (k: Kind | undefined) => void
+  activeCategory?: string
+  setActiveCategory: (slug: string | undefined) => void
+  query: string
+  setQuery: (q: string) => void
+  sort: "kind" | "recent"
+  setSort: (s: "kind" | "recent") => void
+}) {
+  const coreSlugs = createMemo<CoreKind[]>(() => {
+    const src = props.taxonomy?.core ?? []
+    const slugs: CoreKind[] = []
+    for (const item of src) {
+      const slug = typeof item === "string" ? item : item.slug
+      if ((CORE_KINDS as readonly string[]).includes(slug)) slugs.push(slug as CoreKind)
+    }
+    if (slugs.length === 0) return [...CORE_KINDS]
+    return slugs
+  })
+  const customEntries = createMemo(() => props.taxonomy?.custom ?? [])
+
+  return (
+    <div class="rf-fbar">
+      <div class="rf-fbar-group">
+        <span class="rf-fbar-label">分类</span>
+        <button
+          type="button"
+          class="rf-chip"
+          data-active={props.activeKind === undefined ? "true" : "false"}
+          onClick={() => props.setActiveKind(undefined)}
+        >
+          全部 <span class="rf-chip-count">{props.totalCount}</span>
+        </button>
+        <For each={coreSlugs()}>
+          {(slug) => {
+            const count = () => props.countsByKind.get(slug) ?? 0
+            const active = () => props.activeKind === slug
+            return (
+              <button
+                type="button"
+                class="rf-chip"
+                data-palette={paletteFor(slug)}
+                data-active={active() ? "true" : "false"}
+                title={slug}
+                onClick={() => props.setActiveKind(active() ? undefined : slug)}
+              >
+                <span class="rf-chip-sw" />
+                {KIND_LABEL[slug]}
+                <span class="rf-chip-count">{count()}</span>
+              </button>
+            )
+          }}
+        </For>
+        <Show when={customEntries().length > 0}>
+          <span class="rf-fbar-sep" />
+          <For each={customEntries()}>
+            {(entry) => {
+              const kind = `custom:${entry.slug}` as Kind
+              const active = () => props.activeKind === kind
+              return (
+                <button
+                  type="button"
+                  class="rf-chip"
+                  data-palette="gray"
+                  data-active={active() ? "true" : "false"}
+                  title={kind}
+                  onClick={() => props.setActiveKind(active() ? undefined : kind)}
+                >
+                  <span class="rf-chip-sw" />
+                  {entry.slug}
+                  <span class="rf-chip-count">{entry.count}</span>
+                </button>
+              )
+            }}
+          </For>
+        </Show>
+      </div>
+
+      <Show when={props.categories.length > 0}>
+        <span class="rf-fbar-div" />
+        <div class="rf-fbar-group">
+          <span class="rf-fbar-label">标签</span>
+          <For each={props.categories}>
+            {(cat) => {
+              const active = () => props.activeCategory === cat.slug
+              return (
+                <button
+                  type="button"
+                  class="rf-chip rf-chip-tag"
+                  data-active={active() ? "true" : "false"}
+                  title={`${cat.slug} · ${cat.count}`}
+                  onClick={() =>
+                    props.setActiveCategory(active() ? undefined : cat.slug)
+                  }
+                >
+                  <span class="rf-chip-hash">#</span>
+                  {cat.slug}
+                  <span class="rf-chip-count">{cat.count}</span>
+                </button>
+              )
+            }}
+          </For>
+        </div>
+      </Show>
+
+      <div class="rf-fbar-spacer" />
+
+      <div class="rf-fbar-search">
+        <svg
+          class="rf-fbar-search-ic"
+          viewBox="0 0 16 16"
+          aria-hidden="true"
+        >
+          <circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.4" />
+          <path d="M10.5 10.5L13 13" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+        </svg>
+        <input
+          type="text"
+          placeholder="搜索经验、观察、标签…"
+          value={props.query}
+          onInput={(e) => props.setQuery(e.currentTarget.value)}
+        />
+        <Show when={props.query}>
+          <button
+            type="button"
+            class="rf-fbar-search-clear"
+            onClick={() => props.setQuery("")}
+            aria-label="清空搜索"
+          >
+            ×
+          </button>
+        </Show>
+      </div>
+
+      <button
+        type="button"
+        class="rf-chip rf-chip-sort"
+        onClick={() => props.setSort(props.sort === "kind" ? "recent" : "kind")}
+        title="切换排序"
+      >
+        <svg viewBox="0 0 16 16" aria-hidden="true" width="13" height="13">
+          <path d="M4 4h9M4 8h6M4 12h3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        {props.sort === "kind" ? "按分类" : "最近修改"}
+      </button>
+    </div>
+  )
+}
+
+/* ──────────────────────────────────────────────────────
    Merge tray — floating prompt when ≥ 2 experiences selected
    ────────────────────────────────────────────────────── */
 
@@ -2497,6 +2769,9 @@ export default function RefinerPage() {
   const [selection, setSelection] = createSignal<Selection>()
   const [action, setAction] = createSignal<ActionKind | undefined>()
   const [activeCategory, setActiveCategory] = createSignal<string | undefined>()
+  const [activeKind, setActiveKind] = createSignal<Kind | undefined>()
+  const [query, setQuery] = createSignal<string>("")
+  const [sortMode, setSortMode] = createSignal<"kind" | "recent">("kind")
   const [includeArchived, setIncludeArchived] = createSignal(false)
   const [scopeMode, setScopeMode] = createSignal<"all" | "session">("all")
   const [mergeIDs, setMergeIDs] = createSignal<Set<string>>(new Set())
@@ -2590,16 +2865,39 @@ export default function RefinerPage() {
     return experienceByID().get(id)
   })
 
-  // Filtered experience list (applies category + archived filter)
+  // Filtered experience list (applies kind/category/query/archived filters)
   const visibleExperiences = createMemo(() => {
     const all = overview()?.experiences ?? []
     const archivedOk = includeArchived()
     const cat = activeCategory()
+    const kind = activeKind()
+    const q = query().trim().toLowerCase()
     return all.filter((e) => {
       if (!archivedOk && e.archived) return false
       if (cat && !(e.categories ?? []).includes(cat)) return false
+      if (kind && e.kind !== kind) return false
+      if (q) {
+        const hay = [
+          e.title,
+          e.abstract,
+          e.statement ?? "",
+          e.task_type ?? "",
+          (e.categories ?? []).join(" "),
+          e.observations.map((o) => o.user_text).join(" "),
+        ]
+          .join(" ")
+          .toLowerCase()
+        if (!hay.includes(q)) return false
+      }
       return true
     })
+  })
+
+  // Flat list sorted by last_refined_at (used when sortMode === "recent")
+  const visibleExperiencesFlat = createMemo(() => {
+    const arr = [...visibleExperiences()]
+    arr.sort((a, b) => b.last_refined_at - a.last_refined_at)
+    return arr
   })
 
   const experiencesByKind = createMemo(() => {
@@ -2960,12 +3258,19 @@ export default function RefinerPage() {
         </Button>
       </div>
 
-      <TaxonomyStrip taxonomy={taxonomy()} countsByKind={kindCounts()} />
-
-      <CategoryStrip
+      <Filterbar
+        taxonomy={taxonomy()}
+        countsByKind={kindCounts()}
         categories={categoriesData()?.categories ?? []}
-        active={activeCategory()}
-        onToggle={setActiveCategory}
+        totalCount={overview()?.experiences.length ?? 0}
+        activeKind={activeKind()}
+        setActiveKind={setActiveKind}
+        activeCategory={activeCategory()}
+        setActiveCategory={setActiveCategory}
+        query={query()}
+        setQuery={setQuery}
+        sort={sortMode()}
+        setSort={setSortMode}
       />
 
       <Show when={banner()}>
@@ -2975,66 +3280,129 @@ export default function RefinerPage() {
       <div class="rf-stage">
         <div class="rf-main">
           <div class="rf-list-view">
-            <Show
-              when={experiencesByKind().length > 0}
-              fallback={
-                <div
-                  class="rf-empty-center"
-                  style={{ position: "static", padding: "48px 0" }}
-                >
-                  No experiences sedimented yet.
+            <div class="rf-list-inner">
+              <div class="rf-list-header">
+                <div class="rf-list-title">
+                  经验列表
+                  <span class="rf-list-title-sub">
+                    {visibleExperiences().length} 条
+                    <Show when={query()}>
+                      {" · 匹配 "}
+                      <em>{`"${query()}"`}</em>
+                    </Show>
+                  </span>
                 </div>
-              }
-            >
-              <For each={experiencesByKind()}>
-                  {([kind, items]) => (
-                    <div class="rf-list-group">
-                      <div class="rf-list-group-head">
-                        <span
-                          class="rf-dot rf-dot-lg"
-                          data-palette={paletteFor(kind)}
-                        />
-                        <span class="rf-list-group-title">{kindDisplay(kind)}</span>
-                        <span class="rf-list-group-count">{items.length}</span>
-                      </div>
-                      <For each={items}>
-                        {(item) => {
-                          const selected = () =>
-                            selection()?.id === `experience:${item.id}`
-                          const mergeSel = () => mergeIDs().has(item.id)
-                          return (
-                            <div
-                              class="rf-row"
-                              data-palette={paletteFor(item.kind)}
-                              data-selected={selected() ? "true" : "false"}
-                              data-archived={item.archived ? "true" : "false"}
-                              onClick={() => pickExperienceByID(item.id)}
-                            >
-                              <input
-                                type="checkbox"
-                                class="rf-row-merge"
-                                checked={mergeSel()}
-                                title="加入合并选择"
-                                onClick={(e) => e.stopPropagation()}
-                                onChange={(e) => {
-                                  e.stopPropagation()
-                                  toggleMergeSelect(item.id)
-                                }}
-                              />
-                              <div class="rf-row-title" title={item.abstract}>
-                                {item.title}
-                                <Show when={item.archived}>
-                                  <span class="rf-row-archived">archived</span>
-                                </Show>
-                              </div>
-                            </div>
-                          )
-                        }}
+                <div class="rf-list-controls">
+                  <Show
+                    when={mergeIDs().size > 0}
+                    fallback={
+                      <button
+                        class="rf-topbtn rf-topbtn-ghost"
+                        onClick={() => setAction({ type: "create" })}
+                      >
+                        ＋ 新建
+                      </button>
+                    }
+                  >
+                    <span class="rf-list-selected">{mergeIDs().size} 已选</span>
+                    <button
+                      class="rf-topbtn"
+                      disabled={mergeIDs().size < 2}
+                      onClick={() =>
+                        setAction({
+                          type: "merge",
+                          ids: [...mergeIDs()],
+                        })
+                      }
+                    >
+                      合并 {mergeIDs().size}
+                    </button>
+                    <button
+                      class="rf-topbtn"
+                      onClick={async () => {
+                        for (const id of mergeIDs()) {
+                          await handleArchiveToggle(id, true)
+                        }
+                        clearMergeSelection()
+                      }}
+                    >
+                      归档
+                    </button>
+                    <button
+                      class="rf-topbtn rf-topbtn-ghost"
+                      onClick={clearMergeSelection}
+                    >
+                      取消
+                    </button>
+                  </Show>
+                </div>
+              </div>
+
+              <Show
+                when={visibleExperiences().length > 0}
+                fallback={
+                  <div class="rf-list-empty">
+                    <h3>没有匹配的经验</h3>
+                    <p>试试清空搜索，或者切换其他分类。</p>
+                  </div>
+                }
+              >
+                <Show
+                  when={sortMode() === "kind"}
+                  fallback={
+                    <section class="rf-list-group">
+                      <For each={visibleExperiencesFlat()}>
+                        {(item) => (
+                          <ExperienceRow
+                            item={item}
+                            query={query()}
+                            selected={
+                              selection()?.id === `experience:${item.id}`
+                            }
+                            mergeSel={mergeIDs().has(item.id)}
+                            anySelected={mergeIDs().size > 0}
+                            onOpen={() => pickExperienceByID(item.id)}
+                            onToggleCheck={() => toggleMergeSelect(item.id)}
+                          />
+                        )}
                       </For>
-                    </div>
-                  )}
-                </For>
-            </Show>
+                    </section>
+                  }
+                >
+                  <For each={experiencesByKind()}>
+                    {([kind, items]) => (
+                      <section class="rf-list-group">
+                        <header
+                          class="rf-list-group-head"
+                          data-palette={paletteFor(kind)}
+                        >
+                          <span class="rf-list-group-bar" />
+                          <span class="rf-list-group-title">
+                            {kindDisplay(kind)}
+                          </span>
+                          <span class="rf-list-group-count">{items.length}</span>
+                        </header>
+                        <For each={items}>
+                          {(item) => (
+                            <ExperienceRow
+                              item={item}
+                              query={query()}
+                              selected={
+                                selection()?.id === `experience:${item.id}`
+                              }
+                              mergeSel={mergeIDs().has(item.id)}
+                              anySelected={mergeIDs().size > 0}
+                              onOpen={() => pickExperienceByID(item.id)}
+                              onToggleCheck={() => toggleMergeSelect(item.id)}
+                            />
+                          )}
+                        </For>
+                      </section>
+                    )}
+                  </For>
+                </Show>
+              </Show>
+            </div>
           </div>
         </div>
 
