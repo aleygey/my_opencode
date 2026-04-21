@@ -673,7 +673,15 @@ function WorkflowScreen() {
                 </For>
               </div>
             </Show>
-            <div class="mt-6">
+            <div class="mt-6 flex flex-wrap items-center justify-center gap-2">
+              <button
+                type="button"
+                class="rounded-xl border border-emerald-500/60 bg-emerald-500/10 px-4 py-2 text-13-medium text-emerald-700 transition-colors hover:bg-emerald-500/20 dark:text-emerald-300"
+                disabled={!!make()}
+                onClick={pickWorkspace}
+              >
+                Choose another workspace…
+              </button>
               <button
                 type="button"
                 class="rounded-xl border border-border/60 px-4 py-2 text-13-medium text-text-base transition-colors hover:bg-muted/30"
