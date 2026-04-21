@@ -99,7 +99,10 @@ if (!(root instanceof HTMLElement) && import.meta.env.DEV) {
 
 const getCurrentUrl = () => {
   const host = location.hostname || "localhost"
-  if (import.meta.env.VITE_OPENCODE_SERVER_HOST || import.meta.env.VITE_OPENCODE_SERVER_PORT) {
+  if (
+    import.meta.env.DEV &&
+    (import.meta.env.VITE_OPENCODE_SERVER_HOST || import.meta.env.VITE_OPENCODE_SERVER_PORT)
+  ) {
     return `http://${import.meta.env.VITE_OPENCODE_SERVER_HOST ?? host}:${import.meta.env.VITE_OPENCODE_SERVER_PORT ?? "4096"}`
   }
   if (location.hostname.includes("opencode.ai")) return "http://localhost:4096"
