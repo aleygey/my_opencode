@@ -326,6 +326,13 @@ export function TaskSidebar({
   ).length
 
   return (
+    // Stacking: lives inside .workflow-make (isolation: isolate), above the
+    // canvas/chat/inspector columns. Each of those columns is also isolated
+    // (`.wf-canvas`, `.wf-chat-root`, `.wf-inspector-root` each set
+    // `isolation: isolate`), so their internal z-indices (chat header z:70,
+    // open agent z:80, model dropdown z:90) stay contained. That makes a
+    // modest z:30 on this overlay enough to sit above all of them. The
+    // scrim fills the container; the panel slides in as a child.
     <div className="absolute inset-0 z-30 flex">
       {/* Scrim — staggered fade with soft blur */}
       <div className="wf-sidebar-scrim" onClick={onClose} />
