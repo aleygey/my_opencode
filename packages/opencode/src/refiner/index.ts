@@ -839,8 +839,13 @@ async function captureObservation(input: {
   messageID: string
   text: string
   observedAt: number
+  source?: Observation["source"]
 }): Promise<Observation> {
-  // Prior history (up to 3 messages before this one)
+  // Prior history (up to 3 messages before this one). Pulled identically for
+  // live user messages and historical ingest so both paths give the refiner
+  // LLM the same kind of temporal context. NOTE: these three messages are
+  // temporally adjacent but not guaranteed topically relevant — the prompt
+  // explicitly instructs the LLM to self-assess relevance before using them.
   const allMessages = await Session.messages({
     sessionID: SessionID.make(input.sessionID),
     limit: 40,
@@ -855,7 +860,9 @@ async function captureObservation(input: {
       message_id: m.info.id,
     }))
 
-  // Optional workflow snapshot
+  // Optional workflow snapshot. Absent for sessions that predate the workflow
+  // runtime (Workflow.bySession returns nothing) — that's fine, the schema
+  // field is optional and the prompt handles its absence gracefully.
   let workflowSnapshot: Observation["agent_context"]["workflow_snapshot"]
   const byResult = await Workflow.bySession(SessionID.make(input.sessionID)).catch(() => undefined)
   if (byResult) {
@@ -880,6 +887,7 @@ async function captureObservation(input: {
     session_id: input.sessionID,
     message_id: input.messageID,
     user_text: input.text,
+    ...(input.source ? { source: input.source } : {}),
     agent_context: {
       session_history_excerpt: prior,
       workflow_snapshot: workflowSnapshot,
@@ -2543,35 +2551,47 @@ export namespace Refiner {
 
   // ---------- Batch ingest from historical session ----------
 
-  export async function ingestSession(input: { sessionID: string }) {
+  export async function ingestSession(input: {
+    sessionID: string
+    messageIDs?: string[]
+  }): Promise<{ ok: true; stats: { processed: number; observed: number; skipped: number } }> {
     const cfg = await settings()
     const stats = { processed: 0, observed: 0, skipped: 0 }
     const messages = await Session.messages({ sessionID: SessionID.make(input.sessionID), limit: 500 }).catch(
       () => [],
     )
+    const filter = input.messageIDs && input.messageIDs.length > 0 ? new Set(input.messageIDs) : null
     for (const msg of messages) {
       stats.processed++
-      if (msg.info.role !== "user") { stats.skipped++; continue }
+      if (msg.info.role !== "user") {
+        stats.skipped++
+        continue
+      }
+      if (filter && !filter.has(msg.info.id)) {
+        stats.skipped++
+        continue
+      }
       const text = msg.parts
         .flatMap((p) => (p.type === "text" && !p.synthetic && !p.ignored ? [p.text.trim()] : []))
         .filter(Boolean)
         .join("\n")
         .trim()
-      if (!text) { stats.skipped++; continue }
-      const observedAt = msg.info.time.created
-      const observation: Observation = {
-        id: `${input.sessionID}:${msg.info.id}:${observedAt}`,
-        observed_at: observedAt,
-        session_id: input.sessionID,
-        message_id: msg.info.id,
-        user_text: text,
-        source: "ingest",
-        agent_context: {
-          session_history_excerpt: [],
-        },
+      if (!text) {
+        stats.skipped++
+        continue
       }
-      await writeObservation(observation)
       try {
+        // Delegate to the shared capture helper so ingested observations get the
+        // same prior-history excerpt (3 messages) and workflow snapshot that live
+        // captures do. Passing source: "ingest" keeps them distinguishable in the
+        // audit / UI without changing downstream refiner behavior.
+        const observation = await captureObservation({
+          sessionID: input.sessionID,
+          messageID: msg.info.id,
+          text,
+          observedAt: msg.info.time.created,
+          source: "ingest",
+        })
         await observeObservation(observation)
         stats.observed++
       } catch (err) {
@@ -2582,10 +2602,35 @@ export namespace Refiner {
     await appendAudit("ingested.ndjson", {
       at: nowMs(),
       session_id: input.sessionID,
+      message_ids: input.messageIDs ?? null,
       stats,
       base: cfg.base,
     })
     return { ok: true as const, stats }
+  }
+
+  /**
+   * List message_ids already observed for a given session. Used by the ingest
+   * drawer so the UI can disable / visually mark rows the user has previously
+   * imported (since ingest is idempotent but the user shouldn't accidentally
+   * re-import in bulk).
+   */
+  export async function listIngestedObservations(input: { sessionID: string }): Promise<{
+    session_id: string
+    message_ids: string[]
+  }> {
+    const cfg = await settings()
+    const dir = path.join(cfg.base, "observations", input.sessionID)
+    const files = await Glob.scan("*.md", { cwd: dir, absolute: true, dot: true }).catch(() => [])
+    const messageIDs: string[] = []
+    for (const file of files) {
+      const doc = await readMatter(file).catch(() => undefined)
+      if (!doc) continue
+      const parsed = ObservationSchema.safeParse(doc.data)
+      if (!parsed.success) continue
+      messageIDs.push(parsed.data.message_id)
+    }
+    return { session_id: input.sessionID, message_ids: messageIDs }
   }
 
   // ---------- Export / Import ----------

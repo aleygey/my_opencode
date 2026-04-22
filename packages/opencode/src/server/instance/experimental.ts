@@ -767,7 +767,7 @@ export const ExperimentalRoutes = lazy(() =>
       describeRoute({
         summary: "Batch ingest session into refiner",
         description:
-          "Replay all user messages from an existing session through the refiner pipeline. Useful for sedimenting historical conversations.",
+          "Replay user messages from an existing session through the refiner pipeline. Pass `message_ids` in the body to cherry-pick specific user messages; omit for full session ingest. Useful for sedimenting historical conversations.",
         operationId: "experimental.refiner.ingestSession",
         responses: {
           200: {
@@ -777,9 +777,42 @@ export const ExperimentalRoutes = lazy(() =>
           ...errors(400),
         },
       }),
+      validator(
+        "json",
+        z
+          .object({
+            message_ids: z.array(z.string()).optional(),
+          })
+          .optional(),
+      ),
       async (c) => {
         const sessionID = c.req.param("session_id")
-        return c.json(await Refiner.ingestSession({ sessionID }))
+        const body = c.req.valid("json") ?? {}
+        return c.json(
+          await Refiner.ingestSession({
+            sessionID,
+            messageIDs: body.message_ids,
+          }),
+        )
+      },
+    )
+    .get(
+      "/refiner/ingested-observations/:session_id",
+      describeRoute({
+        summary: "List ingested observations for a session",
+        description:
+          "Return the set of user message_ids that have already been observed for this session, so the UI can mark/disable already-imported rows in the cherry-pick drawer.",
+        operationId: "experimental.refiner.listIngestedObservations",
+        responses: {
+          200: {
+            description: "Ingested observation message_ids",
+            content: { "application/json": { schema: resolver(z.record(z.string(), z.unknown())) } },
+          },
+        },
+      }),
+      async (c) => {
+        const sessionID = c.req.param("session_id")
+        return c.json(await Refiner.listIngestedObservations({ sessionID }))
       },
     )
     .get(

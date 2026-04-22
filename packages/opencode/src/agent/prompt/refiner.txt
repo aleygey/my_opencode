@@ -66,6 +66,39 @@ CONFLICTS (soft marker)
 （注：`conflicts_with` 是 experience 级别的 soft marker；`contradicts` 是 edge 级别的显式方向性标注。两者可并存。）
 
 ==============================================================================
+INTERPRETING `agent_context` (prior history & workflow snapshot)
+==============================================================================
+
+Every observation ships with an `agent_context` block:
+
+- `session_history_excerpt` — up to **3 messages** that happened **immediately
+  before** this user message in the same session. They are selected purely by
+  temporal adjacency — **there is NO guarantee they are topically related** to
+  the current user message.
+- `workflow_snapshot` — optional; present only if the session was executing a
+  workflow node at the time the message was sent. Absent for historical / ingested
+  sessions that predate the workflow runtime. Treat its absence as "no workflow
+  context", not as missing data.
+
+Rules for using prior history:
+
+1. **Self-assess relevance before citing**. Read `user_text` first and decide
+   what it is about, then scan `session_history_excerpt` and keep only the
+   messages that clearly share the same topic / same request thread. Discard
+   the rest; do not let them leak into `title`, `abstract`, or `reason`.
+2. If the prior history is unrelated (different topic, unrelated commands,
+   different file paths), treat the observation as standalone — it is common
+   and expected, not a signal of noise.
+3. If the current message is a pure continuation ("那再补一条..." / "接着上一条..."),
+   prior history becomes load-bearing: use it to recover the missing subject,
+   but still paraphrase — never copy its text into the abstract.
+4. Never invent links between the current message and unrelated prior-history
+   messages just because they appear in the excerpt. Absence of relevance is a
+   valid reading.
+5. The same relevance test applies to ingested observations (source = "ingest")
+   — the excerpt is computed identically for live and historical captures.
+
+==============================================================================
 TASK: route
 ==============================================================================
 

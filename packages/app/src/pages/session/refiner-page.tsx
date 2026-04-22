@@ -633,10 +633,62 @@ const apiSearch = (b: ApiBase, q: string, opts?: { limit?: number; includeArchiv
     },
   })
 
-const apiIngestSession = (b: ApiBase, sessionID: string) =>
-  apiRequest(b, `/experimental/refiner/ingest-session/${encodeURIComponent(sessionID)}`, {
-    method: "POST",
+const apiIngestSession = (
+  b: ApiBase,
+  sessionID: string,
+  opts?: { messageIDs?: string[] },
+) =>
+  apiRequest<{ ok: boolean; stats: { processed: number; observed: number; skipped: number } }>(
+    b,
+    `/experimental/refiner/ingest-session/${encodeURIComponent(sessionID)}`,
+    {
+      method: "POST",
+      json: opts?.messageIDs && opts.messageIDs.length > 0 ? { message_ids: opts.messageIDs } : {},
+    },
+  )
+
+// Sessions the user can pick from in the import drawer. Roots-only to keep slave
+// (parentID-bearing) sessions out of the list — ingesting a slave session would
+// pull the master-authored prompt and pollute the experience library the same
+// way live capture used to.
+type SessionListItem = {
+  id: string
+  title?: string
+  time?: { created?: number; updated?: number }
+  version?: string
+}
+
+const apiListRootSessions = (b: ApiBase, opts?: { limit?: number; search?: string }) =>
+  apiRequest<SessionListItem[]>(b, `/session`, {
+    query: {
+      roots: true,
+      limit: opts?.limit ?? 50,
+      search: opts?.search,
+    },
   })
+
+// Raw message envelope from the backend — we only touch fields we render.
+type RawMessagePart = { type: string; text?: string; synthetic?: boolean; ignored?: boolean }
+type RawMessageWithParts = {
+  info: {
+    id: string
+    role: "user" | "assistant" | "system"
+    time?: { created?: number }
+  }
+  parts: RawMessagePart[]
+}
+
+const apiListSessionMessages = (b: ApiBase, sessionID: string) =>
+  apiRequest<RawMessageWithParts[]>(
+    b,
+    `/session/${encodeURIComponent(sessionID)}/message`,
+  )
+
+const apiListIngestedObservations = (b: ApiBase, sessionID: string) =>
+  apiRequest<{ session_id: string; message_ids: string[] }>(
+    b,
+    `/experimental/refiner/ingested-observations/${encodeURIComponent(sessionID)}`,
+  )
 
 const apiExport = (b: ApiBase) => apiRequest<Record<string, unknown>>(b, `/experimental/refiner/export`)
 
@@ -721,7 +773,7 @@ type ActionKind =
   | { type: "merge"; ids: string[] }
   | { type: "import" }
   | { type: "search" }
-  | { type: "ingest"; sessionID: string }
+  | { type: "ingest"; sessionID?: string }
   | { type: "deleteObservation"; experience: Experience; observation: Observation }
   | { type: "moveObservation"; experience: Experience; observation: Observation }
 
@@ -1895,65 +1947,392 @@ function MoveObservationModal(props: {
    Modal: Ingest session confirm
    ────────────────────────────────────────────────────── */
 
-function IngestModal(props: {
-  sessionID: string
+/**
+ * Two-level drawer for importing historical opencode sessions into the refiner.
+ *
+ * Level 1 (left column): list root sessions (no parentID) with a search box.
+ *   Hiding slave/child sessions is deliberate — master→slave prompts were
+ *   authored by the master agent, not the user, so ingesting them would pollute
+ *   the experience graph with system-authored content.
+ *
+ * Level 2 (right column): for the selected session, list user messages only.
+ *   The user ticks specific messages (or "select all"), and the submit replays
+ *   exactly those through `captureObservation`, which pulls the same 3-message
+ *   prior-history + workflow snapshot as live capture.
+ *
+ * Already-ingested message_ids are fetched once per session and used to gray
+ * out rows, so re-opening the drawer shows progress at a glance.
+ */
+function HistoryImportDrawer(props: {
+  apiBase: () => ApiBase | undefined
+  currentSessionID?: string
   onClose: () => void
-  onSubmit: () => Promise<void>
+  onSubmit: (sessionID: string, messageIDs?: string[]) => Promise<void>
 }) {
-  const [busy, setBusy] = createSignal(false)
-  const [error, setError] = createSignal<string | undefined>()
-  const [result, setResult] = createSignal<Record<string, unknown> | undefined>()
-  const submit = async () => {
-    setBusy(true)
-    setError(undefined)
+  const [sessionQuery, setSessionQuery] = createSignal("")
+  const [sessions, setSessions] = createSignal<SessionListItem[]>([])
+  const [sessionsLoading, setSessionsLoading] = createSignal(false)
+  const [sessionsError, setSessionsError] = createSignal<string | undefined>()
+  const [selectedSessionID, setSelectedSessionID] = createSignal<string | undefined>(
+    props.currentSessionID,
+  )
+  const [messages, setMessages] = createSignal<RawMessageWithParts[]>([])
+  const [messagesLoading, setMessagesLoading] = createSignal(false)
+  const [messagesError, setMessagesError] = createSignal<string | undefined>()
+  const [ingestedIDs, setIngestedIDs] = createSignal<Set<string>>(new Set())
+  const [picked, setPicked] = createSignal<Set<string>>(new Set())
+  const [submitBusy, setSubmitBusy] = createSignal(false)
+  const [submitError, setSubmitError] = createSignal<string | undefined>()
+  const [submitDone, setSubmitDone] = createSignal<
+    { observed: number; skipped: number } | undefined
+  >()
+
+  onMount(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") props.onClose()
+    }
+    document.addEventListener("keydown", onKey)
+    onCleanup(() => document.removeEventListener("keydown", onKey))
+  })
+
+  const loadSessions = async () => {
+    const b = props.apiBase()
+    if (!b) return
+    setSessionsLoading(true)
+    setSessionsError(undefined)
     try {
-      await props.onSubmit()
-      setResult({ ok: true })
+      const list = await apiListRootSessions(b, {
+        limit: 80,
+        search: sessionQuery().trim() || undefined,
+      })
+      // Sort newest first by updated time — list() already returns in DB order
+      // but we want to be explicit since time fields may be absent in old rows.
+      list.sort((a, b2) => {
+        const au = a.time?.updated ?? a.time?.created ?? 0
+        const bu = b2.time?.updated ?? b2.time?.created ?? 0
+        return bu - au
+      })
+      setSessions(list)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setSessionsError(err instanceof Error ? err.message : String(err))
     } finally {
-      setBusy(false)
+      setSessionsLoading(false)
     }
   }
+
+  const loadMessages = async (sessionID: string) => {
+    const b = props.apiBase()
+    if (!b) return
+    setMessages([])
+    setPicked(new Set<string>())
+    setIngestedIDs(new Set<string>())
+    setMessagesError(undefined)
+    setSubmitDone(undefined)
+    setSubmitError(undefined)
+    setMessagesLoading(true)
+    try {
+      const [msgs, ingested] = await Promise.all([
+        apiListSessionMessages(b, sessionID),
+        apiListIngestedObservations(b, sessionID).catch(() => ({ message_ids: [] })),
+      ])
+      setMessages(msgs)
+      setIngestedIDs(new Set(ingested.message_ids))
+    } catch (err) {
+      setMessagesError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setMessagesLoading(false)
+    }
+  }
+
+  onMount(() => {
+    void loadSessions()
+    const sid = selectedSessionID()
+    if (sid) void loadMessages(sid)
+  })
+
+  createEffect(() => {
+    const sid = selectedSessionID()
+    if (!sid) return
+    void loadMessages(sid)
+  })
+
+  // Only user messages are candidates for ingest (assistant / system are skipped
+  // backend-side anyway; filtering here keeps the picker honest).
+  const pickableMessages = createMemo(() =>
+    messages().filter((m) => {
+      if (m.info.role !== "user") return false
+      const hasText = m.parts.some(
+        (p) => p.type === "text" && !p.synthetic && !p.ignored && (p.text ?? "").trim() !== "",
+      )
+      return hasText
+    }),
+  )
+
+  const messageText = (m: RawMessageWithParts) =>
+    m.parts
+      .flatMap((p) => (p.type === "text" && !p.synthetic && !p.ignored ? [p.text ?? ""] : []))
+      .join("\n")
+      .trim()
+
+  const togglePick = (messageID: string) => {
+    setPicked((prev) => {
+      const next = new Set(prev)
+      if (next.has(messageID)) next.delete(messageID)
+      else next.add(messageID)
+      return next
+    })
+  }
+
+  const selectAllUnimported = () => {
+    const next = new Set<string>()
+    for (const m of pickableMessages()) {
+      if (!ingestedIDs().has(m.info.id)) next.add(m.info.id)
+    }
+    setPicked(next)
+  }
+  const clearPicked = () => setPicked(new Set<string>())
+
+  const submit = async () => {
+    const sid = selectedSessionID()
+    if (!sid) return
+    setSubmitBusy(true)
+    setSubmitError(undefined)
+    try {
+      const ids = [...picked()]
+      await props.onSubmit(sid, ids.length > 0 ? ids : undefined)
+      setSubmitDone({ observed: ids.length || pickableMessages().length, skipped: 0 })
+      // Refresh ingested set so repeatedly imported rows gray out immediately.
+      const b = props.apiBase()
+      if (b) {
+        const fresh = await apiListIngestedObservations(b, sid).catch(() => undefined)
+        if (fresh) setIngestedIDs(new Set(fresh.message_ids))
+      }
+      setPicked(new Set<string>())
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSubmitBusy(false)
+    }
+  }
+
+  const formatTime = (ms?: number) => {
+    if (!ms) return ""
+    try {
+      return new Date(ms).toLocaleString()
+    } catch {
+      return ""
+    }
+  }
+
+  const pickedCount = () => picked().size
+  const pickableCount = () => pickableMessages().length
+  const alreadyIngestedCount = () =>
+    pickableMessages().filter((m) => ingestedIDs().has(m.info.id)).length
+
   return (
-    <RfModal
-      title="Ingest this session"
-      subtitle="把本会话所有 user messages 回放到 refiner 流程中生成 observations，已存在的 observation 会跳过。"
-      onClose={props.onClose}
-      busy={busy()}
-      footer={
-        <>
+    <div class="rf-drawer-scrim" onClick={() => props.onClose()}>
+      <div
+        class="rf-drawer"
+        role="dialog"
+        aria-label="Import historical sessions"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div class="rf-drawer-head">
+          <div>
+            <div class="rf-drawer-title">从历史会话导入经验</div>
+            <div class="rf-drawer-subtitle">
+              从 opencode 数据库挑选任意会话，再勾选用户消息，refiner 会按「当前消息 + 前 3 条历史 +
+              workflow（如有）」提炼成 experience。
+            </div>
+          </div>
           <button
             type="button"
-            class="rf-btn rf-btn-ghost"
+            class="rf-drawer-close"
+            aria-label="关闭"
             onClick={() => props.onClose()}
-            disabled={busy()}
           >
-            Close
+            ×
           </button>
-          <Show when={!result()}>
+        </div>
+
+        <div class="rf-drawer-body">
+          {/* ─── Left: session list ─── */}
+          <div class="rf-drawer-col rf-drawer-col-left">
+            <div class="rf-drawer-col-head">
+              <div class="rf-drawer-col-title">会话</div>
+              <input
+                type="search"
+                class="rf-drawer-search"
+                placeholder="按标题过滤…"
+                value={sessionQuery()}
+                onInput={(e) => setSessionQuery(e.currentTarget.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void loadSessions()
+                }}
+              />
+            </div>
+            <Show when={sessionsLoading()}>
+              <div class="rf-drawer-muted">加载中…</div>
+            </Show>
+            <Show when={sessionsError()}>
+              <div class="rf-drawer-error">{sessionsError()}</div>
+            </Show>
+            <div class="rf-drawer-session-list">
+              <For each={sessions()}>
+                {(s) => (
+                  <button
+                    type="button"
+                    class="rf-drawer-session-row"
+                    data-selected={selectedSessionID() === s.id ? "true" : "false"}
+                    onClick={() => setSelectedSessionID(s.id)}
+                    title={s.id}
+                  >
+                    <div class="rf-drawer-session-title">{s.title || "(untitled)"}</div>
+                    <div class="rf-drawer-session-meta">
+                      <span class="rf-drawer-session-time">
+                        {formatTime(s.time?.updated ?? s.time?.created)}
+                      </span>
+                      <span class="rf-drawer-session-id">{s.id.slice(-10)}</span>
+                    </div>
+                  </button>
+                )}
+              </For>
+              <Show when={!sessionsLoading() && sessions().length === 0}>
+                <div class="rf-drawer-muted">无匹配会话。</div>
+              </Show>
+            </div>
+          </div>
+
+          {/* ─── Right: message picker ─── */}
+          <div class="rf-drawer-col rf-drawer-col-right">
+            <div class="rf-drawer-col-head">
+              <div class="rf-drawer-col-title">
+                用户消息
+                <Show when={selectedSessionID()}>
+                  <span class="rf-drawer-col-title-hint">
+                    {pickedCount()}/{pickableCount()} 选中
+                    <Show when={alreadyIngestedCount() > 0}>
+                      （已导入 {alreadyIngestedCount()}）
+                    </Show>
+                  </span>
+                </Show>
+              </div>
+              <div class="rf-drawer-col-actions">
+                <button
+                  type="button"
+                  class="rf-btn rf-btn-ghost rf-btn-xs"
+                  onClick={selectAllUnimported}
+                  disabled={!selectedSessionID() || pickableCount() === 0}
+                >
+                  选未导入
+                </button>
+                <button
+                  type="button"
+                  class="rf-btn rf-btn-ghost rf-btn-xs"
+                  onClick={clearPicked}
+                  disabled={pickedCount() === 0}
+                >
+                  清空
+                </button>
+              </div>
+            </div>
+
+            <Show when={!selectedSessionID()}>
+              <div class="rf-drawer-muted">请先在左侧选择一个会话。</div>
+            </Show>
+            <Show when={selectedSessionID() && messagesLoading()}>
+              <div class="rf-drawer-muted">加载消息中…</div>
+            </Show>
+            <Show when={messagesError()}>
+              <div class="rf-drawer-error">{messagesError()}</div>
+            </Show>
+
+            <div class="rf-drawer-msg-list">
+              <For each={pickableMessages()}>
+                {(m) => {
+                  const text = messageText(m)
+                  const isIngested = () => ingestedIDs().has(m.info.id)
+                  const isPicked = () => picked().has(m.info.id)
+                  return (
+                    <label
+                      class="rf-drawer-msg-row"
+                      data-ingested={isIngested() ? "true" : "false"}
+                      data-picked={isPicked() ? "true" : "false"}
+                    >
+                      <input
+                        type="checkbox"
+                        class="rf-drawer-msg-check"
+                        checked={isPicked()}
+                        onChange={() => togglePick(m.info.id)}
+                      />
+                      <div class="rf-drawer-msg-body">
+                        <div class="rf-drawer-msg-text">{text}</div>
+                        <div class="rf-drawer-msg-meta">
+                          <span>{formatTime(m.info.time?.created)}</span>
+                          <Show when={isIngested()}>
+                            <span class="rf-drawer-msg-ingested">已导入</span>
+                          </Show>
+                        </div>
+                      </div>
+                    </label>
+                  )
+                }}
+              </For>
+              <Show
+                when={
+                  selectedSessionID() && !messagesLoading() && pickableMessages().length === 0
+                }
+              >
+                <div class="rf-drawer-muted">该会话没有可导入的用户消息。</div>
+              </Show>
+            </div>
+          </div>
+        </div>
+
+        <div class="rf-drawer-foot">
+          <div class="rf-drawer-foot-status">
+            <Show when={submitBusy()}>
+              <span class="rf-spinner" /> <span>导入中…</span>
+            </Show>
+            <Show when={submitError()}>
+              <span class="rf-drawer-error-inline">{submitError()}</span>
+            </Show>
+            <Show when={submitDone()}>
+              {(d) => (
+                <span class="rf-drawer-ok-inline">
+                  已提交 {d().observed} 条，图谱稍后刷新。
+                </span>
+              )}
+            </Show>
+          </div>
+          <div class="rf-drawer-foot-actions">
+            <button
+              type="button"
+              class="rf-btn rf-btn-ghost"
+              onClick={() => props.onClose()}
+              disabled={submitBusy()}
+            >
+              关闭
+            </button>
             <button
               type="button"
               class="rf-btn rf-btn-primary"
               onClick={() => void submit()}
-              disabled={busy()}
+              disabled={submitBusy() || !selectedSessionID() || pickableCount() === 0}
+              title={
+                pickedCount() === 0
+                  ? "未勾选消息 → 导入全部可导入消息"
+                  : `导入 ${pickedCount()} 条消息`
+              }
             >
-              Ingest
+              {pickedCount() > 0
+                ? `导入选中的 ${pickedCount()} 条`
+                : `导入全部 ${pickableCount()} 条`}
             </button>
-          </Show>
-        </>
-      }
-    >
-      <div class="rf-modal-note">
-        Target session: <span class="rf-mono-dim">{props.sessionID}</span>
+          </div>
+        </div>
       </div>
-      <Show when={error()}>
-        <div class="rf-modal-error">{error()}</div>
-      </Show>
-      <Show when={result()}>
-        <div class="rf-modal-ok">Done — check the graph for new experiences.</div>
-      </Show>
-    </RfModal>
+    </div>
   )
 }
 
@@ -4018,9 +4397,11 @@ export default function RefinerPage() {
     if (newID) setSelection({ kind: "experience", id: `experience:${newID}` })
   }
 
-  const handleIngest = async (sessionID: string) => {
-    await withBase((b) => apiIngestSession(b, sessionID))
-    flash("Session ingested")
+  const handleIngest = async (sessionID: string, opts?: { messageIDs?: string[] }) => {
+    const res = await withBase((b) => apiIngestSession(b, sessionID, opts))
+    const observed = res?.stats?.observed ?? 0
+    const skipped = res?.stats?.skipped ?? 0
+    flash(`Session ingested · observed=${observed} · skipped=${skipped}`)
     refreshAll()
   }
 
@@ -4190,8 +4571,8 @@ export default function RefinerPage() {
               type: "action",
               key: "ingest",
               icon: "⇅",
-              label: "Ingest this session",
-              onPick: () => setAction({ type: "ingest", sessionID: params.id ?? "" }),
+              label: "Import from history",
+              onPick: () => setAction({ type: "ingest", sessionID: params.id }),
             },
             { type: "sep" },
             {
@@ -4505,10 +4886,13 @@ export default function RefinerPage() {
         })()}
       >
         {(a) => (
-          <IngestModal
-            sessionID={a().sessionID}
+          <HistoryImportDrawer
+            apiBase={apiBase}
+            currentSessionID={a().sessionID}
             onClose={() => setAction(undefined)}
-            onSubmit={() => handleIngest(a().sessionID)}
+            onSubmit={(sessionID, messageIDs) =>
+              handleIngest(sessionID, messageIDs ? { messageIDs } : undefined)
+            }
           />
         )}
       </Show>
