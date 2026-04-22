@@ -104,6 +104,16 @@ export type WorkflowAppProps = {
   pick?: string
   model?: string
   models?: string[]
+  /** Root-session agent name. When provided, the chat panel header
+   * renders a picker so the user can route the master session to a
+   * different primary agent (e.g. `build` for a quick one-off task
+   * instead of the full `orchestrator` planning loop). */
+  rootAgent?: string
+  /** Candidate root-session agents — typically all non-subagent,
+   * non-hidden agents advertised by the backend. */
+  rootAgents?: string[]
+  /** Called when the user picks a different root-session agent. */
+  onRootAgentChange?: (agent: string) => void
   workspace?: string
   nodes: Node[]
   chains?: Chain[]
@@ -509,6 +519,9 @@ export function WorkflowApp(props: WorkflowAppProps) {
                   messages={rows}
                   model={props.model}
                   models={props.models}
+                  agent={props.rootAgent}
+                  agents={props.rootAgents}
+                  onAgentChange={props.onRootAgentChange}
                   workspace={props.workspace}
                   onSendMessage={(text) => props.onSend(text)}
                   onModelChange={props.onModelChange}

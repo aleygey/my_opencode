@@ -519,13 +519,23 @@ export default function Page() {
     ),
   )
 
+  // Preserve the user's current picker choice when the existing selection is
+  // still a valid primary (non-subagent) agent. Fall back to orchestrator
+  // otherwise. This prevents navigation from clobbering the agent-picker
+  // selection the user made in the root-session chat panel.
+  const ensureRootAgent = () => {
+    const current = local.agent.current()
+    if (current && current.mode !== "subagent") return
+    local.agent.set("orchestrator")
+  }
+
   const selectWorkflowSession = (sessionID: string) => {
     const snapshot = workflowSnapshot()
     if (!snapshot) return
     const slug = params.dir ?? base64Encode(sdk.directory)
 
     if (sessionID === snapshot.workflow.session_id) {
-      local.agent.set("orchestrator")
+      ensureRootAgent()
       navigate(`/${slug}/session/${sessionID}`)
       return
     }
@@ -613,7 +623,7 @@ export default function Page() {
     if (!snapshot || !sessionID) return
 
     if (sessionID === snapshot.workflow.session_id) {
-      local.agent.set("orchestrator")
+      ensureRootAgent()
       return
     }
 
@@ -2035,7 +2045,7 @@ export default function Page() {
                   </Match>
                   <Match when={true}>
                     <div class="flex h-full flex-col">
-                      <Show when={local.agent.current()?.name?.toLowerCase()?.includes("orchestrator")}>
+                      <Show when={local.agent.current()?.name === "orchestrator"}>
                         <div class="border-b border-border-weak-base bg-background-panel px-5 py-4">
                           <div class="flex items-center gap-2">
                             <span class="rounded-full border border-sky-500/25 bg-sky-500/8 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-sky-700 dark:text-sky-300">

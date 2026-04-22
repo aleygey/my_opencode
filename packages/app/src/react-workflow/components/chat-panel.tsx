@@ -59,6 +59,21 @@ interface Props {
   messages: Msg[]
   model?: string
   models?: string[]
+  /** Currently selected root-session agent name. When the master page
+   * originally hard-coded "orchestrator" as the sole root agent, users
+   * had no way to run a quick one-off task without firing up the full
+   * long-chain workflow. Exposing the current agent here lets the
+   * header render a picker so any primary (non-subagent) agent can
+   * drive the root session instead. */
+  agent?: string
+  /** Candidate agents for the root-session picker. Typically all
+   * non-subagent, non-hidden agents advertised by the backend. When
+   * empty or undefined the agent chip is hidden. */
+  agents?: string[]
+  /** Fired when the user picks a different root-session agent. The
+   * parent page persists the choice into `local.agent` so follow-up
+   * prompts are routed to that agent. */
+  onAgentChange?: (agent: string) => void
   workspace?: string
   waitingForInput?: boolean
   onSendMessage?: (msg: string) => void
@@ -512,11 +527,17 @@ const MSG_PAGE_SIZE = 50
 export function ChatPanel(props: Props) {
   const [msg, setMsg] = useState('')
   const [modelOpen, setModelOpen] = useState(false)
+  // Separate dropdown state for the agent chip so model and agent
+  // pickers don't fight for the same "open" flag. Previously the
+  // master page only had a model chip; adding agent switching would
+  // break keyboard-open semantics if both shared one flag.
+  const [agentOpen, setAgentOpen] = useState(false)
   const [visibleCount, setVisibleCount] = useState(MSG_PAGE_SIZE)
   const composingRef = useRef(false)
   const end = useRef<HTMLDivElement>(null)
   const messagesRef = useRef<HTMLDivElement>(null)
   const dropRef = useRef<HTMLDivElement>(null)
+  const agentDropRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const prevMsgCount = useRef(0)
   const initialMount = useRef(true)
@@ -596,6 +617,21 @@ export function ChatPanel(props: Props) {
     return () => document.removeEventListener('mousedown', handler)
   }, [modelOpen])
 
+  // Close agent dropdown on outside click. Same pattern as the model
+  // dropdown — separate handler so each chip only responds to its own
+  // container. A shared handler would close one when the user clicked
+  // into the other, losing focus mid-pick.
+  useEffect(() => {
+    if (!agentOpen) return
+    const handler = (e: MouseEvent) => {
+      if (agentDropRef.current && !agentDropRef.current.contains(e.target as HTMLElement)) {
+        setAgentOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [agentOpen])
+
   const send = () => {
     if (!msg.trim()) return
     props.onSendMessage?.(msg)
@@ -642,6 +678,19 @@ export function ChatPanel(props: Props) {
 
   const currentModel = props.model ?? props.models?.[0] ?? 'GPT-5.4'
   const modelList = props.models ?? ['GPT-5.4', 'GPT-5.4-turbo', 'Claude-3.5-Sonnet', 'Claude-3-Opus']
+  // Agent picker resolves only when the parent actually provides a
+  // non-empty candidate list. We intentionally don't seed a fallback
+  // here (unlike the model chip) — in environments where no agents
+  // list is threaded in, the chip stays hidden rather than shipping
+  // fake values that would fail server-side as "agent not found".
+  const agentList = props.agents && props.agents.length > 0 ? props.agents : undefined
+  const currentAgent = props.agent ?? agentList?.[0]
+  // Always show the chip when we know the current agent — it doubles
+  // as a "what agent am I talking to right now" readout per the
+  // product ask, even when only one agent is available. The dropdown
+  // still opens in the single-agent case; users see the one option
+  // and understand nothing is switchable yet.
+  const showAgentChip = !!currentAgent
 
   return (
     <div className="wf-chat-root">
@@ -651,11 +700,47 @@ export function ChatPanel(props: Props) {
       {/* Header */}
       <div className="wf-chat-header">
         <div className="flex items-center gap-2.5">
-          <div className="relative flex h-5 w-5 items-center justify-center">
-            <div className="absolute inset-0 rounded-full bg-[var(--wf-ok)] opacity-15 wf-pulse" />
-            <div className="h-[6px] w-[6px] rounded-full bg-[var(--wf-ok)]" />
+          {/* Liveness indicator. The halo ring pulses only while the
+            * LLM is actively producing a reply, so the dot reads as
+            * "the agent is thinking right now" vs. "idle, waiting for
+            * input". Previously the halo always pulsed, which made it
+            * impossible to tell from the header whether the current
+            * turn was still in flight — the user had to infer from
+            * streamed tokens or the send-button icon swap. */}
+          <div
+            className="relative flex h-5 w-5 items-center justify-center"
+            title={props.isRunning ? 'Agent is thinking…' : 'Idle'}
+          >
+            {props.isRunning && (
+              <div className="absolute inset-0 rounded-full bg-[var(--wf-ok)] opacity-20 wf-pulse" />
+            )}
+            <div
+              className="h-[6px] w-[6px] rounded-full"
+              style={{
+                background: props.isRunning ? 'var(--wf-ok)' : 'var(--wf-dim)',
+                transition: 'background-color 160ms ease',
+              }}
+            />
           </div>
           <span className="text-[14px] font-bold tracking-[-0.01em] text-[var(--wf-ink)]">Agent Chat</span>
+
+          {/* Active-loop badge. Explicit "Thinking" label with a spinner
+            * gives a second redundant signal — useful because the dot
+            * alone is easy to miss, and backends occasionally stall
+            * mid-stream with no token output for 10s+. When the user
+            * sees the badge they know the request is still in flight
+            * and not silently dropped. Matches the pattern the v2
+            * session page uses for its own status strip. */}
+          {props.isRunning && (
+            <div
+              className="flex items-center gap-1.5 rounded-full border border-[color:var(--wf-ok)]/25 bg-[color:var(--wf-ok-soft)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--wf-ok-strong)] wf-fade-in"
+              role="status"
+              aria-live="polite"
+            >
+              <Spin size={10} line={1.6} tone="var(--wf-ok-strong)" />
+              <span>Thinking</span>
+            </div>
+          )}
 
           {/* Model selector — in header */}
           <div style={{ position: 'relative', zIndex: 70 }} ref={dropRef}>
@@ -688,6 +773,68 @@ export function ChatPanel(props: Props) {
               </div>
             )}
           </div>
+
+          {/* Agent selector — in header, mirrors the model chip pattern.
+            *
+            * Why this exists: the master-agent page used to always route
+            * the root session to `orchestrator`, which was appropriate
+            * for long-chain workflow planning but wrong for the common
+            * "just run a quick task" case. Exposing the agent here lets
+            * the user pick any primary agent (e.g. `build` or a custom
+            * agent) without leaving the workflow view.
+            *
+            * The chip also doubles as a live readout of which agent is
+            * currently handling the root session, which was previously
+            * invisible from the UI. */}
+          {showAgentChip && (
+            <div style={{ position: 'relative', zIndex: 70 }} ref={agentDropRef}>
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={() => {
+                  if (!agentList || !props.onAgentChange) return
+                  setAgentOpen((v) => !v)
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && agentList && props.onAgentChange) setAgentOpen((v) => !v)
+                }}
+                className={`wf-chat-model-chip ${agentOpen ? 'wf-chat-model-chip--open' : ''}`}
+                title={
+                  !props.onAgentChange
+                    ? `Active agent: ${currentAgent}`
+                    : !agentList || agentList.length <= 1
+                      ? `Active agent: ${currentAgent} (no alternatives available)`
+                      : `Switch root-session agent (currently ${currentAgent})`
+                }
+              >
+                <Bot className="h-3 w-3 flex-shrink-0" strokeWidth={1.8} />
+                <span>{currentAgent}</span>
+                {agentList && agentList.length > 1 && props.onAgentChange && (
+                  <ChevronDown
+                    className={`h-2.5 w-2.5 flex-shrink-0 transition-transform duration-200 ${agentOpen ? 'rotate-180' : ''}`}
+                    strokeWidth={2.5}
+                  />
+                )}
+              </div>
+              {agentOpen && agentList && props.onAgentChange && (
+                <div className="wf-chat-model-dropdown wf-fade-in">
+                  {agentList.map((a) => (
+                    <div
+                      key={a}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => { props.onAgentChange?.(a); setAgentOpen(false) }}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { props.onAgentChange?.(a); setAgentOpen(false) } }}
+                      className={`wf-chat-model-option ${a === currentAgent ? 'wf-chat-model-option--active' : ''}`}
+                    >
+                      <span>{a}</span>
+                      {a === currentAgent && <Check className="h-3.5 w-3.5" strokeWidth={2.5} />}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-2">

@@ -1600,7 +1600,23 @@ export function WorkflowRuntimePanel(props: {
     const key = `${item.provider.id}/${item.id}`
     return choices().find((entry) => entry.key === key)?.label ?? `${item.provider.name} / ${item.name.replace("(latest)", "").trim()}`
   })
-  const rootAgent = createMemo(() => {
+  // Primary (non-subagent, non-hidden) agents the user can drive the
+  // root session with. Surfaced to the chat panel so the header
+  // renders an agent picker — before this, the root session was
+  // hard-wired to orchestrator, which blocked the "I just want a
+  // quick one-off task, not a long-chain workflow" use case.
+  const rootAgents = createMemo(() => {
+    return local.agent
+      .list()
+      .filter((item) => item.mode !== "subagent")
+      .map((item) => item.name)
+  })
+  // Preferred default when no agent is active yet. Orchestrator wins
+  // when it exists (now always, since it's shipped as a built-in
+  // native agent) so workflows keep their out-of-the-box experience;
+  // fall back to the first primary agent when the user has
+  // explicitly disabled orchestrator in config.
+  const preferredRootAgent = createMemo(() => {
     const items = local.agent.list()
     return (
       items.find((item) => item.name === "orchestrator" && item.mode !== "subagent")?.name ??
@@ -1608,10 +1624,17 @@ export function WorkflowRuntimePanel(props: {
       items[0]?.name
     )
   })
+  // Seed the root agent only when the current selection is missing
+  // or points at an agent that no longer exists. Previously this
+  // effect force-snapped `local.agent` back to the preferred value
+  // every tick, which made the header picker useless — any user
+  // choice was immediately clobbered on the next memo re-evaluation.
   createEffect(() => {
-    const next = rootAgent()
+    const primaries = rootAgents()
+    const current = local.agent.current()?.name
+    if (current && primaries.includes(current)) return
+    const next = preferredRootAgent()
     if (!next) return
-    if (local.agent.current()?.name === next) return
     local.agent.set(next)
   })
   createEffect(
@@ -1980,7 +2003,7 @@ export function WorkflowRuntimePanel(props: {
     const body = text.trim()
     const id = sessionID(node)
     const info = node ? props.snapshot.nodes.find((item) => item.id === node) : undefined
-    const agent = info?.agent ?? rootAgent() ?? local.agent.current()?.name
+    const agent = info?.agent ?? local.agent.current()?.name ?? preferredRootAgent()
     const rootModel = local.model.current()
     const rootVariant = local.model.variant.selected() ?? undefined
     const model = info?.model?.providerID && info?.model?.modelID
@@ -2045,7 +2068,7 @@ export function WorkflowRuntimePanel(props: {
   }
 
   const control = (kind: keyof typeof controlText, opts?: { abort?: boolean }) => {
-    const agent = rootAgent() ?? local.agent.current()?.name
+    const agent = local.agent.current()?.name ?? preferredRootAgent()
     const model = local.model.current()
     const variant = local.model.variant.selected() ?? undefined
     if (!agent) return
@@ -2424,6 +2447,11 @@ export function WorkflowRuntimePanel(props: {
               void sync.session.sync(rootID(), { force: true })
             })
         },
+        // Root-session agent: surfaced to the chat header so the user
+        // can switch away from orchestrator for quick one-off tasks.
+        rootAgent: local.agent.current()?.name,
+        rootAgents: rootAgents(),
+        onRootAgentChange: (name) => local.agent.set(name),
         onSend: send,
         onPlanRun: runApprovedPlan,
         onPlanEdit: revisePlanWithContext,

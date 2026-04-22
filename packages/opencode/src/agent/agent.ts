@@ -11,6 +11,7 @@ import { ProviderTransform } from "../provider/transform"
 import PROMPT_GENERATE from "./generate.txt"
 import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
+import PROMPT_ORCHESTRATOR from "./prompt/orchestrator.txt"
 import PROMPT_REFINER from "./prompt/refiner.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
@@ -106,6 +107,49 @@ export namespace Agent {
           const user = Permission.fromConfig(cfg.permission ?? {})
 
           const agents: Record<string, Info> = {
+            // Orchestrator is listed first so `defaultAgent()` picks it
+            // when no `default_agent` config is set. Previously it was
+            // shipped as an optional user-level markdown agent, which
+            // meant installs without the file silently failed on every
+            // workflow feature that hard-coded `agent: "orchestrator"`
+            // (most notably the master-agent chat on the react-workflow
+            // page, which would send a prompt and get no reply because
+            // the server threw `Agent not found`). Bundling it keeps
+            // workflow features working out of the box.
+            orchestrator: {
+              name: "orchestrator",
+              description:
+                "Plan, create, supervise, and replan multi-agent workflows. Delegates implementation to subagents and workflow nodes.",
+              options: {},
+              // Match the original `.opencode/agent/orchestrator.md`
+              // permission ruleset: deny any direct mutation
+              // (edit/write/patch/bash) so the root session stays in a
+              // governance role, but allow a curated task allow-list so
+              // workflow nodes can still dispatch work.
+              permission: Permission.merge(
+                defaults,
+                Permission.fromConfig({
+                  task: {
+                    "*": "deny",
+                    coding: "allow",
+                    "build-flash": "allow",
+                    debug: "allow",
+                    deploy: "allow",
+                    explore: "allow",
+                  },
+                  edit: { "*": "deny" },
+                  write: { "*": "deny" },
+                  patch: { "*": "deny" },
+                  bash: { "*": "deny" },
+                  question: "allow",
+                }),
+                user,
+              ),
+              mode: "primary",
+              native: true,
+              color: "#0F766E",
+              prompt: PROMPT_ORCHESTRATOR,
+            },
             build: {
               name: "build",
               description: "The default agent. Executes tools based on configured permissions.",
