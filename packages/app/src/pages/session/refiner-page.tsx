@@ -3756,9 +3756,14 @@ export default function RefinerPage() {
     (args) => fetchChainGraph(args.base, { includeArchived: args.includeArchived }),
   )
 
+  // Auto-open the most recent experience ONCE on first data load.
+  // Guarded with a flag so that refetch polls won't re-open it after the
+  // user closes the modal.
+  let autoOpened = false
   createEffect(() => {
     const data = overview()
-    if (!data || selection()) return
+    if (!data || autoOpened || selection()) return
+    autoOpened = true
     const latest = data.experiences[0]
     if (latest) setSelection({ kind: "experience", id: `experience:${latest.id}` })
   })
