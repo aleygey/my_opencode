@@ -563,4 +563,138 @@ describe("Refiner", () => {
       },
     })
   })
+
+  test("ingestSession() populates session_history_excerpt for historical messages", async () => {
+    await using tmp = await tmpdir({ git: true })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        // Accept everything as new so each ingested message becomes an observation.
+        Refiner.setRouteOverrideForTest(async () => ({
+          action: "new",
+          reason: "historical message",
+          kind: "know_how",
+          title: `回填的经验 ${Math.random().toString(36).slice(2, 8)}`,
+          abstract: "历史会话中用户提到的可复用做法，在此被抽象成经验条目。",
+          scope: "repo",
+        }))
+
+        const session = await Session.create({})
+        // 4 user messages — the 4th's observation excerpt should include the
+        // previous 3 messages in chronological order.
+        await addUserMessage(session.id, "第一条：先 pnpm install")
+        await addUserMessage(session.id, "第二条：再 pnpm build")
+        await addUserMessage(session.id, "第三条：最后 pnpm test")
+        const last = await addUserMessage(session.id, "第四条：上线前必须跑完整流程")
+
+        const result = await Refiner.ingestSession({ sessionID: session.id })
+        expect(result.ok).toBe(true)
+        expect(result.stats.observed).toBe(4)
+
+        const base = path.join(tmp.path, ".opencode", "refiner-memory")
+        const obsDir = path.join(base, "observations", session.id)
+        const files = await waitForCount("*.md", obsDir, 4)
+        expect(files.length).toBe(4)
+
+        // Find the observation that corresponds to the last message — its
+        // excerpt must contain the 3 prior messages.
+        let found = false
+        for (const f of files) {
+          const doc = matter(await Filesystem.readText(f))
+          if ((doc.data as any).message_id === last) {
+            found = true
+            expect((doc.data as any).source).toBe("ingest")
+            const excerpt = (doc.data as any).agent_context.session_history_excerpt as Array<{
+              role: string
+              text: string
+            }>
+            expect(Array.isArray(excerpt)).toBe(true)
+            expect(excerpt.length).toBe(3)
+            expect(excerpt[0]!.text).toContain("第一条")
+            expect(excerpt[1]!.text).toContain("第二条")
+            expect(excerpt[2]!.text).toContain("第三条")
+            break
+          }
+        }
+        expect(found).toBe(true)
+      },
+    })
+  })
+
+  test("ingestSession() honors messageIDs filter (cherry-pick)", async () => {
+    await using tmp = await tmpdir({ git: true })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        Refiner.setRouteOverrideForTest(async () => ({
+          action: "new",
+          reason: "pick",
+          kind: "know_how",
+          title: `精选 ${Math.random().toString(36).slice(2, 8)}`,
+          abstract: "用户从历史会话中精选出的可复用做法，抽象成经验条目。",
+          scope: "repo",
+        }))
+
+        const session = await Session.create({})
+        const m1 = await addUserMessage(session.id, "A: 要先 lint")
+        await addUserMessage(session.id, "B: 无关请求")
+        const m3 = await addUserMessage(session.id, "C: 要打 tag")
+        await addUserMessage(session.id, "D: 也是噪声")
+
+        const result = await Refiner.ingestSession({
+          sessionID: session.id,
+          messageIDs: [m1, m3],
+        })
+        expect(result.stats.observed).toBe(2)
+        // 2 user messages ignored → counted as skipped (among processed).
+        expect(result.stats.skipped).toBeGreaterThanOrEqual(2)
+
+        const base = path.join(tmp.path, ".opencode", "refiner-memory")
+        const obsDir = path.join(base, "observations", session.id)
+        const files = await waitForCount("*.md", obsDir, 2)
+        expect(files.length).toBe(2)
+
+        const ingestedIDs = new Set<string>()
+        for (const f of files) {
+          const doc = matter(await Filesystem.readText(f))
+          ingestedIDs.add((doc.data as any).message_id)
+        }
+        expect(ingestedIDs.has(m1)).toBe(true)
+        expect(ingestedIDs.has(m3)).toBe(true)
+      },
+    })
+  })
+
+  test("listIngestedObservations() reflects what has been ingested", async () => {
+    await using tmp = await tmpdir({ git: true })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        Refiner.setRouteOverrideForTest(async () => ({
+          action: "new",
+          reason: "historical",
+          kind: "know_how",
+          title: `导入 ${Math.random().toString(36).slice(2, 8)}`,
+          abstract: "历史会话用户消息被抽象成经验条目。",
+          scope: "repo",
+        }))
+
+        const session = await Session.create({})
+        const m1 = await addUserMessage(session.id, "消息甲：上线前要跑完整流程")
+        const m2 = await addUserMessage(session.id, "消息乙：发布后要打 tag")
+
+        const beforeResult = await Refiner.listIngestedObservations({ sessionID: session.id })
+        expect(beforeResult.message_ids.length).toBe(0)
+
+        await Refiner.ingestSession({ sessionID: session.id, messageIDs: [m1] })
+        const afterResult = await Refiner.listIngestedObservations({ sessionID: session.id })
+        expect(afterResult.message_ids.length).toBe(1)
+        expect(afterResult.message_ids).toContain(m1)
+        expect(afterResult.message_ids).not.toContain(m2)
+      },
+    })
+  })
 })
