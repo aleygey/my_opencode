@@ -596,6 +596,145 @@ export const ExperimentalRoutes = lazy(() =>
       },
     )
     .get(
+      "/refiner/graph",
+      describeRoute({
+        summary: "Get refiner chain graph",
+        description:
+          "Return every experience (id, kind, title, abstract, archived) along with every edge in the chain graph. Drives the top-level Graph tab in the UI.",
+        operationId: "experimental.refiner.graph.get",
+        responses: {
+          200: {
+            description: "Chain graph",
+            content: { "application/json": { schema: resolver(z.record(z.string(), z.unknown())) } },
+          },
+        },
+      }),
+      validator(
+        "query",
+        z.object({
+          include_archived: z.coerce.boolean().optional(),
+        }),
+      ),
+      async (c) => {
+        const query = c.req.valid("query")
+        const overview = await Refiner.overview({
+          limit: 10000,
+          includeArchived: query.include_archived ?? false,
+          scope: "all",
+        })
+        const edges = await Refiner.listEdges()
+        return c.json({
+          experiences: overview.experiences.map((exp) => ({
+            id: exp.id,
+            kind: exp.kind,
+            title: exp.title,
+            abstract: exp.abstract,
+            task_type: exp.task_type,
+            scope: exp.scope,
+            categories: exp.categories,
+            archived: !!exp.archived,
+            observation_count: exp.observations.length,
+            last_refined_at: exp.last_refined_at,
+          })),
+          edges,
+        })
+      },
+    )
+    .get(
+      "/refiner/experience/:id/neighbors",
+      describeRoute({
+        summary: "Get experience neighbors",
+        description:
+          "BFS traversal around a seed experience in the chain graph. Defaults to requires+refines edges, both directions, depth 2.",
+        operationId: "experimental.refiner.experience.neighbors",
+        responses: {
+          200: {
+            description: "Neighbor subgraph",
+            content: { "application/json": { schema: resolver(z.record(z.string(), z.unknown())) } },
+          },
+          ...errors(400),
+        },
+      }),
+      validator(
+        "query",
+        z.object({
+          edge_kinds: z.string().optional(), // comma-separated list
+          direction: z.enum(["in", "out", "both"]).optional(),
+          max_depth: z.coerce.number().min(1).max(5).optional(),
+        }),
+      ),
+      async (c) => {
+        const id = c.req.param("id")
+        const query = c.req.valid("query")
+        const exp = await Refiner.experienceByID(id)
+        if (!exp) return c.json({ error: "not_found", id }, 404)
+        const kinds = query.edge_kinds
+          ? (query.edge_kinds.split(",").map((s) => s.trim()).filter(Boolean) as Array<
+              "requires" | "refines" | "supports" | "contradicts" | "see_also"
+            >)
+          : undefined
+        return c.json(
+          await Refiner.neighbors({
+            id,
+            edge_kinds: kinds,
+            direction: query.direction,
+            max_depth: query.max_depth,
+          }),
+        )
+      },
+    )
+    .post(
+      "/refiner/edge",
+      describeRoute({
+        summary: "Create chain edge",
+        description:
+          "Manually insert a directed edge between two experiences. Applies the same dedup / self-loop / cycle-check pipeline as the LLM route batch; cycles on `requires`/`refines` are downgraded.",
+        operationId: "experimental.refiner.edge.create",
+        responses: {
+          200: {
+            description: "Edge create result",
+            content: { "application/json": { schema: resolver(z.record(z.string(), z.unknown())) } },
+          },
+          ...errors(400),
+        },
+      }),
+      validator(
+        "json",
+        z.object({
+          from: z.string().min(1),
+          to: z.string().min(1),
+          kind: z.enum(["requires", "refines", "supports", "contradicts", "see_also"]),
+          reason: z.string().max(400).optional(),
+          confidence: z.number().min(0).max(1).optional(),
+        }),
+      ),
+      async (c) => {
+        const body = c.req.valid("json")
+        const result = await Refiner.createEdge(body)
+        if (!result.ok) return c.json({ error: result.error }, 400)
+        return c.json(result)
+      },
+    )
+    .delete(
+      "/refiner/edge/:edge_id",
+      describeRoute({
+        summary: "Delete chain edge",
+        description: "Remove a single edge by its id.",
+        operationId: "experimental.refiner.edge.delete",
+        responses: {
+          200: {
+            description: "Edge delete result",
+            content: { "application/json": { schema: resolver(z.record(z.string(), z.unknown())) } },
+          },
+          ...errors(400),
+        },
+      }),
+      async (c) => {
+        const edgeID = c.req.param("edge_id")
+        return c.json(await Refiner.deleteEdge({ edge_id: edgeID }))
+      },
+    )
+    .get(
       "/refiner/search",
       describeRoute({
         summary: "Search refiner experiences",

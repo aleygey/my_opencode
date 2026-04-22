@@ -18,6 +18,17 @@ import { Filesystem } from "@/util/filesystem"
 import { Glob } from "@/util/glob"
 import { Hash } from "@/util/hash"
 import { Log } from "@/util/log"
+import {
+  EdgeKind as EdgeKindSchema,
+  type EdgeKind,
+  type ExperienceEdge,
+  persistBatch as persistEdgeBatch,
+  readEdges as readEdgesRaw,
+  removeEdges as removeEdgesRaw,
+  removeEdgesFor as removeEdgesForExpRaw,
+  rewireEdges as rewireEdgesRaw,
+  traverseFrom as traverseFromSeed,
+} from "./graph"
 
 const log = Log.create({ service: "refiner" })
 
@@ -201,10 +212,29 @@ type ExperienceSummary = {
   last_refined_at: number
 }
 
+// Phase 2a — edge proposal embedded in route output.
+//
+// Each edge either points FROM the current (freshly created) experience to a
+// peer ("from" omitted, LLM only needs to name `to`) — or both endpoints are
+// explicit for `edge_only` decisions that augment the graph without creating
+// a new experience.
+const EdgeProposalWireSchema = z.object({
+  from: z.string().optional(),
+  to: z.string(),
+  kind: EdgeKindSchema,
+  reason: z.string().max(400).default(""),
+  confidence: z.number().min(0).max(1).optional(),
+})
+type EdgeProposalWire = z.infer<typeof EdgeProposalWireSchema>
+
 // Flat object schema so that provider adapters that require `type: "object"` at
 // the function tool root (e.g., Azure OpenAI) accept it. Branch invariants are
 // enforced at parse time via refine(), not via discriminated union.
-const RouteAction = z.enum(["attach", "new", "noise"])
+//
+// `attach` is kept for schema backward-compat only: Phase 2a drops auto-merge.
+// If an LLM still emits `attach`, the runtime downgrades it to `noise` with an
+// explicit rejection reason — the next-turn prompt is authoritative.
+const RouteAction = z.enum(["attach", "new", "edge_only", "noise"])
 const RouteDecisionWireSchema = z.object({
   action: RouteAction,
   reason: z.string(),
@@ -218,6 +248,9 @@ const RouteDecisionWireSchema = z.object({
   scope: Scope.optional(),
   categories: z.array(z.string()).optional(),
   conflicts_with: z.array(z.string()).optional(),
+  // Phase 2a: LLM may output edges alongside `new` (new_with_edges) or alone
+  // (`edge_only`). Capped at 5 per decision by the runtime regardless.
+  edges: z.array(EdgeProposalWireSchema).max(5).optional(),
 })
 type RouteDecisionWire = z.infer<typeof RouteDecisionWireSchema>
 
@@ -230,6 +263,21 @@ const RouteDecisionsWireSchema = z.object({
   decisions: z.array(RouteDecisionWireSchema).max(8),
 })
 type RouteDecisionsWire = z.infer<typeof RouteDecisionsWireSchema>
+
+// Phase 2a route decisions (4 effective branches):
+//   - "new"          — new experience, optionally with edges linking to peers
+//   - "edge_only"    — no new experience; only insert edges between existing
+//   - "noise"        — nothing to sink
+//   - "attach" [DEPRECATED] — kept for schema tolerance; runtime drops + logs.
+//     The prompt no longer advertises this branch; manual merge is the only
+//     legitimate compression path.
+type EdgeProposal = {
+  from?: string
+  to: string
+  kind: EdgeKind
+  reason?: string
+  confidence?: number
+}
 
 type RouteDecision =
   | {
@@ -251,8 +299,30 @@ type RouteDecision =
       scope: Scope
       categories?: string[]
       conflicts_with?: string[]
+      edges?: EdgeProposal[]
+    }
+  | {
+      action: "edge_only"
+      reason: string
+      edges: EdgeProposal[]
     }
   | { action: "noise"; reason: string }
+
+function normalizeEdges(wires?: EdgeProposalWire[]): EdgeProposal[] | undefined {
+  if (!wires || wires.length === 0) return undefined
+  const out: EdgeProposal[] = []
+  for (const w of wires) {
+    if (!w.to) continue
+    out.push({
+      from: w.from || undefined,
+      to: w.to,
+      kind: w.kind,
+      reason: w.reason,
+      confidence: w.confidence,
+    })
+  }
+  return out.length ? out : undefined
+}
 
 function normalizeRouteDecision(wire: RouteDecisionWire): RouteDecision | { error: string } {
   if (wire.action === "attach") {
@@ -267,6 +337,15 @@ function normalizeRouteDecision(wire: RouteDecisionWire): RouteDecision | { erro
   }
   if (wire.action === "noise") {
     return { action: "noise", reason: wire.reason }
+  }
+  if (wire.action === "edge_only") {
+    const edges = normalizeEdges(wire.edges)
+    if (!edges) return { error: "edge_only missing edges" }
+    // edge_only requires explicit from on every edge (no implicit "newly-created" anchor)
+    for (const e of edges) {
+      if (!e.from) return { error: "edge_only edge missing from" }
+    }
+    return { action: "edge_only", reason: wire.reason, edges }
   }
   // new
   if (!wire.kind) return { error: "new missing kind" }
@@ -285,6 +364,7 @@ function normalizeRouteDecision(wire: RouteDecisionWire): RouteDecision | { erro
     scope: wire.scope,
     categories: wire.categories,
     conflicts_with: wire.conflicts_with,
+    edges: normalizeEdges(wire.edges),
   }
 }
 
@@ -343,7 +423,20 @@ type GraphNode = {
 type GraphEdge = {
   from: string
   to: string
-  kind: "has_observation" | "related"
+  // has_observation / related — legacy view edges (experience → its observations,
+  // legacy related_experience_ids links). chain_* edges carry the Phase 2a
+  // typed edges from graph.ndjson.
+  kind:
+    | "has_observation"
+    | "related"
+    | "chain_requires"
+    | "chain_refines"
+    | "chain_supports"
+    | "chain_contradicts"
+    | "chain_see_also"
+  edge_id?: string
+  reason?: string
+  confidence?: number
 }
 
 type RefinerOverview = {
@@ -1004,6 +1097,52 @@ function createRefinerTools(input: { observation: Observation }) {
         }
       },
     }),
+    get_experience_neighbors: tool({
+      description:
+        "BFS traversal around a seed experience in the chain graph. Use this when you want to check whether a candidate is already wired into the graph, or to find plausible edge targets. Defaults: requires+refines edges, both directions, depth 2. Do not call more than twice per decision.",
+      inputSchema: z.object({
+        experience_id: z.string(),
+        edge_kinds: z
+          .array(z.enum(["requires", "refines", "supports", "contradicts", "see_also"]))
+          .optional(),
+        direction: z.enum(["in", "out", "both"]).optional(),
+        max_depth: z.number().int().min(1).max(4).optional(),
+      }),
+      execute: async ({ experience_id, edge_kinds, direction, max_depth }) => {
+        const exp = await getExperienceByID(experience_id)
+        if (!exp) return { found: false }
+        const cfg = await settings()
+        const edges = await readEdgesRaw(cfg.base).catch(() => [] as ExperienceEdge[])
+        const result = traverseFromSeed(edges, experience_id, {
+          edgeKinds: (edge_kinds ?? ["requires", "refines"]) as EdgeKind[],
+          direction: direction ?? "both",
+          maxDepth: max_depth ?? 2,
+        })
+        const all = await listExperiences()
+        const byID = new Map(all.map((e) => [e.id, e]))
+        return {
+          found: true,
+          seed: experience_id,
+          nodes: result.nodes.map((id) => {
+            const n = byID.get(id)
+            return {
+              id,
+              kind: n?.kind ?? null,
+              title: n?.title ?? "<missing>",
+              abstract: n ? clipText(n.abstract, 160) : "",
+              depth: result.depth.get(id) ?? 0,
+            }
+          }),
+          edges: result.edges.map((e) => ({
+            id: e.id,
+            from: e.from,
+            to: e.to,
+            kind: e.kind,
+            reason: e.reason,
+          })),
+        }
+      },
+    }),
   }
 }
 
@@ -1551,16 +1690,25 @@ async function observeObservation(observation: Observation) {
     return
   }
 
-  // One user message can fan out to multiple decisions. Track which
-  // targets we have already consumed so a chatty model that emits
-  // duplicate attach/new rows does not double-apply them.
+  // Tracking per-call de-duplication keys. Duplicate attach/new from a chatty
+  // model are dropped rather than double-applied.
   const seenAttach = new Set<string>()
   const seenNew = new Set<string>()
-  // Snapshot per iteration so that a "new" created earlier in this loop is
-  // visible when the next decision is "attach:<that id>". In practice the
-  // LLM should not reference its own fresh ids, but we keep the contract
-  // permissive — callers rely on eventual consistency, not ordering.
+  // Snapshot per iteration so that a freshly created exp is visible when a
+  // later decision in the same batch references it.
   const liveExperiences = [...existingRaw]
+  const liveExperienceIDs = new Set(liveExperiences.map((e) => e.id))
+  // Edges proposed by this observation batch, accumulated into one transaction
+  // so cycle checks see sibling edges created in the same batch.
+  const pendingEdges: Array<{
+    from: string
+    to: string
+    kind: EdgeKind
+    reason: string
+    confidence: number
+    source_observation_id?: string
+    created_by: "llm_route"
+  }> = []
 
   for (const decision of decisions) {
     if (decision.action === "noise") {
@@ -1576,39 +1724,18 @@ async function observeObservation(observation: Observation) {
       continue
     }
 
-    if (decision.action === "new") {
-      const key = `${decision.kind}::${decision.title}`
-      if (seenNew.has(key)) {
-        log.info("refiner route emitted duplicate new; skipping second", {
-          observation_id: observation.id,
-          kind: decision.kind,
-          title: decision.title,
-        })
-        continue
-      }
-      seenNew.add(key)
-      const created = await createExperience({ observation, proposal: decision })
-      if (created) liveExperiences.push(created)
-      continue
-    }
-
-    // attach
-    if (seenAttach.has(decision.experience_id)) {
-      log.info("refiner route emitted duplicate attach; skipping second", {
+    // Phase 2a: attach is deprecated. A forward-compat LLM may still emit it;
+    // we log + reject to nudge the next turn towards new/edge_only.
+    if (decision.action === "attach") {
+      if (seenAttach.has(decision.experience_id)) continue
+      seenAttach.add(decision.experience_id)
+      log.info("refiner route attempted deprecated attach; dropping", {
         observation_id: observation.id,
         experience_id: decision.experience_id,
       })
-      continue
-    }
-    seenAttach.add(decision.experience_id)
-    const target = liveExperiences.find((e) => e.id === decision.experience_id)
-    if (!target) {
-      log.warn("route asked to attach to unknown experience; falling back to noise", {
-        id: decision.experience_id,
-      })
       await appendRejected({
         at: nowMs(),
-        reason: `attach_target_not_found:${decision.experience_id}`,
+        reason: "attach_deprecated_phase2a",
         observation_id: observation.id,
         session_id: observation.session_id,
         message_id: observation.message_id,
@@ -1617,13 +1744,83 @@ async function observeObservation(observation: Observation) {
       })
       continue
     }
-    // Pass any router-proposed category/conflict hints so attachAndRefine can seed them.
-    await attachAndRefine({
-      experience: target,
-      observation,
-      categoryHints: decision.categories,
-      conflictHints: decision.conflicts_with,
-    })
+
+    if (decision.action === "edge_only") {
+      for (const e of decision.edges) {
+        if (!e.from) continue
+        // Defer endpoint-existence check to persist time (liveExperienceIDs is
+        // authoritative for this call; anything else would be stale).
+        if (!liveExperienceIDs.has(e.from) || !liveExperienceIDs.has(e.to)) {
+          log.info("edge_only references unknown exp; dropping", {
+            from: e.from,
+            to: e.to,
+            kind: e.kind,
+          })
+          continue
+        }
+        pendingEdges.push({
+          from: e.from,
+          to: e.to,
+          kind: e.kind,
+          reason: (e.reason ?? decision.reason ?? "").slice(0, 400),
+          confidence: e.confidence ?? 0.7,
+          source_observation_id: observation.id,
+          created_by: "llm_route",
+        })
+      }
+      continue
+    }
+
+    // new — optionally with edges referring to the freshly-created exp
+    const key = `${decision.kind}::${decision.title}`
+    if (seenNew.has(key)) {
+      log.info("refiner route emitted duplicate new; skipping second", {
+        observation_id: observation.id,
+        kind: decision.kind,
+        title: decision.title,
+      })
+      continue
+    }
+    seenNew.add(key)
+    const created = await createExperience({ observation, proposal: decision })
+    if (!created) continue
+    liveExperiences.push(created)
+    liveExperienceIDs.add(created.id)
+
+    for (const e of decision.edges ?? []) {
+      const from = e.from ?? created.id
+      if (!liveExperienceIDs.has(from) || !liveExperienceIDs.has(e.to)) {
+        log.info("new_with_edges references unknown exp; dropping", {
+          from,
+          to: e.to,
+          kind: e.kind,
+        })
+        continue
+      }
+      if (from === e.to) continue
+      pendingEdges.push({
+        from,
+        to: e.to,
+        kind: e.kind,
+        reason: (e.reason ?? decision.reason ?? "").slice(0, 400),
+        confidence: e.confidence ?? 0.7,
+        source_observation_id: observation.id,
+        created_by: "llm_route",
+      })
+    }
+  }
+
+  if (pendingEdges.length > 0) {
+    const cfg = await settings()
+    const { results } = await persistEdgeBatch(cfg.base, pendingEdges, { max: 10 })
+    const failures = results.filter((r) => !r.ok)
+    if (failures.length > 0) {
+      log.info("edge batch had non-applied proposals", {
+        observation_id: observation.id,
+        total: results.length,
+        failed: failures.length,
+      })
+    }
   }
 }
 
@@ -1631,9 +1828,10 @@ async function observeObservation(observation: Observation) {
 // Overview
 // -----------------------------------------------------------------------------
 
-function buildOverviewGraph(experiences: ExperienceWithPath[]) {
+function buildOverviewGraph(experiences: ExperienceWithPath[], chainEdges: ExperienceEdge[] = []) {
   const nodes: GraphNode[] = []
   const edges: GraphEdge[] = []
+  const expIDSet = new Set(experiences.map((e) => e.id))
   for (const exp of experiences) {
     const expNodeID = `experience:${exp.id}`
     nodes.push({
@@ -1657,6 +1855,21 @@ function buildOverviewGraph(experiences: ExperienceWithPath[]) {
     for (const relatedID of exp.related_experience_ids) {
       edges.push({ from: expNodeID, to: `experience:${relatedID}`, kind: "related" })
     }
+  }
+  // Phase 2a typed chain edges (requires / refines / supports / contradicts /
+  // see_also). Only surface edges whose endpoints are both present in the
+  // current overview slice; dangling edges stay hidden (will be pruned by
+  // the integrity pass).
+  for (const ce of chainEdges) {
+    if (!expIDSet.has(ce.from) || !expIDSet.has(ce.to)) continue
+    edges.push({
+      from: `experience:${ce.from}`,
+      to: `experience:${ce.to}`,
+      kind: (`chain_${ce.kind}` as GraphEdge["kind"]),
+      edge_id: ce.id,
+      reason: ce.reason,
+      confidence: ce.confidence,
+    })
   }
   return { nodes, edges }
 }
@@ -1792,6 +2005,11 @@ export namespace Refiner {
       }
       await writeExperience(next)
     }
+    // Phase 2a: strip any edges touching this experience so the graph never
+    // carries dangling refs. Failures are non-fatal and audited in the log.
+    await removeEdgesForExpRaw(cfg.base, id).catch((err) =>
+      log.warn("removeEdgesForExp failed on delete", { err, id }),
+    )
     await appendAudit("deleted.ndjson", {
       at: nowMs(),
       id: target.id,
@@ -2241,6 +2459,17 @@ export namespace Refiner {
       const archived: Experience = { ...src, archived: true, archived_at: nowMs() }
       await writeExperience(archived)
     }
+    // Phase 2a: rewire any chain edges that pointed at the archived sources so
+    // they now reference the merged experience. rewireEdges dedups + drops
+    // self-loops introduced by the swap.
+    {
+      const cfgGraph = await settings()
+      for (const src of sources) {
+        await rewireEdgesRaw(cfgGraph.base, src.id, merged.id).catch((err) =>
+          log.warn("rewireEdges failed during merge", { err, old: src.id, new: merged.id }),
+        )
+      }
+    }
     await appendAudit("merged.ndjson", {
       at: nowMs(),
       merged_id: merged.id,
@@ -2437,6 +2666,8 @@ export namespace Refiner {
     )
     const resolved = await resolveRefinerModel()
     const totalObservations = limited.reduce((sum, exp) => sum + exp.observations.length, 0)
+    const cfg = await settings()
+    const chainEdges = await readEdgesRaw(cfg.base).catch(() => [] as ExperienceEdge[])
     return {
       schema_version: 2,
       status: {
@@ -2446,7 +2677,98 @@ export namespace Refiner {
       },
       model: resolved?.selected,
       experiences: limited,
-      graph: buildOverviewGraph(limited),
+      graph: buildOverviewGraph(limited, chainEdges),
     }
+  }
+
+  // ---------- Phase 2a: chain-experience graph ----------
+
+  export async function listEdges() {
+    const cfg = await settings()
+    return readEdgesRaw(cfg.base)
+  }
+
+  /**
+   * BFS neighborhood around a seed experience. Default traversal uses
+   * requires + refines with depth=2 — matching the retrieve-agent default
+   * in docs/runtime-workflow-design.md §4.5.5.
+   */
+  export async function neighbors(input: {
+    id: string
+    edge_kinds?: EdgeKind[]
+    direction?: "in" | "out" | "both"
+    max_depth?: number
+  }) {
+    const cfg = await settings()
+    const edges = await readEdgesRaw(cfg.base)
+    const result = traverseFromSeed(edges, input.id, {
+      edgeKinds: input.edge_kinds ?? (["requires", "refines"] as EdgeKind[]),
+      direction: input.direction ?? "both",
+      maxDepth: input.max_depth ?? 2,
+    })
+    const all = await listExperiences()
+    const byID = new Map(all.map((e) => [e.id, e]))
+    return {
+      seed: input.id,
+      nodes: result.nodes.map((id) => {
+        const exp = byID.get(id)
+        return exp
+          ? {
+              id,
+              kind: exp.kind,
+              title: exp.title,
+              abstract: clipText(exp.abstract, 200),
+              archived: !!exp.archived,
+              depth: result.depth.get(id) ?? 0,
+            }
+          : { id, kind: null, title: "<missing>", abstract: "", archived: false, depth: result.depth.get(id) ?? 0 }
+      }),
+      edges: result.edges,
+    }
+  }
+
+  /** Manually create an edge between two experiences. Applies the same
+   * dedup / self-loop / cycle-check pipeline as the LLM route batch. */
+  export async function createEdge(input: {
+    from: string
+    to: string
+    kind: EdgeKind
+    reason?: string
+    confidence?: number
+  }) {
+    const cfg = await settings()
+    const all = await listExperiences()
+    const ids = new Set(all.map((e) => e.id))
+    if (!ids.has(input.from)) return { ok: false as const, error: "from_not_found" }
+    if (!ids.has(input.to)) return { ok: false as const, error: "to_not_found" }
+    const { results } = await persistEdgeBatch(cfg.base, [
+      {
+        from: input.from,
+        to: input.to,
+        kind: input.kind,
+        reason: (input.reason ?? "").slice(0, 400),
+        confidence: input.confidence ?? 1.0,
+        created_by: "user_manual",
+      },
+    ])
+    return { ok: true as const, result: results[0] ?? null }
+  }
+
+  export async function deleteEdge(input: { edge_id: string }) {
+    const cfg = await settings()
+    const removed = await removeEdgesRaw(cfg.base, (e) => e.id === input.edge_id)
+    return { ok: true as const, removed }
+  }
+
+  /** Internal helper invoked by deleteExperience / mergeExperiences to keep
+   * the graph clean. Exported on the namespace for transparency + testability. */
+  export async function pruneEdgesForExperience(id: string) {
+    const cfg = await settings()
+    return removeEdgesForExpRaw(cfg.base, id)
+  }
+
+  export async function rewireEdgesAfterMerge(oldID: string, newID: string) {
+    const cfg = await settings()
+    return rewireEdgesRaw(cfg.base, oldID, newID)
   }
 }
