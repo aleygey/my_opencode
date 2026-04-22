@@ -92,11 +92,12 @@ export namespace Snapshot {
           const args = (cmd: string[]) => ["--git-dir", state.gitdir, "--work-tree", state.worktree, ...cmd]
 
           const git = Effect.fnUntraced(
-            function* (cmd: string[], opts?: { cwd?: string; env?: Record<string, string> }) {
+            function* (cmd: string[], opts?: { cwd?: string; env?: Record<string, string>; stdin?: string }) {
               const proc = ChildProcess.make("git", cmd, {
                 cwd: opts?.cwd,
                 env: opts?.env,
                 extendEnv: true,
+                stdin: opts?.stdin ? Stream.make(new TextEncoder().encode(opts.stdin)) : undefined,
               })
               const handle = yield* spawner.spawn(proc)
               const [text, stderr] = yield* Effect.all(
@@ -181,6 +182,9 @@ export namespace Snapshot {
             // Files may have been tracked before being gitignored, so we need to check
             // against the source project's current gitignore rules
             // Use --no-index to check purely against patterns (ignoring whether file is tracked)
+            // Feed paths via stdin (NUL-separated) instead of argv to avoid
+            // E2BIG on Linux when the worktree has many files — argv length is
+            // capped at ~128 KB there, while macOS tolerates much more.
             const checkArgs = [
               ...quote,
               "--git-dir",
@@ -189,21 +193,30 @@ export namespace Snapshot {
               state.worktree,
               "check-ignore",
               "--no-index",
-              "--",
-              ...all,
+              "--stdin",
+              "-z",
             ]
-            const check = yield* git(checkArgs, { cwd: state.directory })
+            const check = yield* git(checkArgs, {
+              cwd: state.directory,
+              stdin: all.join("\0") + "\0",
+            })
             const ignored =
-              check.code === 0 ? new Set(check.text.trim().split("\n").filter(Boolean)) : new Set<string>()
+              check.code === 0 ? new Set(check.text.split("\0").filter(Boolean)) : new Set<string>()
             const filtered = all.filter((item) => !ignored.has(item))
 
-            // Remove newly-ignored files from snapshot index to prevent re-adding
+            // Remove newly-ignored files from snapshot index to prevent re-adding.
+            // `git rm` has no --stdin mode, so chunk the list to stay under
+            // the per-spawn argv limit.
             if (ignored.size > 0) {
               const ignoredFiles = Array.from(ignored)
               log.info("removing gitignored files from snapshot", { count: ignoredFiles.length })
-              yield* git([...cfg, ...args(["rm", "--cached", "-f", "--", ...ignoredFiles])], {
-                cwd: state.directory,
-              })
+              const CHUNK = 500
+              for (let i = 0; i < ignoredFiles.length; i += CHUNK) {
+                const slice = ignoredFiles.slice(i, i + CHUNK)
+                yield* git([...cfg, ...args(["rm", "--cached", "-f", "--", ...slice])], {
+                  cwd: state.directory,
+                })
+              }
             }
 
             if (!filtered.length) return
