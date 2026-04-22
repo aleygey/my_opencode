@@ -2464,3 +2464,174 @@
 .rf-search-hit-match-snippet {
   flex: 1;
 }
+
+/* ──────────────────────────────────────────────────────
+   Phase 2a — Peek info-only layout + Graph view
+   ────────────────────────────────────────────────────── */
+
+.refiner-page .rf-peek-info-col-wide {
+  /* Info column now owns the full peek body width */
+  padding: 16px 22px 22px;
+  max-height: min(78vh, 720px);
+}
+
+/* Page-level view toggle (列表 / 图谱) reuses the scope toggle frame. */
+.refiner-page .rf-view-toggle {
+  /* subtle differentiation from the scope toggle */
+  margin-right: 0;
+}
+
+/* Graph stage + view ──────────────────────────────────── */
+
+.refiner-page .rf-stage[data-view="graph"] .rf-main-graph {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.refiner-page .rf-graph-view {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: light-dark(var(--gray-light-1), var(--gray-dark-1));
+  border-top: 1px solid light-dark(var(--gray-light-4), var(--gray-dark-4));
+}
+
+.refiner-page .rf-graph-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px;
+  border-bottom: 1px solid light-dark(var(--gray-light-4), var(--gray-dark-4));
+  background: light-dark(var(--gray-light-2), var(--gray-dark-2));
+  flex-wrap: wrap;
+}
+
+.refiner-page .rf-graph-legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.refiner-page .rf-graph-stat {
+  font-size: var(--font-size-small);
+  color: light-dark(var(--gray-light-11), var(--gray-dark-11));
+}
+.refiner-page .rf-graph-stat b {
+  color: light-dark(var(--gray-light-12), var(--gray-dark-12));
+  font-weight: var(--font-weight-medium);
+  margin-right: 4px;
+}
+
+.refiner-page .rf-graph-sep {
+  width: 1px;
+  height: 14px;
+  background: light-dark(var(--gray-light-5), var(--gray-dark-5));
+  margin: 0 4px;
+}
+
+.refiner-page .rf-graph-legend-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid light-dark(var(--gray-light-5), var(--gray-dark-5));
+  background: transparent;
+  cursor: pointer;
+  font-size: var(--font-size-small);
+  color: light-dark(var(--gray-light-11), var(--gray-dark-11));
+  transition: background 120ms ease, opacity 120ms ease;
+}
+
+.refiner-page .rf-graph-legend-btn[data-active="false"] {
+  opacity: 0.45;
+}
+
+.refiner-page .rf-graph-legend-btn:hover {
+  background: light-dark(var(--gray-light-3), var(--gray-dark-3));
+}
+
+.refiner-page .rf-graph-svg {
+  flex: 1;
+  min-height: 0;
+  display: block;
+  /* A subtle radial backdrop keeps nodes readable without dominating */
+  background:
+    radial-gradient(
+      circle at 50% 50%,
+      light-dark(var(--gray-light-2), var(--gray-dark-2)) 0%,
+      light-dark(var(--gray-light-1), var(--gray-dark-1)) 70%
+    );
+}
+
+.refiner-page .rf-graph-node {
+  cursor: pointer;
+}
+
+.refiner-page .rf-graph-node-dot {
+  fill: light-dark(var(--gray-light-12), var(--gray-dark-12));
+  stroke: light-dark(var(--gray-light-1), var(--gray-dark-1));
+  stroke-width: 1.5;
+  transition: r 120ms ease;
+}
+
+.refiner-page .rf-graph-node[data-palette="cobalt"] .rf-graph-node-dot { fill: #4f46e5; }
+.refiner-page .rf-graph-node[data-palette="emerald"] .rf-graph-node-dot { fill: #10b981; }
+.refiner-page .rf-graph-node[data-palette="amber"] .rf-graph-node-dot { fill: #f59e0b; }
+.refiner-page .rf-graph-node[data-palette="rose"] .rf-graph-node-dot { fill: #f43f5e; }
+.refiner-page .rf-graph-node[data-palette="violet"] .rf-graph-node-dot { fill: #8b5cf6; }
+.refiner-page .rf-graph-node[data-palette="teal"] .rf-graph-node-dot { fill: #14b8a6; }
+.refiner-page .rf-graph-node[data-palette="slate"] .rf-graph-node-dot { fill: #64748b; }
+.refiner-page .rf-graph-node[data-palette="gray"] .rf-graph-node-dot {
+  fill: light-dark(var(--gray-light-9), var(--gray-dark-9));
+}
+
+.refiner-page .rf-graph-node[data-archived="true"] .rf-graph-node-dot {
+  opacity: 0.4;
+}
+
+.refiner-page .rf-graph-node[data-hovered="true"] .rf-graph-node-dot {
+  stroke-width: 2.5;
+  stroke: light-dark(var(--gray-light-12), var(--gray-dark-12));
+}
+
+.refiner-page .rf-graph-node-label {
+  fill: light-dark(var(--gray-light-11), var(--gray-dark-11));
+  font-size: 11px;
+  font-family: var(--font-family-sans);
+  pointer-events: none;
+  user-select: none;
+}
+
+.refiner-page .rf-graph-node[data-hovered="true"] .rf-graph-node-label {
+  fill: light-dark(var(--gray-light-12), var(--gray-dark-12));
+  font-weight: var(--font-weight-medium);
+}
+
+.refiner-page .rf-graph-loading,
+.refiner-page .rf-graph-empty {
+  position: absolute;
+  inset: 48px 0 0 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: light-dark(var(--gray-light-10), var(--gray-dark-10));
+  pointer-events: none;
+}
+
+.refiner-page .rf-graph-empty h3 {
+  margin: 0;
+  font-size: var(--font-size-base);
+  color: light-dark(var(--gray-light-12), var(--gray-dark-12));
+}
+.refiner-page .rf-graph-empty p {
+  margin: 0;
+  font-size: var(--font-size-small);
+}

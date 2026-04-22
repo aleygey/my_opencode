@@ -133,10 +133,53 @@ type GraphNode = {
   path?: string
 }
 
+type ChainEdgeKind =
+  | "requires"
+  | "refines"
+  | "supports"
+  | "contradicts"
+  | "see_also"
+
 type GraphEdge = {
   from: string
   to: string
-  kind: "has_observation" | "related"
+  kind:
+    | "has_observation"
+    | "related"
+    | `chain_${ChainEdgeKind}`
+  edge_id?: string
+  reason?: string
+  confidence?: number
+}
+
+type ChainGraphEdge = {
+  id: string
+  from: string
+  to: string
+  kind: ChainEdgeKind
+  reason?: string
+  confidence?: number
+  created_at?: number
+  created_by?: string
+  source_observation_id?: string
+}
+
+type ChainGraphExperienceLite = {
+  id: string
+  kind: Kind
+  title: string
+  abstract: string
+  task_type?: string
+  scope?: Scope
+  categories?: string[]
+  archived?: boolean
+  observation_count?: number
+  last_refined_at?: number
+}
+
+type ChainGraphResponse = {
+  experiences: ChainGraphExperienceLite[]
+  edges: ChainGraphEdge[]
 }
 
 type RefinerOverview = {
@@ -461,6 +504,37 @@ const fetchCategories = (b: ApiBase): Promise<CategoriesResponse> =>
     // the new categories endpoint, show an empty strip instead of crashing the page.
     console.warn("[refiner] categories endpoint unavailable:", err)
     return { categories: [] }
+  })
+
+const fetchChainGraph = (
+  b: ApiBase,
+  opts?: { includeArchived?: boolean },
+): Promise<ChainGraphResponse> =>
+  apiRequest<ChainGraphResponse>(b, "/experimental/refiner/graph", {
+    query: opts?.includeArchived ? { include_archived: true } : undefined,
+  }).catch((err) => {
+    console.warn("[refiner] graph endpoint unavailable:", err)
+    return { experiences: [], edges: [] }
+  })
+
+const apiCreateEdge = (
+  b: ApiBase,
+  input: {
+    from: string
+    to: string
+    kind: ChainEdgeKind
+    reason?: string
+    confidence?: number
+  },
+) =>
+  apiRequest(b, "/experimental/refiner/edge", {
+    method: "POST",
+    json: input,
+  })
+
+const apiDeleteEdge = (b: ApiBase, edgeID: string) =>
+  apiRequest(b, `/experimental/refiner/edge/${encodeURIComponent(edgeID)}`, {
+    method: "DELETE",
   })
 
 const apiDeleteExperience = (b: ApiBase, id: string, opts?: { cascade?: boolean; reason?: string }) =>
@@ -2372,9 +2446,9 @@ function ExperiencePeek(props: ExperiencePeekProps) {
   const exp = () => props.experience
   const palette = () => paletteFor(exp().kind)
   const [acting, setActing] = createSignal<string | undefined>()
-  // Hover-linking between StarGraph nodes and observation cards in the info
-  // column. An obs.id matches; "__center__" is the experience summary chip.
-  const [hoveredObs, setHoveredObs] = createSignal<string | null>(null)
+  // Phase 2a: the in-modal constellation graph moved to the page-level
+  // "Graph" tab. The peek card is now an info-only right panel; hover
+  // linkage between obs cards and graph nodes is no longer needed here.
 
   const run = async (tag: string, fn: () => Promise<void> | void) => {
     if (acting()) return
@@ -2464,42 +2538,7 @@ function ExperiencePeek(props: ExperiencePeekProps) {
 
       <h2 class="rf-peek-title">{exp().title}</h2>
 
-      <div class="rf-peek-grid">
-        <div class="rf-peek-graph-col" data-palette={palette()}>
-          <div class="rf-peek-graph-label">Observation Graph</div>
-          <Show
-            when={exp().observations.length > 0}
-            fallback={
-              <div class="rf-peek-graph-empty">
-                尚未挂载任何 observation。
-              </div>
-            }
-          >
-            <StarGraph
-              experience={exp()}
-              hoveredObs={hoveredObs}
-              onHover={setHoveredObs}
-              onClickObs={(o) =>
-                props.onPickObservation({
-                  sessionID: o.session_id,
-                  messageID: o.message_id,
-                })
-              }
-            />
-          </Show>
-          <div class="rf-peek-graph-legend">
-            <span>
-              <span class="rf-peek-graph-dot" />
-              experience
-            </span>
-            <span>
-              <span class="rf-peek-graph-ring" />
-              observation ({exp().observations.length})
-            </span>
-          </div>
-        </div>
-
-        <div class="rf-peek-info-col">
+      <div class="rf-peek-info-col rf-peek-info-col-wide">
           <section class="rf-peek-field">
             <div class="rf-peek-field-head">
               <span class="rf-peek-field-label">Abstract</span>
@@ -2614,19 +2653,15 @@ function ExperiencePeek(props: ExperiencePeekProps) {
                   {(obs, i) => {
                     const node = () =>
                       obs.agent_context.workflow_snapshot?.node_id
-                    const isHov = () => hoveredObs() === obs.id
                     const isManual = () =>
                       (obs as any).source === "manual_create" ||
                       (obs as any).source === "manual_augment"
                     return (
                       <div
                         class="rf-peek-obs"
-                        data-hovered={isHov() ? "true" : "false"}
                         style={{
                           "animation-delay": `${140 + i() * 60}ms`,
                         }}
-                        onMouseEnter={() => setHoveredObs(obs.id)}
-                        onMouseLeave={() => setHoveredObs(null)}
                       >
                         <div class="rf-peek-obs-head">
                           <span class="rf-peek-obs-sig">
@@ -2798,7 +2833,6 @@ function ExperiencePeek(props: ExperiencePeekProps) {
             </div>
             <div class="rf-peek-meta-path">{exp().path}</div>
           </section>
-        </div>
       </div>
 
       <div class="rf-peek-foot">
@@ -3360,6 +3394,278 @@ function MergeTray(props: {
 }
 
 /* ──────────────────────────────────────────────────────
+   ExperienceGraphView — full-canvas topology of every
+   experience wired through chain edges. Renders inline SVG
+   with a radial-ish layout (grouped by kind → ring position).
+   No animations, no physics — just topology.
+   ────────────────────────────────────────────────────── */
+
+const CHAIN_EDGE_STYLE: Record<
+  ChainEdgeKind,
+  { color: string; dash?: string; label: string; desc: string }
+> = {
+  requires: { color: "#4f46e5", label: "requires", desc: "强依赖 · DAG" },
+  refines: { color: "#0ea5e9", dash: "4,3", label: "refines", desc: "细化特化" },
+  supports: { color: "#10b981", dash: "2,3", label: "supports", desc: "支持证据" },
+  contradicts: { color: "#ef4444", dash: "6,3", label: "contradicts", desc: "冲突" },
+  see_also: { color: "#9ca3af", dash: "1,4", label: "see_also", desc: "弱关联" },
+}
+
+type GraphLayoutNode = {
+  id: string
+  exp: ChainGraphExperienceLite
+  x: number
+  y: number
+}
+
+function computeGraphLayout(
+  experiences: ChainGraphExperienceLite[],
+  opts: { width: number; height: number },
+): Map<string, GraphLayoutNode> {
+  const { width, height } = opts
+  const cx = width / 2
+  const cy = height / 2
+  // Group by kind → each kind becomes an angular sector, nodes distributed
+  // across concentric rings inside that sector.
+  const groups = new Map<Kind, ChainGraphExperienceLite[]>()
+  for (const e of experiences) {
+    const arr = groups.get(e.kind) ?? []
+    arr.push(e)
+    groups.set(e.kind, arr)
+  }
+  const kinds = [...groups.keys()]
+  const kindCount = Math.max(kinds.length, 1)
+  const out = new Map<string, GraphLayoutNode>()
+  const rMin = Math.min(width, height) * 0.14
+  const rMax = Math.min(width, height) * 0.44
+
+  kinds.forEach((kind, ki) => {
+    const list = (groups.get(kind) ?? [])
+      .slice()
+      .sort(
+        (a, b) => (b.last_refined_at ?? 0) - (a.last_refined_at ?? 0),
+      )
+    const sectorStart = (ki / kindCount) * Math.PI * 2
+    const sectorEnd = ((ki + 1) / kindCount) * Math.PI * 2
+    const count = list.length
+    list.forEach((e, i) => {
+      // Spread within sector. For single-node sectors center on midangle.
+      const t = count === 1 ? 0.5 : i / (count - 1)
+      const angle = sectorStart + (sectorEnd - sectorStart) * (0.1 + 0.8 * t)
+      // Push older ones outward (toward rMax); newest stays mid-ring.
+      const rFactor = count === 1 ? 0.55 : 0.35 + 0.55 * t
+      const r = rMin + (rMax - rMin) * rFactor
+      out.set(e.id, {
+        id: e.id,
+        exp: e,
+        x: cx + Math.cos(angle) * r,
+        y: cy + Math.sin(angle) * r,
+      })
+    })
+  })
+  return out
+}
+
+function ExperienceGraphView(props: {
+  data?: ChainGraphResponse
+  loading?: boolean
+  onPick: (id: string) => void
+  activeKind?: Kind
+  activeEdgeKinds: Set<ChainEdgeKind>
+  toggleEdgeKind: (k: ChainEdgeKind) => void
+  includeArchived: boolean
+}) {
+  let containerRef: HTMLDivElement | undefined
+  const [size, setSize] = createSignal({ w: 960, h: 640 })
+  onMount(() => {
+    if (!containerRef) return
+    const obs = new ResizeObserver(() => {
+      const rect = containerRef!.getBoundingClientRect()
+      setSize({ w: Math.max(320, rect.width), h: Math.max(240, rect.height) })
+    })
+    obs.observe(containerRef)
+    onCleanup(() => obs.disconnect())
+  })
+
+  const filteredExps = createMemo(() => {
+    const src = props.data?.experiences ?? []
+    const kind = props.activeKind
+    return src.filter((e) => {
+      if (!props.includeArchived && e.archived) return false
+      if (kind && e.kind !== kind) return false
+      return true
+    })
+  })
+
+  const layout = createMemo(() => {
+    const s = size()
+    return computeGraphLayout(filteredExps(), { width: s.w, height: s.h })
+  })
+
+  const visibleEdges = createMemo(() => {
+    const nodes = layout()
+    const kinds = props.activeEdgeKinds
+    return (props.data?.edges ?? []).filter(
+      (e) => nodes.has(e.from) && nodes.has(e.to) && kinds.has(e.kind),
+    )
+  })
+
+  const stats = createMemo(() => ({
+    nodes: filteredExps().length,
+    edges: visibleEdges().length,
+  }))
+
+  const [hovered, setHovered] = createSignal<string | null>(null)
+
+  return (
+    <div class="rf-graph-view" ref={(el) => (containerRef = el)}>
+      <div class="rf-graph-topbar">
+        <div class="rf-graph-legend">
+          <span class="rf-graph-stat">
+            <b>{stats().nodes}</b> 节点
+          </span>
+          <span class="rf-graph-stat">
+            <b>{stats().edges}</b> 边
+          </span>
+          <span class="rf-graph-sep" />
+          <For each={Object.entries(CHAIN_EDGE_STYLE) as [ChainEdgeKind, (typeof CHAIN_EDGE_STYLE)[ChainEdgeKind]][]}>
+            {([k, style]) => {
+              const active = () => props.activeEdgeKinds.has(k)
+              return (
+                <button
+                  type="button"
+                  class="rf-graph-legend-btn"
+                  data-active={active() ? "true" : "false"}
+                  title={style.desc}
+                  onClick={() => props.toggleEdgeKind(k)}
+                >
+                  <svg width="28" height="10" viewBox="0 0 28 10" aria-hidden="true">
+                    <line
+                      x1="2"
+                      y1="5"
+                      x2="26"
+                      y2="5"
+                      stroke={style.color}
+                      stroke-width="2"
+                      stroke-dasharray={style.dash ?? "0"}
+                    />
+                    <polygon
+                      points="22,2 26,5 22,8"
+                      fill={style.color}
+                      opacity={active() ? 1 : 0.4}
+                    />
+                  </svg>
+                  <span>{style.label}</span>
+                </button>
+              )
+            }}
+          </For>
+        </div>
+      </div>
+      <svg
+        class="rf-graph-svg"
+        width={size().w}
+        height={size().h}
+        viewBox={`0 0 ${size().w} ${size().h}`}
+      >
+        <defs>
+          <For each={Object.entries(CHAIN_EDGE_STYLE) as [ChainEdgeKind, (typeof CHAIN_EDGE_STYLE)[ChainEdgeKind]][]}>
+            {([k, style]) => (
+              <marker
+                id={`rf-arrow-${k}`}
+                viewBox="0 0 10 10"
+                refX="9"
+                refY="5"
+                markerWidth="6"
+                markerHeight="6"
+                orient="auto-start-reverse"
+              >
+                <path d="M0,0 L10,5 L0,10 Z" fill={style.color} />
+              </marker>
+            )}
+          </For>
+        </defs>
+
+        {/* Edges first (so nodes render on top) */}
+        <For each={visibleEdges()}>
+          {(e) => {
+            const a = () => layout().get(e.from)
+            const b = () => layout().get(e.to)
+            const style = CHAIN_EDGE_STYLE[e.kind]
+            const isDimmed = () => {
+              const h = hovered()
+              if (!h) return false
+              return e.from !== h && e.to !== h
+            }
+            return (
+              <Show when={a() && b()}>
+                <line
+                  x1={a()!.x}
+                  y1={a()!.y}
+                  x2={b()!.x}
+                  y2={b()!.y}
+                  stroke={style.color}
+                  stroke-width={isDimmed() ? 0.8 : 1.4}
+                  stroke-dasharray={style.dash ?? "0"}
+                  opacity={isDimmed() ? 0.25 : 0.85}
+                  marker-end={`url(#rf-arrow-${e.kind})`}
+                >
+                  <title>{`${style.label}: ${e.reason ?? ""}`}</title>
+                </line>
+              </Show>
+            )
+          }}
+        </For>
+
+        {/* Nodes */}
+        <For each={[...layout().values()]}>
+          {(node) => {
+            const exp = node.exp
+            const pal = paletteFor(exp.kind)
+            const isHovered = () => hovered() === node.id
+            const isArchived = !!exp.archived
+            return (
+              <g
+                class="rf-graph-node"
+                data-palette={pal}
+                data-hovered={isHovered() ? "true" : "false"}
+                data-archived={isArchived ? "true" : "false"}
+                transform={`translate(${node.x},${node.y})`}
+                onMouseEnter={() => setHovered(node.id)}
+                onMouseLeave={() => setHovered(null)}
+                onClick={() => props.onPick(node.id)}
+              >
+                <circle
+                  r={isHovered() ? 10 : 7}
+                  class="rf-graph-node-dot"
+                />
+                <text
+                  class="rf-graph-node-label"
+                  x={12}
+                  y={4}
+                  text-anchor="start"
+                >
+                  {clip(exp.title, 18)}
+                </text>
+              </g>
+            )
+          }}
+        </For>
+      </svg>
+      <Show when={props.loading}>
+        <div class="rf-graph-loading">载入中…</div>
+      </Show>
+      <Show when={!props.loading && stats().nodes === 0}>
+        <div class="rf-graph-empty">
+          <h3>图谱为空</h3>
+          <p>尚未有 experience，或当前筛选未命中任何条目。</p>
+        </div>
+      </Show>
+    </div>
+  )
+}
+
+/* ──────────────────────────────────────────────────────
    Page
    ────────────────────────────────────────────────────── */
 
@@ -3380,6 +3686,24 @@ export default function RefinerPage() {
   const [scopeMode, setScopeMode] = createSignal<"all" | "session">("all")
   const [mergeIDs, setMergeIDs] = createSignal<Set<string>>(new Set())
   const [banner, setBanner] = createSignal<string | undefined>()
+  const [viewMode, setViewMode] = createSignal<"list" | "graph">("list")
+  const [graphEdgeKinds, setGraphEdgeKinds] = createSignal<Set<ChainEdgeKind>>(
+    new Set<ChainEdgeKind>([
+      "requires",
+      "refines",
+      "supports",
+      "contradicts",
+      "see_also",
+    ]),
+  )
+  const toggleGraphEdgeKind = (k: ChainEdgeKind) => {
+    setGraphEdgeKinds((prev) => {
+      const next = new Set(prev)
+      if (next.has(k)) next.delete(k)
+      else next.add(k)
+      return next
+    })
+  }
 
   const overviewArgs = () => {
     const current = server.current
@@ -3419,6 +3743,18 @@ export default function RefinerPage() {
     taxonomyArgs,
     fetchCategories,
   )
+  // Full chain graph is only fetched while the Graph tab is open to avoid
+  // paying the round-trip on every list-page view.
+  const chainGraphArgs = () => {
+    if (viewMode() !== "graph") return
+    const b = taxonomyArgs()
+    if (!b) return
+    return { base: b, includeArchived: includeArchived() }
+  }
+  const [chainGraph, { refetch: refetchChainGraph }] = createResource(
+    chainGraphArgs,
+    (args) => fetchChainGraph(args.base, { includeArchived: args.includeArchived }),
+  )
 
   createEffect(() => {
     const data = overview()
@@ -3432,6 +3768,7 @@ export default function RefinerPage() {
     void refetchTaxonomy()
     void refetchConfig()
     void refetchCategories()
+    if (viewMode() === "graph") void refetchChainGraph()
   }, 4000)
   onCleanup(() => clearInterval(poll))
 
@@ -3440,6 +3777,7 @@ export default function RefinerPage() {
     void refetchTaxonomy()
     void refetchConfig()
     void refetchCategories()
+    if (viewMode() === "graph") void refetchChainGraph()
   }
 
   const apiBase = (): ApiBase | undefined => {
@@ -3768,6 +4106,30 @@ export default function RefinerPage() {
         <div class="rf-top-spacer" />
 
         <div
+          class="rf-scope-toggle rf-view-toggle"
+          role="group"
+          aria-label="View mode"
+          title="列表视图 or 图谱视图"
+        >
+          <button
+            type="button"
+            class="rf-scope-btn"
+            data-active={viewMode() === "list"}
+            onClick={() => setViewMode("list")}
+          >
+            列表
+          </button>
+          <button
+            type="button"
+            class="rf-scope-btn"
+            data-active={viewMode() === "graph"}
+            onClick={() => setViewMode("graph")}
+          >
+            图谱
+          </button>
+        </div>
+
+        <div
           class="rf-scope-toggle"
           role="group"
           aria-label="Scope filter"
@@ -3881,7 +4243,21 @@ export default function RefinerPage() {
         <div class="rf-banner">{banner()}</div>
       </Show>
 
-      <div class="rf-stage">
+      <div class="rf-stage" data-view={viewMode()}>
+        <Show when={viewMode() === "graph"}>
+          <div class="rf-main rf-main-graph">
+            <ExperienceGraphView
+              data={chainGraph()}
+              loading={chainGraph.loading}
+              onPick={pickExperienceByID}
+              activeKind={activeKind()}
+              activeEdgeKinds={graphEdgeKinds()}
+              toggleEdgeKind={toggleGraphEdgeKind}
+              includeArchived={includeArchived()}
+            />
+          </div>
+        </Show>
+        <Show when={viewMode() === "list"}>
         <div class="rf-main">
           <div class="rf-list-view">
             <div class="rf-list-inner">
@@ -4009,6 +4385,7 @@ export default function RefinerPage() {
             </div>
           </div>
         </div>
+        </Show>
 
       </div>
 
