@@ -1907,6 +1907,20 @@ export namespace Refiner {
   export async function observeUserMessage(input: { sessionID: SessionID; messageID: MessageID }) {
     const cfg = await settings()
     if (!cfg.enabled) return
+    // Slave/child sessions carry a parentID — they are spawned by the `task`
+    // tool (see src/tool/task.ts:71) when a master/root agent dispatches work
+    // to a sub-agent. In that case the "user" message is in fact a master
+    // prompt, not real user intent, and must not be observed. Top-level user
+    // sessions (UI new session, Session.fork) have parentID = undefined.
+    const session = await Session.get(input.sessionID).catch(() => undefined)
+    if (session?.parentID) {
+      log.debug("refiner.observe: skipping child session (master→slave prompt)", {
+        sessionID: input.sessionID,
+        messageID: input.messageID,
+        parentID: session.parentID,
+      })
+      return
+    }
     const extracted = await extractUserMessage(input.sessionID, input.messageID).catch(() => undefined)
     if (!extracted) return
     const observation = await captureObservation({
