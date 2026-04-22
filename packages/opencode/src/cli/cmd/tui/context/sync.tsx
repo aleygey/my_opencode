@@ -361,10 +361,20 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       // blocking - include session.list when continuing a session
       const providersPromise = sdk.client.config.providers({ workspace }, { throwOnError: true })
       const providerListPromise = sdk.client.provider.list({ workspace }, { throwOnError: true })
-      const consoleStatePromise = sdk.client.experimental.console
-        .get({ workspace }, { throwOnError: true })
-        .then((x) => ConsoleState.parse(x.data))
-        .catch(() => emptyConsoleState)
+      // The v2 SDK bundled with this build does not expose
+      // `experimental.console` — accessing `.console.get` synchronously
+      // throws `TypeError: undefined is not an object`, which escapes the
+      // outer `.catch` on this promise chain and blocks the TUI bootstrap.
+      // Treat a missing console API as "no console state available" and
+      // move on; the TUI already degrades gracefully when `console_state`
+      // stays at its empty default.
+      const experimentalConsole = (sdk.client.experimental as { console?: { get: Function } }).console
+      const consoleStatePromise = experimentalConsole
+        ? (experimentalConsole
+            .get({ workspace }, { throwOnError: true }) as Promise<{ data: unknown }>)
+            .then((x) => ConsoleState.parse(x.data))
+            .catch(() => emptyConsoleState)
+        : Promise.resolve(emptyConsoleState)
       const agentsPromise = sdk.client.app.agents({ workspace }, { throwOnError: true })
       const configPromise = sdk.client.config.get({ workspace }, { throwOnError: true })
       const projectPromise = project.sync()
