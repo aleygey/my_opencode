@@ -17,12 +17,17 @@ import z from "zod"
 import {
   WorkflowCheckpointTable,
   WorkflowEdgeTable,
+  WorkflowEditTable,
   WorkflowEventTable,
   WorkflowNodeTable,
   WorkflowTable,
   type WorkflowCheckpointStatus,
+  type WorkflowEditStatus,
+  type WorkflowInputPort,
   type WorkflowNodeResultStatus,
   type WorkflowNodeStatus,
+  type WorkflowOutputPort,
+  type WorkflowPortReducer,
   type WorkflowStatus,
   type WorkflowSummary,
 } from "./workflow.sql"
@@ -77,6 +82,28 @@ const WorkflowNodeStatus = z.enum([
 ])
 const WorkflowNodeResultStatus = z.enum(["unknown", "success", "fail", "partial"])
 const WorkflowCheckpointStatus = z.enum(["pending", "passed", "failed", "skipped"])
+
+// P1 — dynamic graph primitives. Port reducers govern how multiple upstream
+// contributions fan into the same named input. `single` = exactly one allowed.
+const WorkflowPortReducer = z.enum(["single", "last_wins", "array_concat", "object_deep_merge", "custom"])
+const WorkflowInputPortSchema = z
+  .object({
+    name: z.string().min(1),
+    reducer: WorkflowPortReducer,
+    required: z.boolean().optional(),
+    default: z.any().optional(),
+    description: z.string().optional(),
+  })
+  .meta({ ref: "WorkflowInputPort" })
+const WorkflowOutputPortSchema = z
+  .object({
+    name: z.string().min(1),
+    description: z.string().optional(),
+  })
+  .meta({ ref: "WorkflowOutputPort" })
+
+// Lifecycle of a proposed graph edit transaction (P3 `workflow_edit` row).
+const WorkflowEditStatus = z.enum(["pending", "applied", "rejected", "superseded"])
 
 // Canonical event-kind taxonomy. All runtime writes MUST use one of these.
 // Slaves may still pass a free-form `event_kind` via workflow_update, in which
@@ -813,8 +840,21 @@ export namespace Workflow {
       current_node_id: z.string().optional(),
       selected_node_id: z.string().optional(),
       version: z.number().int().nonnegative(),
+      /** P1 — monotonic counter incremented on every committed graph edit.
+       *  Optional on the wire to keep older client builds happy; the server
+       *  always populates it for new workflows. */
+      graph_rev: z.number().int().nonnegative().optional(),
+      /** P1 — global cap on simultaneously running nodes (default 5).
+       *  Read by the P4 scheduler. Optional for back-compat. */
+      max_concurrent_nodes: z.number().int().positive().optional(),
       config: z.record(z.string(), z.any()).optional(),
       summary: Summary.optional(),
+      /** P1 — master-owned registry of currently held exclusive resources,
+       *  keyed `resource → node_id`. The runtime exposes this for conflict
+       *  detection; it does NOT auto-lock. */
+      resources_held: z.record(z.string(), z.string()).optional(),
+      /** P5 — final workflow result posted by `workflow_finalize`. */
+      result_json: z.record(z.string(), z.any()).optional(),
       time: z.object({
         created: z.number(),
         updated: z.number(),
@@ -840,6 +880,11 @@ export namespace Workflow {
         })
         .optional(),
       config: z.record(z.string(), z.any()).optional(),
+      /** P1 — declared input ports with reducers. Absent = implicit single
+       *  `in` port accepting anything (back-compat for existing workflows). */
+      input_ports: WorkflowInputPortSchema.array().optional(),
+      /** P1 — declared output ports. Absent = implicit single `out` port. */
+      output_ports: WorkflowOutputPortSchema.array().optional(),
       status: WorkflowNodeStatus,
       result_status: WorkflowNodeResultStatus,
       fail_reason: z.string().optional(),
@@ -850,6 +895,18 @@ export namespace Workflow {
       version: z.number().int().nonnegative(),
       state_json: z.record(z.string(), z.any()).optional(),
       result_json: z.record(z.string(), z.any()).optional(),
+      /** P1 — snapshot of the input values this node consumed at start,
+       *  keyed by input-port name. Used for replay and staleness detection. */
+      consumed_inputs: z.record(z.string(), z.any()).optional(),
+      /** P1 — true when upstream changes invalidated this node's result.
+       *  Master decides whether to rerun, accept, or discard. */
+      stale: z.boolean().optional(),
+      /** P1 — `workflow.graph_rev` observed when this node began running. */
+      graph_rev_at_start: z.number().int().nonnegative().optional(),
+      /** P1 — scheduling priority (higher runs first among ready nodes). */
+      priority: z.number().int().optional(),
+      /** P1 — exclusive resource keys this node wants held while running. */
+      holds_resources: z.array(z.string()).optional(),
       position: z.number().int().nonnegative(),
       time: z.object({
         created: z.number(),
@@ -869,6 +926,13 @@ export namespace Workflow {
       to_node_id: z.string(),
       label: z.string().optional(),
       config: z.record(z.string(), z.any()).optional(),
+      /** P1 — outbound port on the producer (default `out` when absent). */
+      from_port: z.string().optional(),
+      /** P1 — inbound port on the consumer (default `in` when absent). */
+      to_port: z.string().optional(),
+      /** P1 — when true, downstream cannot become `ready` until this edge
+       *  has produced a value. Defaults to true server-side. */
+      required: z.boolean().optional(),
       time_created: z.number(),
     })
     .meta({ ref: "WorkflowEdge" })
@@ -890,6 +954,28 @@ export namespace Workflow {
     })
     .meta({ ref: "WorkflowCheckpoint" })
   export type Checkpoint = z.infer<typeof Checkpoint>
+
+  /** P1 — round-trip shape for a proposed graph edit transaction.
+   *  The concrete `ops` union is defined in P3 along with the reconciler;
+   *  here we keep it permissive so rows round-trip even before P3 lands. */
+  export const Edit = z
+    .object({
+      id: z.string(),
+      workflow_id: z.string(),
+      proposer_session_id: z.string().optional(),
+      ops: z.array(z.record(z.string(), z.any())),
+      status: WorkflowEditStatus,
+      reason: z.string().optional(),
+      reject_reason: z.string().optional(),
+      graph_rev_before: z.number().int().nonnegative(),
+      graph_rev_after: z.number().int().nonnegative().optional(),
+      time: z.object({
+        created: z.number(),
+        applied: z.number().optional(),
+      }),
+    })
+    .meta({ ref: "WorkflowEdit" })
+  export type Edit = z.infer<typeof Edit>
 
   export const EventInfo = z
     .object({
@@ -961,6 +1047,9 @@ export namespace Workflow {
       edges: Edge.array(),
       checkpoints: Checkpoint.array(),
       events: EventInfo.array(),
+      /** P1 — recent graph edit transactions. Optional on the wire; clients
+       *  that don't care about edit provenance can ignore it. */
+      edits: Edit.array().optional(),
       cursor: z.number().int().nonnegative(),
     })
     .meta({ ref: "WorkflowSnapshot" })
@@ -974,6 +1063,8 @@ export namespace Workflow {
       edges: Edge.array(),
       checkpoints: Checkpoint.array(),
       events: EventInfo.array(),
+      /** P1 — delta slice of edit transactions (pending + recently applied). */
+      edits: Edit.array().optional(),
       cursor: z.number().int().nonnegative(),
     })
     .meta({ ref: "WorkflowReadResult" })
@@ -1664,6 +1755,13 @@ export namespace Workflow {
       current_node_id: row.current_node_id ?? undefined,
       selected_node_id: row.selected_node_id ?? undefined,
       version: row.version,
+      // P1 — dynamic graph metadata. Older rows pre-migration could in theory
+      // have NULL here, but the migration sets `NOT NULL DEFAULT 0/5`; we
+      // still coalesce defensively so the snapshot type stays stable.
+      graph_rev: row.graph_rev ?? 0,
+      max_concurrent_nodes: row.max_concurrent_nodes ?? 5,
+      resources_held: row.resources_held ?? undefined,
+      result_json: row.result_json ?? undefined,
       config: row.config ?? undefined,
       summary: row.summary ?? undefined,
       time: {
@@ -1684,6 +1782,10 @@ export namespace Workflow {
       agent: row.agent,
       model: row.model ?? undefined,
       config: row.config ?? undefined,
+      // P1 — port + scheduling metadata. All additive; `undefined` preserves
+      // existing-row behaviour (implicit single `in` / `out` ports).
+      input_ports: row.input_ports ?? undefined,
+      output_ports: row.output_ports ?? undefined,
       status: row.status,
       result_status: row.result_status,
       fail_reason: row.fail_reason ?? undefined,
@@ -1694,6 +1796,12 @@ export namespace Workflow {
       version: row.version,
       state_json: row.state_json ?? undefined,
       result_json: row.result_json ?? undefined,
+      consumed_inputs: row.consumed_inputs ?? undefined,
+      // SQLite stores booleans as 0/1 integers — normalise to bool at the edge.
+      stale: row.stale === 1 ? true : row.stale === 0 ? false : undefined,
+      graph_rev_at_start: row.graph_rev_at_start ?? undefined,
+      priority: row.priority ?? 0,
+      holds_resources: row.holds_resources ?? undefined,
       position: row.position,
       time: {
         created: row.time_created,
@@ -1712,7 +1820,30 @@ export namespace Workflow {
       to_node_id: row.to_node_id,
       label: row.label ?? undefined,
       config: row.config ?? undefined,
+      // P1 — port routing + required-edge flag. Defaults: implicit
+      // `out` → `in`, required=true.
+      from_port: row.from_port ?? undefined,
+      to_port: row.to_port ?? undefined,
+      required: row.required === 1 ? true : row.required === 0 ? false : undefined,
       time_created: row.time_created,
+    }
+  }
+
+  function fromEditRow(row: typeof WorkflowEditTable.$inferSelect): Edit {
+    return {
+      id: row.id,
+      workflow_id: row.workflow_id,
+      proposer_session_id: row.proposer_session_id ?? undefined,
+      ops: (row.ops ?? []) as Edit["ops"],
+      status: row.status,
+      reason: row.reason ?? undefined,
+      reject_reason: row.reject_reason ?? undefined,
+      graph_rev_before: row.graph_rev_before,
+      graph_rev_after: row.graph_rev_after ?? undefined,
+      time: {
+        created: row.time_created,
+        applied: row.time_applied ?? undefined,
+      },
     }
   }
 

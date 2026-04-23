@@ -8,5 +8,6 @@ export {
   WorkflowNodeTable,
   WorkflowEdgeTable,
   WorkflowCheckpointTable,
+  WorkflowEditTable,
   WorkflowEventTable,
 } from "../workflow/workflow.sql"

@@ -33,6 +33,14 @@ export type WorkflowInfo = {
   current_node_id?: string
   selected_node_id?: string
   version: number
+  /** P1 — dynamic graph rev counter. Optional on wire for back-compat. */
+  graph_rev?: number
+  /** P1 — global concurrency cap (default 5 server-side). */
+  max_concurrent_nodes?: number
+  /** P1 — currently held exclusive resources `{ resource → node_id }`. */
+  resources_held?: Record<string, string>
+  /** P5 — finalised workflow result. Not populated until P5 lands. */
+  result_json?: Record<string, unknown>
   time?: {
     created: number
     updated: number
@@ -50,6 +58,20 @@ export type WorkflowRuntime = {
   last_event_id: number
 }
 
+/** P1 — reducer variants for named input ports; matches server `WorkflowPortReducer`. */
+export type WorkflowPortReducer = "single" | "last_wins" | "array_concat" | "object_deep_merge" | "custom"
+export type WorkflowInputPort = {
+  name: string
+  reducer: WorkflowPortReducer
+  required?: boolean
+  default?: unknown
+  description?: string
+}
+export type WorkflowOutputPort = {
+  name: string
+  description?: string
+}
+
 export type WorkflowNode = {
   id: string
   workflow_id: string
@@ -62,6 +84,10 @@ export type WorkflowNode = {
     variant?: string
   }
   config?: Record<string, unknown>
+  /** P1 — declared input ports with reducers. Absent = implicit single `in` port. */
+  input_ports?: WorkflowInputPort[]
+  /** P1 — declared output ports. Absent = implicit single `out` port. */
+  output_ports?: WorkflowOutputPort[]
   status: string
   result_status: string
   fail_reason?: string
@@ -73,6 +99,16 @@ export type WorkflowNode = {
   position: number
   state_json?: Record<string, unknown>
   result_json?: Record<string, unknown>
+  /** P1 — snapshot of consumed inputs keyed by input-port name. */
+  consumed_inputs?: Record<string, unknown>
+  /** P1 — upstream change invalidated this node's result. */
+  stale?: boolean
+  /** P1 — `graph_rev` observed when this node started running. */
+  graph_rev_at_start?: number
+  /** P1 — scheduling priority (higher wins among ready siblings). */
+  priority?: number
+  /** P1 — exclusive resources this node wants held while running. */
+  holds_resources?: string[]
   time: {
     created: number
     updated: number
@@ -87,6 +123,33 @@ export type WorkflowEdge = {
   from_node_id: string
   to_node_id: string
   label?: string
+  /** P1 — outbound port on the producer (default `out`). */
+  from_port?: string
+  /** P1 — inbound port on the consumer (default `in`). */
+  to_port?: string
+  /** P1 — downstream can't become ready until this edge has a value (default true). */
+  required?: boolean
+}
+
+/** P1 — lifecycle status of a graph edit transaction. */
+export type WorkflowEditStatus = "pending" | "applied" | "rejected" | "superseded"
+
+/** P1 — a proposed-then-applied graph edit. `ops` is kept permissive here
+ *  because the concrete discriminated union ships in P3. */
+export type WorkflowEdit = {
+  id: string
+  workflow_id: string
+  proposer_session_id?: string
+  ops: Array<Record<string, unknown>>
+  status: WorkflowEditStatus
+  reason?: string
+  reject_reason?: string
+  graph_rev_before: number
+  graph_rev_after?: number
+  time: {
+    created: number
+    applied?: number
+  }
 }
 
 export type WorkflowEvent = {
@@ -116,6 +179,8 @@ export type WorkflowSnapshot = {
   edges: WorkflowEdge[]
   checkpoints: WorkflowCheckpoint[]
   events: WorkflowEvent[]
+  /** P1 — graph-edit transactions. Optional; server only includes from P3. */
+  edits?: WorkflowEdit[]
   cursor: number
 }
 
@@ -126,6 +191,8 @@ type WorkflowReadResult = {
   edges: WorkflowEdge[]
   checkpoints: WorkflowCheckpoint[]
   events: WorkflowEvent[]
+  /** P1 — delta slice of edit transactions. */
+  edits?: WorkflowEdit[]
   cursor: number
 }
 
