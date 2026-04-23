@@ -163,6 +163,11 @@ const WorkflowEventKind = z.enum([
   "edge.created",
   "edge.updated",
   "edge.deleted",
+  // P2 — invariant rejection. Emitted when the runtime refuses an edge
+  // insert because it would violate DAG invariants (self-loop, cross-workflow,
+  // missing endpoint, or cycle). Master uses these to unwind a speculative
+  // propose and surface the rejection reason back to the proposer.
+  "edge.rejected",
   // Checkpoint
   "checkpoint.created",
   "checkpoint.passed",
@@ -245,6 +250,26 @@ export class NodeCompletionBlockedError extends Error {
   ) {
     super(`Workflow node ${nodeID} cannot complete: ${reason}`)
     this.name = "NodeCompletionBlockedError"
+  }
+}
+
+/** Thrown when a mutation would violate a structural graph invariant — DAG
+ *  acyclicity, single-workflow scoping, or endpoint existence. Carries the
+ *  machine-readable `reason` code so callers can route rejection events. */
+export class WorkflowGraphInvariantError extends Error {
+  constructor(
+    readonly workflowID: string,
+    readonly reason:
+      | "self_loop"
+      | "cycle"
+      | "cross_workflow"
+      | "from_node_missing"
+      | "to_node_missing"
+      | "duplicate_edge",
+    readonly detail?: Record<string, unknown>,
+  ) {
+    super(`Workflow graph invariant violated on ${workflowID}: ${reason}`)
+    this.name = "WorkflowGraphInvariantError"
   }
 }
 
@@ -2072,7 +2097,14 @@ export namespace Workflow {
       current_node_id: string | null
       selected_node_id: string | null
       summary: WorkflowSummary | null
+      resources_held: Record<string, string> | null
+      result_json: Record<string, unknown> | null
     }>
+    /** When true, also increments `graph_rev` atomically. Use this for any
+     *  topology-changing mutation (node/edge insert, replace, delete). Purely
+     *  cosmetic updates (status, summary) must leave `graph_rev` alone so the
+     *  master's optimistic-concurrency checks keep their meaning. */
+    bumpGraphRev?: boolean
   }) {
     const row = Database.use((db) =>
       db
@@ -2082,7 +2114,12 @@ export namespace Workflow {
           ...(input.patch?.current_node_id !== undefined ? { current_node_id: input.patch.current_node_id } : {}),
           ...(input.patch?.selected_node_id !== undefined ? { selected_node_id: input.patch.selected_node_id } : {}),
           ...(input.patch?.summary !== undefined ? { summary: input.patch.summary ?? null } : {}),
+          ...(input.patch?.resources_held !== undefined
+            ? { resources_held: input.patch.resources_held ?? null }
+            : {}),
+          ...(input.patch?.result_json !== undefined ? { result_json: input.patch.result_json ?? null } : {}),
           version: sql`${WorkflowTable.version} + 1`,
+          ...(input.bumpGraphRev ? { graph_rev: sql`${WorkflowTable.graph_rev} + 1` } : {}),
           time_updated: Date.now(),
         })
         .where(eq(WorkflowTable.id, input.workflowID))
@@ -2093,6 +2130,87 @@ export namespace Workflow {
     const info = fromWorkflowRow(row)
     Database.effect(() => Bus.publish(Event.Updated, { info }))
     return info
+  }
+
+  /** Forward DFS from `start` over outgoing edges; returns true if `target`
+   *  is reachable. Used by edge-insert to detect would-be cycles: if the
+   *  target-node can already reach the source-node, a new edge source→target
+   *  closes a loop. Fetches all edges for the workflow in one query; for the
+   *  expected graph sizes (< ~200 edges) this is cheaper than per-node
+   *  round-trips. */
+  function canReach(workflowID: string, start: string, target: string): boolean {
+    if (start === target) return true
+    const edges = Database.use((db) =>
+      db
+        .select({ from_node_id: WorkflowEdgeTable.from_node_id, to_node_id: WorkflowEdgeTable.to_node_id })
+        .from(WorkflowEdgeTable)
+        .where(eq(WorkflowEdgeTable.workflow_id, workflowID))
+        .all(),
+    )
+    const adj = new Map<string, string[]>()
+    for (const e of edges) {
+      const list = adj.get(e.from_node_id)
+      if (list) list.push(e.to_node_id)
+      else adj.set(e.from_node_id, [e.to_node_id])
+    }
+    const stack = [start]
+    const seen = new Set<string>()
+    while (stack.length > 0) {
+      const cur = stack.pop()!
+      if (cur === target) return true
+      if (seen.has(cur)) continue
+      seen.add(cur)
+      const nexts = adj.get(cur)
+      if (nexts) for (const n of nexts) stack.push(n)
+    }
+    return false
+  }
+
+  /** Validate endpoint existence + workflow scoping + acyclicity for a
+   *  prospective edge. Throws `WorkflowGraphInvariantError` on violation;
+   *  callers are expected to emit `edge.rejected` with the same reason code. */
+  function assertEdgeInvariants(input: { workflowID: string; from_node_id: string; to_node_id: string }) {
+    if (input.from_node_id === input.to_node_id) {
+      throw new WorkflowGraphInvariantError(input.workflowID, "self_loop", {
+        node_id: input.from_node_id,
+      })
+    }
+    const endpoints = Database.use((db) =>
+      db
+        .select({ id: WorkflowNodeTable.id, workflow_id: WorkflowNodeTable.workflow_id })
+        .from(WorkflowNodeTable)
+        .where(inArray(WorkflowNodeTable.id, [input.from_node_id, input.to_node_id]))
+        .all(),
+    )
+    const byID = new Map(endpoints.map((n) => [n.id, n]))
+    const fromRow = byID.get(input.from_node_id)
+    const toRow = byID.get(input.to_node_id)
+    if (!fromRow) {
+      throw new WorkflowGraphInvariantError(input.workflowID, "from_node_missing", {
+        node_id: input.from_node_id,
+      })
+    }
+    if (!toRow) {
+      throw new WorkflowGraphInvariantError(input.workflowID, "to_node_missing", {
+        node_id: input.to_node_id,
+      })
+    }
+    if (fromRow.workflow_id !== input.workflowID || toRow.workflow_id !== input.workflowID) {
+      throw new WorkflowGraphInvariantError(input.workflowID, "cross_workflow", {
+        from_node_id: input.from_node_id,
+        from_workflow_id: fromRow.workflow_id,
+        to_node_id: input.to_node_id,
+        to_workflow_id: toRow.workflow_id,
+      })
+    }
+    // Cycle check: a new edge from→to introduces a cycle iff `to` can already
+    // reach `from` via existing edges.
+    if (canReach(input.workflowID, input.to_node_id, input.from_node_id)) {
+      throw new WorkflowGraphInvariantError(input.workflowID, "cycle", {
+        from_node_id: input.from_node_id,
+        to_node_id: input.to_node_id,
+      })
+    }
   }
 
   export const create = fn(
@@ -2291,7 +2409,9 @@ export namespace Workflow {
             agent: info.agent,
           },
         })
-        await touchWorkflow({ workflowID: info.workflow_id })
+        // Topology change: bump graph_rev so in-flight masters can detect
+        // upstream drift relative to the graph they planned against.
+        await touchWorkflow({ workflowID: info.workflow_id, bumpGraphRev: true })
       })
       return info
     },
@@ -2304,8 +2424,41 @@ export namespace Workflow {
       to_node_id: z.string(),
       label: z.string().optional(),
       config: z.record(z.string(), z.any()).optional(),
+      from_port: z.string().optional(),
+      to_port: z.string().optional(),
+      required: z.boolean().optional(),
     }),
     async (input) => {
+      // Pre-flight DAG + scoping validation. On failure we emit a structured
+      // `edge.rejected` event (best-effort; failures during the rejection
+      // event write are swallowed) and re-throw so the caller can react.
+      try {
+        assertEdgeInvariants({
+          workflowID: input.workflowID,
+          from_node_id: input.from_node_id,
+          to_node_id: input.to_node_id,
+        })
+      } catch (error) {
+        if (error instanceof WorkflowGraphInvariantError) {
+          try {
+            await writeEvent({
+              workflowID: input.workflowID,
+              source: "runtime",
+              kind: "edge.rejected",
+              payload: {
+                reason: error.reason,
+                from_node_id: input.from_node_id,
+                to_node_id: input.to_node_id,
+                ...(error.detail ?? {}),
+              },
+            })
+          } catch (writeError) {
+            log.warn("failed to record edge.rejected event", { workflowID: input.workflowID, writeError })
+          }
+        }
+        throw error
+      }
+
       const row = Database.use((db) =>
         db
           .insert(WorkflowEdgeTable)
@@ -2316,6 +2469,9 @@ export namespace Workflow {
             to_node_id: input.to_node_id,
             label: input.label,
             config: input.config,
+            from_port: input.from_port,
+            to_port: input.to_port,
+            ...(input.required !== undefined ? { required: input.required ? 1 : 0 } : {}),
           })
           .returning()
           .get(),
@@ -2332,9 +2488,13 @@ export namespace Workflow {
             from_node_id: info.from_node_id,
             to_node_id: info.to_node_id,
             label: info.label,
+            from_port: info.from_port,
+            to_port: info.to_port,
+            required: info.required,
           },
         })
-        await touchWorkflow({ workflowID: info.workflow_id })
+        // Topology change: bump graph_rev (see createNode for rationale).
+        await touchWorkflow({ workflowID: info.workflow_id, bumpGraphRev: true })
       })
       return info
     },
