@@ -6,11 +6,11 @@ import { Session } from "../session"
 import { SessionID, MessageID, PartID } from "../session/schema"
 import { MessageV2 } from "../session/message-v2"
 import { SessionPrompt } from "../session/prompt"
-import { Provider } from "../provider/provider"
+import { Provider } from "../provider"
 import { ModelID, ProviderID } from "../provider/schema"
 import { Bus } from "../bus"
 import { BusEvent } from "../bus/bus-event"
-import { Log } from "../util/log"
+import { Log } from "../util"
 import { defer } from "@/util/defer"
 
 const log = Log.create({ service: "tool.sand-table" })

@@ -17,9 +17,8 @@
 import path from "path"
 import { unlink } from "fs/promises"
 import z from "zod"
-import { Filesystem } from "@/util/filesystem"
-import { Hash } from "@/util/hash"
-import { Log } from "@/util/log"
+import { Filesystem, Log } from "@/util"
+import { Hash } from "@opencode-ai/shared/util/hash"
 
 const log = Log.create({ service: "refiner.graph" })
 

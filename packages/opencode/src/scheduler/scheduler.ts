@@ -1,8 +1,8 @@
 import { Cron } from "croner"
 import { eq } from "drizzle-orm"
-import { Database } from "../storage/db"
+import { Database } from "../storage"
 import { ScheduledTaskTable, TaskExecutionTable, type TaskType, type TaskExecutionStatus } from "./scheduler.sql"
-import { Log } from "../util/log"
+import { Log } from "../util"
 
 const log = Log.create({ service: "scheduler" })
 

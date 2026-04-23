@@ -1,4 +1,4 @@
-import { Log } from "../util/log"
+import { Log } from "../util"
 
 /**
  * Strip control characters and shell metacharacters for safe

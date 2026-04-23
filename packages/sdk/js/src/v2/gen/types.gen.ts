@@ -4,20 +4,6 @@ export type ClientOptions = {
   baseUrl: `${string}://${string}` | (string & {})
 }
 
-export type EventInstallationUpdated = {
-  type: "installation.updated"
-  properties: {
-    version: string
-  }
-}
-
-export type EventInstallationUpdateAvailable = {
-  type: "installation.update-available"
-  properties: {
-    version: string
-  }
-}
-
 export type Project = {
   id: string
   worktree: string
@@ -54,6 +40,75 @@ export type EventServerInstanceDisposed = {
   }
 }
 
+export type EventServerConnected = {
+  type: "server.connected"
+  properties: {
+    [key: string]: unknown
+  }
+}
+
+export type EventGlobalDisposed = {
+  type: "global.disposed"
+  properties: {
+    [key: string]: unknown
+  }
+}
+
+export type EventFileEdited = {
+  type: "file.edited"
+  properties: {
+    file: string
+  }
+}
+
+export type EventFileWatcherUpdated = {
+  type: "file.watcher.updated"
+  properties: {
+    file: string
+    event: "add" | "change" | "unlink"
+  }
+}
+
+export type EventLspClientDiagnostics = {
+  type: "lsp.client.diagnostics"
+  properties: {
+    serverID: string
+    path: string
+  }
+}
+
+export type EventLspUpdated = {
+  type: "lsp.updated"
+  properties: {
+    [key: string]: unknown
+  }
+}
+
+export type EventInstallationUpdated = {
+  type: "installation.updated"
+  properties: {
+    version: string
+  }
+}
+
+export type EventInstallationUpdateAvailable = {
+  type: "installation.update-available"
+  properties: {
+    version: string
+  }
+}
+
+export type EventMessagePartDelta = {
+  type: "message.part.delta"
+  properties: {
+    sessionID: string
+    messageID: string
+    partID: string
+    field: string
+    delta: string
+  }
+}
+
 export type PermissionRequest = {
   id: string
   sessionID: string
@@ -83,161 +138,20 @@ export type EventPermissionReplied = {
   }
 }
 
-export type QuestionOption = {
-  /**
-   * Display text (1-5 words, concise)
-   */
-  label: string
-  /**
-   * Explanation of choice
-   */
-  description: string
-}
-
-export type QuestionInfo = {
-  /**
-   * Complete question
-   */
-  question: string
-  /**
-   * Very short label (max 30 chars)
-   */
-  header: string
-  /**
-   * Available choices
-   */
-  options: Array<QuestionOption>
-  /**
-   * Allow selecting multiple choices
-   */
-  multiple?: boolean
-  /**
-   * Allow typing a custom answer (default: true)
-   */
-  custom?: boolean
-}
-
-export type QuestionRequest = {
-  id: string
-  sessionID: string
-  /**
-   * Questions to ask
-   */
-  questions: Array<QuestionInfo>
-  tool?: {
-    messageID: string
-    callID: string
-  }
-}
-
-export type EventQuestionAsked = {
-  type: "question.asked"
-  properties: QuestionRequest
-}
-
-export type QuestionAnswer = Array<string>
-
-export type EventQuestionReplied = {
-  type: "question.replied"
-  properties: {
-    sessionID: string
-    requestID: string
-    answers: Array<QuestionAnswer>
-  }
-}
-
-export type EventQuestionRejected = {
-  type: "question.rejected"
-  properties: {
-    sessionID: string
-    requestID: string
-  }
-}
-
-export type EventServerConnected = {
-  type: "server.connected"
-  properties: {
-    [key: string]: unknown
-  }
-}
-
-export type EventGlobalDisposed = {
-  type: "global.disposed"
-  properties: {
-    [key: string]: unknown
-  }
-}
-
-export type EventLspClientDiagnostics = {
-  type: "lsp.client.diagnostics"
-  properties: {
-    serverID: string
-    path: string
-  }
-}
-
-export type EventLspUpdated = {
-  type: "lsp.updated"
-  properties: {
-    [key: string]: unknown
-  }
-}
-
-export type EventFileEdited = {
-  type: "file.edited"
-  properties: {
-    file: string
-  }
-}
-
-export type OutputFormatText = {
-  type: "text"
-}
-
-export type JsonSchema = {
-  [key: string]: unknown
-}
-
-export type OutputFormatJsonSchema = {
-  type: "json_schema"
-  schema: JsonSchema
-  retryCount?: number
-}
-
-export type OutputFormat = OutputFormatText | OutputFormatJsonSchema
-
-export type FileDiff = {
+export type SnapshotFileDiff = {
   file: string
-  before: string
-  after: string
+  patch: string
   additions: number
   deletions: number
   status?: "added" | "deleted" | "modified"
 }
 
-export type UserMessage = {
-  id: string
-  sessionID: string
-  role: "user"
-  time: {
-    created: number
+export type EventSessionDiff = {
+  type: "session.diff"
+  properties: {
+    sessionID: string
+    diff: Array<SnapshotFileDiff>
   }
-  format?: OutputFormat
-  summary?: {
-    title?: string
-    body?: string
-    diffs: Array<FileDiff>
-  }
-  agent: string
-  model: {
-    providerID: string
-    modelID: string
-  }
-  system?: string
-  tools?: {
-    [key: string]: boolean
-  }
-  variant?: string
 }
 
 export type ProviderAuthError = {
@@ -301,6 +215,370 @@ export type ApiError = {
   }
 }
 
+export type EventSessionError = {
+  type: "session.error"
+  properties: {
+    sessionID?: string
+    error?:
+      | ProviderAuthError
+      | UnknownError
+      | MessageOutputLengthError
+      | MessageAbortedError
+      | StructuredOutputError
+      | ContextOverflowError
+      | ApiError
+  }
+}
+
+export type QuestionOption = {
+  /**
+   * Display text (1-5 words, concise)
+   */
+  label: string
+  /**
+   * Explanation of choice
+   */
+  description: string
+}
+
+export type QuestionInfo = {
+  /**
+   * Complete question
+   */
+  question: string
+  /**
+   * Very short label (max 30 chars)
+   */
+  header: string
+  /**
+   * Available choices
+   */
+  options: Array<QuestionOption>
+  /**
+   * Allow selecting multiple choices
+   */
+  multiple?: boolean
+  /**
+   * Allow typing a custom answer (default: true)
+   */
+  custom?: boolean
+}
+
+export type QuestionTool = {
+  messageID: string
+  callID: string
+}
+
+export type QuestionRequest = {
+  id: string
+  sessionID: string
+  /**
+   * Questions to ask
+   */
+  questions: Array<QuestionInfo>
+  tool?: QuestionTool
+}
+
+export type EventQuestionAsked = {
+  type: "question.asked"
+  properties: QuestionRequest
+}
+
+export type QuestionAnswer = Array<string>
+
+export type QuestionReplied = {
+  sessionID: string
+  requestID: string
+  answers: Array<QuestionAnswer>
+}
+
+export type EventQuestionReplied = {
+  type: "question.replied"
+  properties: QuestionReplied
+}
+
+export type QuestionRejected = {
+  sessionID: string
+  requestID: string
+}
+
+export type EventQuestionRejected = {
+  type: "question.rejected"
+  properties: QuestionRejected
+}
+
+export type Todo = {
+  /**
+   * Brief description of the task
+   */
+  content: string
+  /**
+   * Current status of the task: pending, in_progress, completed, cancelled
+   */
+  status: string
+  /**
+   * Priority level of the task: high, medium, low
+   */
+  priority: string
+}
+
+export type EventTodoUpdated = {
+  type: "todo.updated"
+  properties: {
+    sessionID: string
+    todos: Array<Todo>
+  }
+}
+
+export type SessionStatus =
+  | {
+      type: "idle"
+    }
+  | {
+      type: "retry"
+      attempt: number
+      message: string
+      next: number
+    }
+  | {
+      type: "busy"
+    }
+
+export type EventSessionStatus = {
+  type: "session.status"
+  properties: {
+    sessionID: string
+    status: SessionStatus
+  }
+}
+
+export type EventSessionIdle = {
+  type: "session.idle"
+  properties: {
+    sessionID: string
+  }
+}
+
+export type EventSessionCompacted = {
+  type: "session.compacted"
+  properties: {
+    sessionID: string
+  }
+}
+
+export type EventTuiPromptAppend = {
+  type: "tui.prompt.append"
+  properties: {
+    text: string
+  }
+}
+
+export type EventTuiCommandExecute = {
+  type: "tui.command.execute"
+  properties: {
+    command:
+      | "session.list"
+      | "session.new"
+      | "session.share"
+      | "session.interrupt"
+      | "session.compact"
+      | "session.page.up"
+      | "session.page.down"
+      | "session.line.up"
+      | "session.line.down"
+      | "session.half.page.up"
+      | "session.half.page.down"
+      | "session.first"
+      | "session.last"
+      | "prompt.clear"
+      | "prompt.submit"
+      | "agent.cycle"
+      | string
+  }
+}
+
+export type EventTuiToastShow = {
+  type: "tui.toast.show"
+  properties: {
+    title?: string
+    message: string
+    variant: "info" | "success" | "warning" | "error"
+    /**
+     * Duration in milliseconds
+     */
+    duration?: number
+  }
+}
+
+export type EventTuiSessionSelect = {
+  type: "tui.session.select"
+  properties: {
+    /**
+     * Session ID to navigate to
+     */
+    sessionID: string
+  }
+}
+
+export type EventMcpToolsChanged = {
+  type: "mcp.tools.changed"
+  properties: {
+    server: string
+  }
+}
+
+export type EventMcpBrowserOpenFailed = {
+  type: "mcp.browser.open.failed"
+  properties: {
+    mcpName: string
+    url: string
+  }
+}
+
+export type EventCommandExecuted = {
+  type: "command.executed"
+  properties: {
+    name: string
+    sessionID: string
+    arguments: string
+    messageID: string
+  }
+}
+
+export type EventVcsBranchUpdated = {
+  type: "vcs.branch.updated"
+  properties: {
+    branch?: string
+  }
+}
+
+export type EventWorktreeReady = {
+  type: "worktree.ready"
+  properties: {
+    name: string
+    branch: string
+  }
+}
+
+export type EventWorktreeFailed = {
+  type: "worktree.failed"
+  properties: {
+    message: string
+  }
+}
+
+export type Pty = {
+  id: string
+  title: string
+  command: string
+  args: Array<string>
+  cwd: string
+  status: "running" | "exited"
+  pid: number
+}
+
+export type EventPtyCreated = {
+  type: "pty.created"
+  properties: {
+    info: Pty
+  }
+}
+
+export type EventPtyUpdated = {
+  type: "pty.updated"
+  properties: {
+    info: Pty
+  }
+}
+
+export type EventPtyExited = {
+  type: "pty.exited"
+  properties: {
+    id: string
+    exitCode: number
+  }
+}
+
+export type EventPtyDeleted = {
+  type: "pty.deleted"
+  properties: {
+    id: string
+  }
+}
+
+export type EventWorkspaceReady = {
+  type: "workspace.ready"
+  properties: {
+    name: string
+  }
+}
+
+export type EventWorkspaceFailed = {
+  type: "workspace.failed"
+  properties: {
+    message: string
+  }
+}
+
+export type EventWorkspaceRestore = {
+  type: "workspace.restore"
+  properties: {
+    workspaceID: string
+    sessionID: string
+    total: number
+    step: number
+  }
+}
+
+export type EventWorkspaceStatus = {
+  type: "workspace.status"
+  properties: {
+    workspaceID: string
+    status: "connected" | "connecting" | "disconnected" | "error"
+  }
+}
+
+export type OutputFormatText = {
+  type: "text"
+}
+
+export type JsonSchema = {
+  [key: string]: unknown
+}
+
+export type OutputFormatJsonSchema = {
+  type: "json_schema"
+  schema: JsonSchema
+  retryCount?: number
+}
+
+export type OutputFormat = OutputFormatText | OutputFormatJsonSchema
+
+export type UserMessage = {
+  id: string
+  sessionID: string
+  role: "user"
+  time: {
+    created: number
+  }
+  format?: OutputFormat
+  summary?: {
+    title?: string
+    body?: string
+    diffs: Array<SnapshotFileDiff>
+  }
+  agent: string
+  model: {
+    providerID: string
+    modelID: string
+    variant?: string
+  }
+  system?: string
+  tools?: {
+    [key: string]: boolean
+  }
+}
+
 export type AssistantMessage = {
   id: string
   sessionID: string
@@ -348,6 +626,7 @@ export type Message = UserMessage | AssistantMessage
 export type EventMessageUpdated = {
   type: "message.updated"
   properties: {
+    sessionID: string
     info: Message
   }
 }
@@ -606,6 +885,7 @@ export type CompactionPart = {
   type: "compaction"
   auto: boolean
   overflow?: boolean
+  tail_start_id?: string
 }
 
 export type Part =
@@ -625,18 +905,9 @@ export type Part =
 export type EventMessagePartUpdated = {
   type: "message.part.updated"
   properties: {
-    part: Part
-  }
-}
-
-export type EventMessagePartDelta = {
-  type: "message.part.delta"
-  properties: {
     sessionID: string
-    messageID: string
-    partID: string
-    field: string
-    delta: string
+    part: Part
+    time: number
   }
 }
 
@@ -646,304 +917,6 @@ export type EventMessagePartRemoved = {
     sessionID: string
     messageID: string
     partID: string
-  }
-}
-
-export type SessionStatus =
-  | {
-      type: "idle"
-    }
-  | {
-      type: "retry"
-      attempt: number
-      message: string
-      next: number
-    }
-  | {
-      type: "busy"
-    }
-
-export type EventSessionStatus = {
-  type: "session.status"
-  properties: {
-    sessionID: string
-    status: SessionStatus
-  }
-}
-
-export type EventSessionIdle = {
-  type: "session.idle"
-  properties: {
-    sessionID: string
-  }
-}
-
-export type EventSessionCompacted = {
-  type: "session.compacted"
-  properties: {
-    sessionID: string
-  }
-}
-
-export type EventFileWatcherUpdated = {
-  type: "file.watcher.updated"
-  properties: {
-    file: string
-    event: "add" | "change" | "unlink"
-  }
-}
-
-export type Todo = {
-  /**
-   * Brief description of the task
-   */
-  content: string
-  /**
-   * Current status of the task: pending, in_progress, completed, cancelled
-   */
-  status: string
-  /**
-   * Priority level of the task: high, medium, low
-   */
-  priority: string
-}
-
-export type EventTodoUpdated = {
-  type: "todo.updated"
-  properties: {
-    sessionID: string
-    todos: Array<Todo>
-  }
-}
-
-export type Workflow = {
-  id: string
-  session_id: string
-  title: string
-  status: "pending" | "running" | "paused" | "interrupted" | "completed" | "failed" | "cancelled"
-  current_node_id?: string
-  selected_node_id?: string
-  version: number
-  config?: {
-    [key: string]: unknown
-  }
-  summary?: {
-    [key: string]: unknown
-  }
-  time: {
-    created: number
-    updated: number
-    paused?: number
-    completed?: number
-  }
-}
-
-export type EventWorkflowCreated = {
-  type: "workflow.created"
-  properties: {
-    info: Workflow
-  }
-}
-
-export type EventWorkflowUpdated = {
-  type: "workflow.updated"
-  properties: {
-    info: Workflow
-  }
-}
-
-export type WorkflowNode = {
-  id: string
-  workflow_id: string
-  session_id?: string
-  title: string
-  agent: string
-  model?: {
-    providerID?: string
-    modelID?: string
-    variant?: string
-  }
-  config?: {
-    [key: string]: unknown
-  }
-  status: "pending" | "ready" | "running" | "waiting" | "paused" | "interrupted" | "completed" | "failed" | "cancelled"
-  result_status: "unknown" | "success" | "fail" | "partial"
-  fail_reason?: string
-  action_count: number
-  attempt: number
-  max_attempts: number
-  max_actions: number
-  version: number
-  state_json?: {
-    [key: string]: unknown
-  }
-  result_json?: {
-    [key: string]: unknown
-  }
-  position: number
-  time: {
-    created: number
-    updated: number
-    started?: number
-    completed?: number
-  }
-}
-
-export type EventWorkflowNodeCreated = {
-  type: "workflow.node.created"
-  properties: {
-    info: WorkflowNode
-  }
-}
-
-export type EventWorkflowNodeUpdated = {
-  type: "workflow.node.updated"
-  properties: {
-    info: WorkflowNode
-  }
-}
-
-export type WorkflowEdge = {
-  id: string
-  workflow_id: string
-  from_node_id: string
-  to_node_id: string
-  label?: string
-  config?: {
-    [key: string]: unknown
-  }
-  time_created: number
-}
-
-export type EventWorkflowEdgeCreated = {
-  type: "workflow.edge.created"
-  properties: {
-    info: WorkflowEdge
-  }
-}
-
-export type WorkflowCheckpoint = {
-  id: string
-  workflow_id: string
-  node_id: string
-  label: string
-  status: "pending" | "passed" | "failed" | "skipped"
-  config?: {
-    [key: string]: unknown
-  }
-  result_json?: {
-    [key: string]: unknown
-  }
-  time: {
-    created: number
-    updated: number
-  }
-}
-
-export type EventWorkflowCheckpointUpdated = {
-  type: "workflow.checkpoint.updated"
-  properties: {
-    info: WorkflowCheckpoint
-  }
-}
-
-export type WorkflowEvent = {
-  id: number
-  workflow_id: string
-  node_id?: string
-  session_id?: string
-  target_node_id?: string
-  kind: string
-  source: string
-  payload: {
-    [key: string]: unknown
-  }
-  time_created: number
-}
-
-export type EventWorkflowEventCreated = {
-  type: "workflow.event.created"
-  properties: {
-    info: WorkflowEvent
-  }
-}
-
-export type EventTuiPromptAppend = {
-  type: "tui.prompt.append"
-  properties: {
-    text: string
-  }
-}
-
-export type EventTuiCommandExecute = {
-  type: "tui.command.execute"
-  properties: {
-    command:
-      | "session.list"
-      | "session.new"
-      | "session.share"
-      | "session.interrupt"
-      | "session.compact"
-      | "session.page.up"
-      | "session.page.down"
-      | "session.line.up"
-      | "session.line.down"
-      | "session.half.page.up"
-      | "session.half.page.down"
-      | "session.first"
-      | "session.last"
-      | "prompt.clear"
-      | "prompt.submit"
-      | "agent.cycle"
-      | string
-  }
-}
-
-export type EventTuiToastShow = {
-  type: "tui.toast.show"
-  properties: {
-    title?: string
-    message: string
-    variant: "info" | "success" | "warning" | "error"
-    /**
-     * Duration in milliseconds
-     */
-    duration?: number
-  }
-}
-
-export type EventTuiSessionSelect = {
-  type: "tui.session.select"
-  properties: {
-    /**
-     * Session ID to navigate to
-     */
-    sessionID: string
-  }
-}
-
-export type EventMcpToolsChanged = {
-  type: "mcp.tools.changed"
-  properties: {
-    server: string
-  }
-}
-
-export type EventMcpBrowserOpenFailed = {
-  type: "mcp.browser.open.failed"
-  properties: {
-    mcpName: string
-    url: string
-  }
-}
-
-export type EventCommandExecuted = {
-  type: "command.executed"
-  properties: {
-    name: string
-    sessionID: string
-    arguments: string
-    messageID: string
   }
 }
 
@@ -968,7 +941,7 @@ export type Session = {
     additions: number
     deletions: number
     files: number
-    diffs?: Array<FileDiff>
+    diffs?: Array<SnapshotFileDiff>
   }
   share?: {
     url: string
@@ -993,6 +966,7 @@ export type Session = {
 export type EventSessionCreated = {
   type: "session.created"
   properties: {
+    sessionID: string
     info: Session
   }
 }
@@ -1000,6 +974,7 @@ export type EventSessionCreated = {
 export type EventSessionUpdated = {
   type: "session.updated"
   properties: {
+    sessionID: string
     info: Session
   }
 }
@@ -1007,165 +982,187 @@ export type EventSessionUpdated = {
 export type EventSessionDeleted = {
   type: "session.deleted"
   properties: {
+    sessionID: string
     info: Session
   }
 }
 
-export type EventSessionDiff = {
-  type: "session.diff"
-  properties: {
-    sessionID: string
-    diff: Array<FileDiff>
-  }
-}
-
-export type EventSessionError = {
-  type: "session.error"
-  properties: {
-    sessionID?: string
-    error?:
-      | ProviderAuthError
-      | UnknownError
-      | MessageOutputLengthError
-      | MessageAbortedError
-      | StructuredOutputError
-      | ContextOverflowError
-      | ApiError
-  }
-}
-
-export type EventVcsBranchUpdated = {
-  type: "vcs.branch.updated"
-  properties: {
-    branch?: string
-  }
-}
-
-export type EventWorkspaceReady = {
-  type: "workspace.ready"
-  properties: {
-    name: string
-  }
-}
-
-export type EventWorkspaceFailed = {
-  type: "workspace.failed"
-  properties: {
-    message: string
-  }
-}
-
-export type Pty = {
+export type SyncEventMessageUpdated = {
+  type: "sync"
+  name: "message.updated.1"
   id: string
-  title: string
-  command: string
-  args: Array<string>
-  cwd: string
-  status: "running" | "exited"
-  pid: number
-}
-
-export type EventPtyCreated = {
-  type: "pty.created"
-  properties: {
-    info: Pty
+  seq: number
+  aggregateID: "sessionID"
+  data: {
+    sessionID: string
+    info: Message
   }
 }
 
-export type EventPtyUpdated = {
-  type: "pty.updated"
-  properties: {
-    info: Pty
+export type SyncEventMessageRemoved = {
+  type: "sync"
+  name: "message.removed.1"
+  id: string
+  seq: number
+  aggregateID: "sessionID"
+  data: {
+    sessionID: string
+    messageID: string
   }
 }
 
-export type EventPtyExited = {
-  type: "pty.exited"
-  properties: {
-    id: string
-    exitCode: number
+export type SyncEventMessagePartUpdated = {
+  type: "sync"
+  name: "message.part.updated.1"
+  id: string
+  seq: number
+  aggregateID: "sessionID"
+  data: {
+    sessionID: string
+    part: Part
+    time: number
   }
 }
 
-export type EventPtyDeleted = {
-  type: "pty.deleted"
-  properties: {
-    id: string
+export type SyncEventMessagePartRemoved = {
+  type: "sync"
+  name: "message.part.removed.1"
+  id: string
+  seq: number
+  aggregateID: "sessionID"
+  data: {
+    sessionID: string
+    messageID: string
+    partID: string
   }
 }
 
-export type EventWorktreeReady = {
-  type: "worktree.ready"
-  properties: {
-    name: string
-    branch: string
+export type SyncEventSessionCreated = {
+  type: "sync"
+  name: "session.created.1"
+  id: string
+  seq: number
+  aggregateID: "sessionID"
+  data: {
+    sessionID: string
+    info: Session
   }
 }
 
-export type EventWorktreeFailed = {
-  type: "worktree.failed"
-  properties: {
-    message: string
+export type SyncEventSessionUpdated = {
+  type: "sync"
+  name: "session.updated.1"
+  id: string
+  seq: number
+  aggregateID: "sessionID"
+  data: {
+    sessionID: string
+    info: {
+      id: string | null
+      slug: string | null
+      projectID: string | null
+      workspaceID: string | null
+      directory: string | null
+      parentID: string | null
+      summary: {
+        additions: number
+        deletions: number
+        files: number
+        diffs?: Array<SnapshotFileDiff>
+      } | null
+      share?: {
+        url: string | null
+      }
+      title: string | null
+      version: string | null
+      time?: {
+        created: number | null
+        updated: number | null
+        compacting: number | null
+        archived: number | null
+      }
+      permission: PermissionRuleset | null
+      revert: {
+        messageID: string
+        partID?: string
+        snapshot?: string
+        diff?: string
+      } | null
+    }
   }
 }
 
-export type Event =
-  | EventInstallationUpdated
-  | EventInstallationUpdateAvailable
-  | EventProjectUpdated
-  | EventServerInstanceDisposed
-  | EventPermissionAsked
-  | EventPermissionReplied
-  | EventQuestionAsked
-  | EventQuestionReplied
-  | EventQuestionRejected
-  | EventServerConnected
-  | EventGlobalDisposed
-  | EventLspClientDiagnostics
-  | EventLspUpdated
-  | EventFileEdited
-  | EventMessageUpdated
-  | EventMessageRemoved
-  | EventMessagePartUpdated
-  | EventMessagePartDelta
-  | EventMessagePartRemoved
-  | EventSessionStatus
-  | EventSessionIdle
-  | EventSessionCompacted
-  | EventFileWatcherUpdated
-  | EventTodoUpdated
-  | EventWorkflowCreated
-  | EventWorkflowUpdated
-  | EventWorkflowNodeCreated
-  | EventWorkflowNodeUpdated
-  | EventWorkflowEdgeCreated
-  | EventWorkflowCheckpointUpdated
-  | EventWorkflowEventCreated
-  | EventTuiPromptAppend
-  | EventTuiCommandExecute
-  | EventTuiToastShow
-  | EventTuiSessionSelect
-  | EventMcpToolsChanged
-  | EventMcpBrowserOpenFailed
-  | EventCommandExecuted
-  | EventSessionCreated
-  | EventSessionUpdated
-  | EventSessionDeleted
-  | EventSessionDiff
-  | EventSessionError
-  | EventVcsBranchUpdated
-  | EventWorkspaceReady
-  | EventWorkspaceFailed
-  | EventPtyCreated
-  | EventPtyUpdated
-  | EventPtyExited
-  | EventPtyDeleted
-  | EventWorktreeReady
-  | EventWorktreeFailed
+export type SyncEventSessionDeleted = {
+  type: "sync"
+  name: "session.deleted.1"
+  id: string
+  seq: number
+  aggregateID: "sessionID"
+  data: {
+    sessionID: string
+    info: Session
+  }
+}
 
 export type GlobalEvent = {
   directory: string
-  payload: Event
+  project?: string
+  workspace?: string
+  payload:
+    | EventProjectUpdated
+    | EventServerInstanceDisposed
+    | EventServerConnected
+    | EventGlobalDisposed
+    | EventFileEdited
+    | EventFileWatcherUpdated
+    | EventLspClientDiagnostics
+    | EventLspUpdated
+    | EventInstallationUpdated
+    | EventInstallationUpdateAvailable
+    | EventMessagePartDelta
+    | EventPermissionAsked
+    | EventPermissionReplied
+    | EventSessionDiff
+    | EventSessionError
+    | EventQuestionAsked
+    | EventQuestionReplied
+    | EventQuestionRejected
+    | EventTodoUpdated
+    | EventSessionStatus
+    | EventSessionIdle
+    | EventSessionCompacted
+    | EventTuiPromptAppend
+    | EventTuiCommandExecute
+    | EventTuiToastShow
+    | EventTuiSessionSelect
+    | EventMcpToolsChanged
+    | EventMcpBrowserOpenFailed
+    | EventCommandExecuted
+    | EventVcsBranchUpdated
+    | EventWorktreeReady
+    | EventWorktreeFailed
+    | EventPtyCreated
+    | EventPtyUpdated
+    | EventPtyExited
+    | EventPtyDeleted
+    | EventWorkspaceReady
+    | EventWorkspaceFailed
+    | EventWorkspaceRestore
+    | EventWorkspaceStatus
+    | EventMessageUpdated
+    | EventMessageRemoved
+    | EventMessagePartUpdated
+    | EventMessagePartRemoved
+    | EventSessionCreated
+    | EventSessionUpdated
+    | EventSessionDeleted
+    | SyncEventMessageUpdated
+    | SyncEventMessageRemoved
+    | SyncEventMessagePartUpdated
+    | SyncEventMessagePartRemoved
+    | SyncEventSessionCreated
+    | SyncEventSessionUpdated
+    | SyncEventSessionDeleted
 }
 
 /**
@@ -1208,8 +1205,8 @@ export type PermissionObjectConfig = {
 export type PermissionRuleConfig = PermissionActionConfig | PermissionObjectConfig
 
 export type PermissionConfig =
+  | PermissionActionConfig
   | {
-      __originalKeys?: Array<string>
       read?: PermissionRuleConfig
       edit?: PermissionRuleConfig
       glob?: PermissionRuleConfig
@@ -1219,7 +1216,6 @@ export type PermissionConfig =
       task?: PermissionRuleConfig
       external_directory?: PermissionRuleConfig
       todowrite?: PermissionActionConfig
-      todoread?: PermissionActionConfig
       question?: PermissionActionConfig
       webfetch?: PermissionActionConfig
       websearch?: PermissionActionConfig
@@ -1227,9 +1223,8 @@ export type PermissionConfig =
       lsp?: PermissionRuleConfig
       doom_loop?: PermissionActionConfig
       skill?: PermissionRuleConfig
-      [key: string]: PermissionRuleConfig | Array<string> | PermissionActionConfig | undefined
+      [key: string]: PermissionRuleConfig | PermissionActionConfig | undefined
     }
-  | PermissionActionConfig
 
 export type AgentConfig = {
   model?: string
@@ -1305,6 +1300,29 @@ export type ProviderConfig = {
   env?: Array<string>
   id?: string
   npm?: string
+  whitelist?: Array<string>
+  blacklist?: Array<string>
+  options?: {
+    apiKey?: string
+    baseURL?: string
+    /**
+     * GitHub Enterprise URL for copilot authentication
+     */
+    enterpriseUrl?: string
+    /**
+     * Enable promptCacheKey for this provider (default false)
+     */
+    setCacheKey?: boolean
+    /**
+     * Timeout in milliseconds for requests to this provider. Default is 300000 (5 minutes). Set to false to disable timeout.
+     */
+    timeout?: number | false
+    /**
+     * Timeout in milliseconds between streamed SSE chunks for this provider. If no chunk arrives within this window, the request is aborted.
+     */
+    chunkTimeout?: number
+    [key: string]: unknown | string | boolean | number | false | number | undefined
+  }
   models?: {
     [key: string]: {
       id?: string
@@ -1343,15 +1361,15 @@ export type ProviderConfig = {
       }
       experimental?: boolean
       status?: "alpha" | "beta" | "deprecated"
+      provider?: {
+        npm?: string
+        api?: string
+      }
       options?: {
         [key: string]: unknown
       }
       headers?: {
         [key: string]: string
-      }
-      provider?: {
-        npm?: string
-        api?: string
       }
       /**
        * Variant-specific configuration
@@ -1366,29 +1384,6 @@ export type ProviderConfig = {
         }
       }
     }
-  }
-  whitelist?: Array<string>
-  blacklist?: Array<string>
-  options?: {
-    apiKey?: string
-    baseURL?: string
-    /**
-     * GitHub Enterprise URL for copilot authentication
-     */
-    enterpriseUrl?: string
-    /**
-     * Enable promptCacheKey for this provider (default false)
-     */
-    setCacheKey?: boolean
-    /**
-     * Timeout in milliseconds for requests to this provider. Default is 300000 (5 minutes). Set to false to disable timeout.
-     */
-    timeout?: number | false
-    /**
-     * Timeout in milliseconds between streamed SSE chunks for this provider. If no chunk arrives within this window, the request is aborted.
-     */
-    chunkTimeout?: number
-    [key: string]: unknown | string | boolean | number | false | number | undefined
   }
 }
 
@@ -1430,6 +1425,10 @@ export type McpOAuthConfig = {
    * OAuth scopes to request during authorization
    */
   scope?: string
+  /**
+   * OAuth redirect URI (default: http://127.0.0.1:19876/mcp/oauth/callback).
+   */
+  redirectUri?: string
 }
 
 export type McpRemoteConfig = {
@@ -1501,8 +1500,19 @@ export type Config = {
   watcher?: {
     ignore?: Array<string>
   }
-  plugin?: Array<string>
+  /**
+   * Enable or disable snapshot tracking. When false, filesystem snapshots are not recorded and undoing or reverting will not undo/redo file changes. Defaults to true.
+   */
   snapshot?: boolean
+  plugin?: Array<
+    | string
+    | [
+        string,
+        {
+          [key: string]: unknown
+        },
+      ]
+  >
   /**
    * Control sharing behavior:'manual' allows manual sharing via commands, 'auto' enables automatic sharing, 'disabled' disables all sharing
    */
@@ -1578,7 +1588,7 @@ export type Config = {
         }
   }
   formatter?:
-    | false
+    | boolean
     | {
         [key: string]: {
           disabled?: boolean
@@ -1590,7 +1600,7 @@ export type Config = {
         }
       }
   lsp?:
-    | false
+    | boolean
     | {
         [key: string]:
           | {
@@ -1632,6 +1642,14 @@ export type Config = {
      * Enable pruning of old tool outputs (default: true)
      */
     prune?: boolean
+    /**
+     * Number of recent user turns, including their following assistant/tool responses, to keep verbatim during compaction (default: 2)
+     */
+    tail_turns?: number
+    /**
+     * Maximum number of tokens from recent turns to preserve verbatim after compaction
+     */
+    preserve_recent_tokens?: number
     /**
      * Token buffer for compaction. Leaves enough window to avoid overflow during compaction.
      */
@@ -1682,6 +1700,9 @@ export type OAuth = {
 export type ApiAuth = {
   type: "api"
   key: string
+  metadata?: {
+    [key: string]: string
+  }
 }
 
 export type WellKnownAuth = {
@@ -1691,6 +1712,16 @@ export type WellKnownAuth = {
 }
 
 export type Auth = OAuth | ApiAuth | WellKnownAuth
+
+export type Workspace = {
+  id: string
+  type: string
+  name: string
+  branch: string | null
+  directory: string | null
+  extra: unknown | null
+  projectID: string
+}
 
 export type NotFoundError = {
   name: "NotFoundError"
@@ -1784,6 +1815,12 @@ export type Provider = {
   }
 }
 
+export type ConsoleState = {
+  consoleManagedProviders: Array<string>
+  activeOrgName?: string
+  switchableOrgCount: number
+}
+
 export type ToolIds = Array<string>
 
 export type ToolListItem = {
@@ -1793,16 +1830,6 @@ export type ToolListItem = {
 }
 
 export type ToolList = Array<ToolListItem>
-
-export type Workspace = {
-  id: string
-  type: string
-  branch: string | null
-  name: string | null
-  directory: string | null
-  extra: unknown | null
-  projectID: string
-}
 
 export type Worktree = {
   name: string
@@ -1843,7 +1870,7 @@ export type GlobalSession = {
     additions: number
     deletions: number
     files: number
-    diffs?: Array<FileDiff>
+    diffs?: Array<SnapshotFileDiff>
   }
   share?: {
     url: string
@@ -1922,40 +1949,37 @@ export type SubtaskPartInput = {
   command?: string
 }
 
-export type WorkflowRuntime = {
-  phase: "planning" | "running" | "waiting" | "interrupted" | "failed" | "completed"
-  active_node_id?: string
-  waiting_node_ids: Array<string>
-  failed_node_ids: Array<string>
-  command_count: number
-  update_count: number
-  pull_count: number
-  last_event_id: number
-}
-
-export type WorkflowSnapshot = {
-  workflow: Workflow
-  runtime: WorkflowRuntime
-  nodes: Array<WorkflowNode>
-  edges: Array<WorkflowEdge>
-  checkpoints: Array<WorkflowCheckpoint>
-  events: Array<WorkflowEvent>
-  cursor: number
-}
-
-export type WorkflowReadResult = {
-  workflow?: Workflow
-  runtime?: WorkflowRuntime
-  nodes: Array<WorkflowNode>
-  edges: Array<WorkflowEdge>
-  checkpoints: Array<WorkflowCheckpoint>
-  events: Array<WorkflowEvent>
-  cursor: number
-}
-
 export type ProviderAuthMethod = {
   type: "oauth" | "api"
   label: string
+  prompts?: Array<
+    | {
+        type: "text"
+        key: string
+        message: string
+        placeholder?: string
+        when?: {
+          key: string
+          op: "eq" | "neq"
+          value: string
+        }
+      }
+    | {
+        type: "select"
+        key: string
+        message: string
+        options: Array<{
+          label: string
+          value: string
+          hint?: string
+        }>
+        when?: {
+          key: string
+          op: "eq" | "neq"
+          value: string
+        }
+      }
+  >
 }
 
 export type ProviderAuthAuthorization = {
@@ -2010,6 +2034,55 @@ export type File = {
   status: "added" | "deleted" | "modified"
 }
 
+export type Event =
+  | EventProjectUpdated
+  | EventServerInstanceDisposed
+  | EventServerConnected
+  | EventGlobalDisposed
+  | EventFileEdited
+  | EventFileWatcherUpdated
+  | EventLspClientDiagnostics
+  | EventLspUpdated
+  | EventInstallationUpdated
+  | EventInstallationUpdateAvailable
+  | EventMessagePartDelta
+  | EventPermissionAsked
+  | EventPermissionReplied
+  | EventSessionDiff
+  | EventSessionError
+  | EventQuestionAsked
+  | EventQuestionReplied
+  | EventQuestionRejected
+  | EventTodoUpdated
+  | EventSessionStatus
+  | EventSessionIdle
+  | EventSessionCompacted
+  | EventTuiPromptAppend
+  | EventTuiCommandExecute
+  | EventTuiToastShow
+  | EventTuiSessionSelect
+  | EventMcpToolsChanged
+  | EventMcpBrowserOpenFailed
+  | EventCommandExecuted
+  | EventVcsBranchUpdated
+  | EventWorktreeReady
+  | EventWorktreeFailed
+  | EventPtyCreated
+  | EventPtyUpdated
+  | EventPtyExited
+  | EventPtyDeleted
+  | EventWorkspaceReady
+  | EventWorkspaceFailed
+  | EventWorkspaceRestore
+  | EventWorkspaceStatus
+  | EventMessageUpdated
+  | EventMessageRemoved
+  | EventMessagePartUpdated
+  | EventMessagePartRemoved
+  | EventSessionCreated
+  | EventSessionUpdated
+  | EventSessionDeleted
+
 export type McpStatusConnected = {
   status: "connected"
 }
@@ -2048,7 +2121,16 @@ export type Path = {
 }
 
 export type VcsInfo = {
-  branch: string
+  branch?: string
+  default_branch?: string
+}
+
+export type VcsFileDiff = {
+  file: string
+  patch: string
+  additions: number
+  deletions: number
+  status?: "added" | "deleted" | "modified"
 }
 
 export type Command = {
@@ -2189,6 +2271,41 @@ export type GlobalDisposeResponses = {
 
 export type GlobalDisposeResponse = GlobalDisposeResponses[keyof GlobalDisposeResponses]
 
+export type GlobalUpgradeData = {
+  body?: {
+    target?: string
+  }
+  path?: never
+  query?: never
+  url: "/global/upgrade"
+}
+
+export type GlobalUpgradeErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type GlobalUpgradeError = GlobalUpgradeErrors[keyof GlobalUpgradeErrors]
+
+export type GlobalUpgradeResponses = {
+  /**
+   * Upgrade result
+   */
+  200:
+    | {
+        success: true
+        version: string
+      }
+    | {
+        success: false
+        error: string
+      }
+}
+
+export type GlobalUpgradeResponse = GlobalUpgradeResponses[keyof GlobalUpgradeResponses]
+
 export type AuthRemoveData = {
   body?: never
   path: {
@@ -2242,6 +2359,223 @@ export type AuthSetResponses = {
 }
 
 export type AuthSetResponse = AuthSetResponses[keyof AuthSetResponses]
+
+export type AppLogData = {
+  body?: {
+    /**
+     * Service name for the log entry
+     */
+    service: string
+    /**
+     * Log level
+     */
+    level: "debug" | "info" | "error" | "warn"
+    /**
+     * Log message
+     */
+    message: string
+    /**
+     * Additional metadata for the log entry
+     */
+    extra?: {
+      [key: string]: unknown
+    }
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/log"
+}
+
+export type AppLogErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type AppLogError = AppLogErrors[keyof AppLogErrors]
+
+export type AppLogResponses = {
+  /**
+   * Log entry written successfully
+   */
+  200: boolean
+}
+
+export type AppLogResponse = AppLogResponses[keyof AppLogResponses]
+
+export type ExperimentalWorkspaceAdaptorListData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/workspace/adaptor"
+}
+
+export type ExperimentalWorkspaceAdaptorListResponses = {
+  /**
+   * Workspace adaptors
+   */
+  200: Array<{
+    type: string
+    name: string
+    description: string
+  }>
+}
+
+export type ExperimentalWorkspaceAdaptorListResponse =
+  ExperimentalWorkspaceAdaptorListResponses[keyof ExperimentalWorkspaceAdaptorListResponses]
+
+export type ExperimentalWorkspaceListData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/workspace"
+}
+
+export type ExperimentalWorkspaceListResponses = {
+  /**
+   * Workspaces
+   */
+  200: Array<Workspace>
+}
+
+export type ExperimentalWorkspaceListResponse =
+  ExperimentalWorkspaceListResponses[keyof ExperimentalWorkspaceListResponses]
+
+export type ExperimentalWorkspaceCreateData = {
+  body?: {
+    id?: string
+    type: string
+    branch: string | null
+    extra: unknown | null
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/workspace"
+}
+
+export type ExperimentalWorkspaceCreateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalWorkspaceCreateError =
+  ExperimentalWorkspaceCreateErrors[keyof ExperimentalWorkspaceCreateErrors]
+
+export type ExperimentalWorkspaceCreateResponses = {
+  /**
+   * Workspace created
+   */
+  200: Workspace
+}
+
+export type ExperimentalWorkspaceCreateResponse =
+  ExperimentalWorkspaceCreateResponses[keyof ExperimentalWorkspaceCreateResponses]
+
+export type ExperimentalWorkspaceStatusData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/workspace/status"
+}
+
+export type ExperimentalWorkspaceStatusResponses = {
+  /**
+   * Workspace status
+   */
+  200: Array<{
+    workspaceID: string
+    status: "connected" | "connecting" | "disconnected" | "error"
+  }>
+}
+
+export type ExperimentalWorkspaceStatusResponse =
+  ExperimentalWorkspaceStatusResponses[keyof ExperimentalWorkspaceStatusResponses]
+
+export type ExperimentalWorkspaceRemoveData = {
+  body?: never
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/workspace/{id}"
+}
+
+export type ExperimentalWorkspaceRemoveErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalWorkspaceRemoveError =
+  ExperimentalWorkspaceRemoveErrors[keyof ExperimentalWorkspaceRemoveErrors]
+
+export type ExperimentalWorkspaceRemoveResponses = {
+  /**
+   * Workspace removed
+   */
+  200: Workspace
+}
+
+export type ExperimentalWorkspaceRemoveResponse =
+  ExperimentalWorkspaceRemoveResponses[keyof ExperimentalWorkspaceRemoveResponses]
+
+export type ExperimentalWorkspaceSessionRestoreData = {
+  body?: {
+    sessionID: string
+  }
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/workspace/{id}/session-restore"
+}
+
+export type ExperimentalWorkspaceSessionRestoreErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalWorkspaceSessionRestoreError =
+  ExperimentalWorkspaceSessionRestoreErrors[keyof ExperimentalWorkspaceSessionRestoreErrors]
+
+export type ExperimentalWorkspaceSessionRestoreResponses = {
+  /**
+   * Session replay started
+   */
+  200: {
+    total: number
+  }
+}
+
+export type ExperimentalWorkspaceSessionRestoreResponse =
+  ExperimentalWorkspaceSessionRestoreResponses[keyof ExperimentalWorkspaceSessionRestoreResponses]
 
 export type ProjectListData = {
   body?: never
@@ -2599,6 +2933,77 @@ export type ConfigProvidersResponses = {
 
 export type ConfigProvidersResponse = ConfigProvidersResponses[keyof ConfigProvidersResponses]
 
+export type ExperimentalConsoleGetData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/console"
+}
+
+export type ExperimentalConsoleGetResponses = {
+  /**
+   * Active Console provider metadata
+   */
+  200: ConsoleState
+}
+
+export type ExperimentalConsoleGetResponse = ExperimentalConsoleGetResponses[keyof ExperimentalConsoleGetResponses]
+
+export type ExperimentalConsoleListOrgsData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/console/orgs"
+}
+
+export type ExperimentalConsoleListOrgsResponses = {
+  /**
+   * Switchable Console orgs
+   */
+  200: {
+    orgs: Array<{
+      accountID: string
+      accountEmail: string
+      accountUrl: string
+      orgID: string
+      orgName: string
+      active: boolean
+    }>
+  }
+}
+
+export type ExperimentalConsoleListOrgsResponse =
+  ExperimentalConsoleListOrgsResponses[keyof ExperimentalConsoleListOrgsResponses]
+
+export type ExperimentalConsoleSwitchOrgData = {
+  body?: {
+    accountID: string
+    orgID: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/console/switch"
+}
+
+export type ExperimentalConsoleSwitchOrgResponses = {
+  /**
+   * Switch success
+   */
+  200: boolean
+}
+
+export type ExperimentalConsoleSwitchOrgResponse =
+  ExperimentalConsoleSwitchOrgResponses[keyof ExperimentalConsoleSwitchOrgResponses]
+
 export type ToolIdsData = {
   body?: never
   path?: never
@@ -2656,93 +3061,6 @@ export type ToolListResponses = {
 }
 
 export type ToolListResponse = ToolListResponses[keyof ToolListResponses]
-
-export type ExperimentalWorkspaceListData = {
-  body?: never
-  path?: never
-  query?: {
-    directory?: string
-    workspace?: string
-  }
-  url: "/experimental/workspace"
-}
-
-export type ExperimentalWorkspaceListResponses = {
-  /**
-   * Workspaces
-   */
-  200: Array<Workspace>
-}
-
-export type ExperimentalWorkspaceListResponse =
-  ExperimentalWorkspaceListResponses[keyof ExperimentalWorkspaceListResponses]
-
-export type ExperimentalWorkspaceCreateData = {
-  body?: {
-    id?: string
-    type: string
-    branch: string | null
-    extra: unknown | null
-  }
-  path?: never
-  query?: {
-    directory?: string
-    workspace?: string
-  }
-  url: "/experimental/workspace"
-}
-
-export type ExperimentalWorkspaceCreateErrors = {
-  /**
-   * Bad request
-   */
-  400: BadRequestError
-}
-
-export type ExperimentalWorkspaceCreateError =
-  ExperimentalWorkspaceCreateErrors[keyof ExperimentalWorkspaceCreateErrors]
-
-export type ExperimentalWorkspaceCreateResponses = {
-  /**
-   * Workspace created
-   */
-  200: Workspace
-}
-
-export type ExperimentalWorkspaceCreateResponse =
-  ExperimentalWorkspaceCreateResponses[keyof ExperimentalWorkspaceCreateResponses]
-
-export type ExperimentalWorkspaceRemoveData = {
-  body?: never
-  path: {
-    id: string
-  }
-  query?: {
-    directory?: string
-    workspace?: string
-  }
-  url: "/experimental/workspace/{id}"
-}
-
-export type ExperimentalWorkspaceRemoveErrors = {
-  /**
-   * Bad request
-   */
-  400: BadRequestError
-}
-
-export type ExperimentalWorkspaceRemoveError =
-  ExperimentalWorkspaceRemoveErrors[keyof ExperimentalWorkspaceRemoveErrors]
-
-export type ExperimentalWorkspaceRemoveResponses = {
-  /**
-   * Workspace removed
-   */
-  200: Workspace
-}
-
-export type ExperimentalWorkspaceRemoveResponse =
-  ExperimentalWorkspaceRemoveResponses[keyof ExperimentalWorkspaceRemoveResponses]
 
 export type WorktreeRemoveData = {
   body?: WorktreeRemoveInput
@@ -3087,7 +3405,7 @@ export type SessionGetResponse = SessionGetResponses[keyof SessionGetResponses]
 export type SessionUpdateData = {
   body?: {
     title?: string
-    directory?: string
+    permission?: PermissionRuleset
     time?: {
       archived?: number
     }
@@ -3372,7 +3690,7 @@ export type SessionDiffResponses = {
   /**
    * Successfully retrieved diff
    */
-  200: Array<FileDiff>
+  200: Array<SnapshotFileDiff>
 }
 
 export type SessionDiffResponse = SessionDiffResponses[keyof SessionDiffResponses]
@@ -3763,6 +4081,7 @@ export type SessionCommandResponse = SessionCommandResponses[keyof SessionComman
 
 export type SessionShellData = {
   body?: {
+    messageID?: string
     agent: string
     model?: {
       providerID: string
@@ -3797,7 +4116,10 @@ export type SessionShellResponses = {
   /**
    * Created message
    */
-  200: AssistantMessage
+  200: {
+    info: Message
+    parts: Array<Part>
+  }
 }
 
 export type SessionShellResponse = SessionShellResponses[keyof SessionShellResponses]
@@ -3909,575 +4231,6 @@ export type PermissionRespondResponses = {
 }
 
 export type PermissionRespondResponse = PermissionRespondResponses[keyof PermissionRespondResponses]
-
-export type WorkflowDeleteSessionData = {
-  body?: never
-  path: {
-    sessionID: string
-  }
-  query?: {
-    directory?: string
-    workspace?: string
-  }
-  url: "/workflow/session/{sessionID}"
-}
-
-export type WorkflowDeleteSessionErrors = {
-  /**
-   * Not found
-   */
-  404: NotFoundError
-}
-
-export type WorkflowDeleteSessionError = WorkflowDeleteSessionErrors[keyof WorkflowDeleteSessionErrors]
-
-export type WorkflowDeleteSessionResponses = {
-  /**
-   * Deleted workflow task
-   */
-  200: boolean
-}
-
-export type WorkflowDeleteSessionResponse = WorkflowDeleteSessionResponses[keyof WorkflowDeleteSessionResponses]
-
-export type WorkflowSessionData = {
-  body?: never
-  path: {
-    sessionID: string
-  }
-  query?: {
-    directory?: string
-    workspace?: string
-  }
-  url: "/workflow/session/{sessionID}"
-}
-
-export type WorkflowSessionErrors = {
-  /**
-   * Not found
-   */
-  404: NotFoundError
-}
-
-export type WorkflowSessionError = WorkflowSessionErrors[keyof WorkflowSessionErrors]
-
-export type WorkflowSessionResponses = {
-  /**
-   * Workflow snapshot
-   */
-  200: WorkflowSnapshot
-}
-
-export type WorkflowSessionResponse = WorkflowSessionResponses[keyof WorkflowSessionResponses]
-
-export type WorkflowGetData = {
-  body?: never
-  path: {
-    workflowID: string
-  }
-  query?: {
-    directory?: string
-    workspace?: string
-  }
-  url: "/workflow/{workflowID}"
-}
-
-export type WorkflowGetErrors = {
-  /**
-   * Not found
-   */
-  404: NotFoundError
-}
-
-export type WorkflowGetError = WorkflowGetErrors[keyof WorkflowGetErrors]
-
-export type WorkflowGetResponses = {
-  /**
-   * Workflow snapshot
-   */
-  200: WorkflowSnapshot
-}
-
-export type WorkflowGetResponse = WorkflowGetResponses[keyof WorkflowGetResponses]
-
-export type WorkflowReadData = {
-  body?: never
-  path: {
-    workflowID: string
-  }
-  query?: {
-    directory?: string
-    workspace?: string
-    cursor?: number
-  }
-  url: "/workflow/{workflowID}/read"
-}
-
-export type WorkflowReadErrors = {
-  /**
-   * Not found
-   */
-  404: NotFoundError
-}
-
-export type WorkflowReadError = WorkflowReadErrors[keyof WorkflowReadErrors]
-
-export type WorkflowReadResponses = {
-  /**
-   * Workflow changes since cursor
-   */
-  200: WorkflowReadResult
-}
-
-export type WorkflowReadResponse = WorkflowReadResponses[keyof WorkflowReadResponses]
-
-export type WorkflowDiffData = {
-  body?: never
-  path: {
-    workflowID: string
-  }
-  query?: {
-    directory?: string
-    workspace?: string
-  }
-  url: "/workflow/{workflowID}/diff"
-}
-
-export type WorkflowDiffErrors = {
-  /**
-   * Not found
-   */
-  404: NotFoundError
-}
-
-export type WorkflowDiffError = WorkflowDiffErrors[keyof WorkflowDiffErrors]
-
-export type WorkflowDiffResponses = {
-  /**
-   * Aggregated workflow file diff
-   */
-  200: Array<FileDiff>
-}
-
-export type WorkflowDiffResponse = WorkflowDiffResponses[keyof WorkflowDiffResponses]
-
-export type WorkflowCreateData = {
-  body?: {
-    session_id: string
-    title: string
-    config?: {
-      [key: string]: unknown
-    }
-    summary?: {
-      [key: string]: unknown
-    }
-    nodes?: Array<{
-      id?: string
-      session_id?: string
-      title: string
-      agent: string
-      model?: {
-        providerID?: string
-        modelID?: string
-        variant?: string
-      }
-      config?: {
-        [key: string]: unknown
-      }
-      status?:
-        | "pending"
-        | "ready"
-        | "running"
-        | "waiting"
-        | "paused"
-        | "interrupted"
-        | "completed"
-        | "failed"
-        | "cancelled"
-      result_status?: "unknown" | "success" | "fail" | "partial"
-      fail_reason?: string
-      action_count?: number
-      attempt?: number
-      max_attempts?: number
-      max_actions?: number
-      state_json?: {
-        [key: string]: unknown
-      }
-      result_json?: {
-        [key: string]: unknown
-      }
-      position?: number
-    }>
-    edges?: Array<{
-      id?: string
-      from_node_id: string
-      to_node_id: string
-      label?: string
-      config?: {
-        [key: string]: unknown
-      }
-    }>
-    checkpoints?: Array<{
-      id?: string
-      node_id: string
-      label: string
-      status?: "pending" | "passed" | "failed" | "skipped"
-      config?: {
-        [key: string]: unknown
-      }
-      result_json?: {
-        [key: string]: unknown
-      }
-    }>
-  }
-  path?: never
-  query?: {
-    directory?: string
-    workspace?: string
-  }
-  url: "/workflow"
-}
-
-export type WorkflowCreateErrors = {
-  /**
-   * Bad request
-   */
-  400: BadRequestError
-}
-
-export type WorkflowCreateError = WorkflowCreateErrors[keyof WorkflowCreateErrors]
-
-export type WorkflowCreateResponses = {
-  /**
-   * Created workflow
-   */
-  200: Workflow
-}
-
-export type WorkflowCreateResponse = WorkflowCreateResponses[keyof WorkflowCreateResponses]
-
-export type WorkflowNodeCreateData = {
-  body?: {
-    session_id?: string
-    title: string
-    agent: string
-    model?: {
-      providerID?: string
-      modelID?: string
-      variant?: string
-    }
-    config?: {
-      [key: string]: unknown
-    }
-    status?:
-      | "pending"
-      | "ready"
-      | "running"
-      | "waiting"
-      | "paused"
-      | "interrupted"
-      | "completed"
-      | "failed"
-      | "cancelled"
-    result_status?: "unknown" | "success" | "fail" | "partial"
-    max_attempts?: number
-    max_actions?: number
-    position?: number
-  }
-  path: {
-    workflowID: string
-  }
-  query?: {
-    directory?: string
-    workspace?: string
-  }
-  url: "/workflow/{workflowID}/node"
-}
-
-export type WorkflowNodeCreateErrors = {
-  /**
-   * Bad request
-   */
-  400: BadRequestError
-}
-
-export type WorkflowNodeCreateError = WorkflowNodeCreateErrors[keyof WorkflowNodeCreateErrors]
-
-export type WorkflowNodeCreateResponses = {
-  /**
-   * Created workflow node
-   */
-  200: WorkflowNode
-}
-
-export type WorkflowNodeCreateResponse = WorkflowNodeCreateResponses[keyof WorkflowNodeCreateResponses]
-
-export type WorkflowEdgeCreateData = {
-  body?: {
-    from_node_id: string
-    to_node_id: string
-    label?: string
-    config?: {
-      [key: string]: unknown
-    }
-  }
-  path: {
-    workflowID: string
-  }
-  query?: {
-    directory?: string
-    workspace?: string
-  }
-  url: "/workflow/{workflowID}/edge"
-}
-
-export type WorkflowEdgeCreateErrors = {
-  /**
-   * Bad request
-   */
-  400: BadRequestError
-}
-
-export type WorkflowEdgeCreateError = WorkflowEdgeCreateErrors[keyof WorkflowEdgeCreateErrors]
-
-export type WorkflowEdgeCreateResponses = {
-  /**
-   * Created workflow edge
-   */
-  200: WorkflowEdge
-}
-
-export type WorkflowEdgeCreateResponse = WorkflowEdgeCreateResponses[keyof WorkflowEdgeCreateResponses]
-
-export type WorkflowCheckpointCreateData = {
-  body?: {
-    node_id: string
-    label: string
-    status?: "pending" | "passed" | "failed" | "skipped"
-    config?: {
-      [key: string]: unknown
-    }
-    result_json?: {
-      [key: string]: unknown
-    }
-  }
-  path: {
-    workflowID: string
-  }
-  query?: {
-    directory?: string
-    workspace?: string
-  }
-  url: "/workflow/{workflowID}/checkpoint"
-}
-
-export type WorkflowCheckpointCreateErrors = {
-  /**
-   * Bad request
-   */
-  400: BadRequestError
-}
-
-export type WorkflowCheckpointCreateError = WorkflowCheckpointCreateErrors[keyof WorkflowCheckpointCreateErrors]
-
-export type WorkflowCheckpointCreateResponses = {
-  /**
-   * Created workflow checkpoint
-   */
-  200: WorkflowCheckpoint
-}
-
-export type WorkflowCheckpointCreateResponse =
-  WorkflowCheckpointCreateResponses[keyof WorkflowCheckpointCreateResponses]
-
-export type WorkflowControlData = {
-  body?: {
-    nodeID: string
-    source: string
-    command: "continue" | "pause" | "resume" | "interrupt" | "retry" | "cancel" | "inject_context"
-    payload?: {
-      [key: string]: unknown
-    }
-  }
-  path: {
-    workflowID: string
-  }
-  query?: {
-    directory?: string
-    workspace?: string
-  }
-  url: "/workflow/{workflowID}/control"
-}
-
-export type WorkflowControlErrors = {
-  /**
-   * Bad request
-   */
-  400: BadRequestError
-}
-
-export type WorkflowControlError = WorkflowControlErrors[keyof WorkflowControlErrors]
-
-export type WorkflowControlResponses = {
-  /**
-   * Control accepted
-   */
-  200: boolean
-}
-
-export type WorkflowControlResponse = WorkflowControlResponses[keyof WorkflowControlResponses]
-
-export type WorkflowNodeUpdateData = {
-  body?: {
-    source: string
-    patch: {
-      status?:
-        | "pending"
-        | "ready"
-        | "running"
-        | "waiting"
-        | "paused"
-        | "interrupted"
-        | "completed"
-        | "failed"
-        | "cancelled"
-      result_status?: "unknown" | "success" | "fail" | "partial"
-      fail_reason?: string | null
-      session_id?: string | null
-      model?: {
-        providerID?: string
-        modelID?: string
-        variant?: string
-      } | null
-      config?: {
-        mode?: "replace" | "merge"
-        value?: {
-          [key: string]: unknown
-        }
-      }
-      state_json?: {
-        mode?: "replace" | "merge"
-        value?: {
-          [key: string]: unknown
-        }
-      }
-      result_json?: {
-        mode?: "replace" | "merge"
-        value?: {
-          [key: string]: unknown
-        }
-      }
-      attempt_delta?: number
-      action_count?: number
-      max_attempts?: number
-      max_actions?: number
-      title?: string
-    }
-    action_delta?: number
-    event?: {
-      kind: string
-      target_node_id?: string
-      payload?: {
-        [key: string]: unknown
-      }
-    }
-  }
-  path: {
-    nodeID: string
-  }
-  query?: {
-    directory?: string
-    workspace?: string
-  }
-  url: "/workflow/node/{nodeID}"
-}
-
-export type WorkflowNodeUpdateErrors = {
-  /**
-   * Bad request
-   */
-  400: BadRequestError
-  /**
-   * Not found
-   */
-  404: NotFoundError
-}
-
-export type WorkflowNodeUpdateError = WorkflowNodeUpdateErrors[keyof WorkflowNodeUpdateErrors]
-
-export type WorkflowNodeUpdateResponses = {
-  /**
-   * Updated workflow node
-   */
-  200: WorkflowNode
-}
-
-export type WorkflowNodeUpdateResponse = WorkflowNodeUpdateResponses[keyof WorkflowNodeUpdateResponses]
-
-export type WorkflowNodePullData = {
-  body?: never
-  path: {
-    nodeID: string
-  }
-  query?: {
-    directory?: string
-    workspace?: string
-    cursor?: number
-  }
-  url: "/workflow/node/{nodeID}/pull"
-}
-
-export type WorkflowNodePullErrors = {
-  /**
-   * Not found
-   */
-  404: NotFoundError
-}
-
-export type WorkflowNodePullError = WorkflowNodePullErrors[keyof WorkflowNodePullErrors]
-
-export type WorkflowNodePullResponses = {
-  /**
-   * Pending node events
-   */
-  200: {
-    node: WorkflowNode
-    cursor: number
-    events: Array<WorkflowEvent>
-  }
-}
-
-export type WorkflowNodePullResponse = WorkflowNodePullResponses[keyof WorkflowNodePullResponses]
-
-export type WorkflowNodeCodeChangesData = {
-  body?: never
-  path: {
-    nodeID: string
-  }
-  query?: {
-    directory?: string
-    workspace?: string
-  }
-  url: "/workflow/node/{nodeID}/code_changes"
-}
-
-export type WorkflowNodeCodeChangesErrors = {
-  /**
-   * Not found
-   */
-  404: NotFoundError
-}
-
-export type WorkflowNodeCodeChangesError = WorkflowNodeCodeChangesErrors[keyof WorkflowNodeCodeChangesErrors]
-
-export type WorkflowNodeCodeChangesResponses = {
-  /**
-   * Node session file diff
-   */
-  200: Array<FileDiff>
-}
-
-export type WorkflowNodeCodeChangesResponse = WorkflowNodeCodeChangesResponses[keyof WorkflowNodeCodeChangesResponses]
 
 export type PermissionReplyData = {
   body?: {
@@ -4642,68 +4395,7 @@ export type ProviderListResponses = {
    * List of providers
    */
   200: {
-    all: Array<{
-      api?: string
-      name: string
-      env: Array<string>
-      id: string
-      npm?: string
-      models: {
-        [key: string]: {
-          id: string
-          name: string
-          family?: string
-          release_date: string
-          attachment: boolean
-          reasoning: boolean
-          temperature: boolean
-          tool_call: boolean
-          interleaved?:
-            | true
-            | {
-                field: "reasoning_content" | "reasoning_details"
-              }
-          cost?: {
-            input: number
-            output: number
-            cache_read?: number
-            cache_write?: number
-            context_over_200k?: {
-              input: number
-              output: number
-              cache_read?: number
-              cache_write?: number
-            }
-          }
-          limit: {
-            context: number
-            input?: number
-            output: number
-          }
-          modalities?: {
-            input: Array<"text" | "audio" | "image" | "video" | "pdf">
-            output: Array<"text" | "audio" | "image" | "video" | "pdf">
-          }
-          experimental?: boolean
-          status?: "alpha" | "beta" | "deprecated"
-          options: {
-            [key: string]: unknown
-          }
-          headers?: {
-            [key: string]: string
-          }
-          provider?: {
-            npm?: string
-            api?: string
-          }
-          variants?: {
-            [key: string]: {
-              [key: string]: unknown
-            }
-          }
-        }
-      }
-    }>
+    all: Array<Provider>
     default: {
       [key: string]: string
     }
@@ -4740,6 +4432,12 @@ export type ProviderOauthAuthorizeData = {
      * Auth method index
      */
     method: number
+    /**
+     * Prompt inputs
+     */
+    inputs?: {
+      [key: string]: string
+    }
   }
   path: {
     /**
@@ -4813,6 +4511,104 @@ export type ProviderOauthCallbackResponses = {
 }
 
 export type ProviderOauthCallbackResponse = ProviderOauthCallbackResponses[keyof ProviderOauthCallbackResponses]
+
+export type SyncStartData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/sync/start"
+}
+
+export type SyncStartResponses = {
+  /**
+   * Workspace sync started
+   */
+  200: boolean
+}
+
+export type SyncStartResponse = SyncStartResponses[keyof SyncStartResponses]
+
+export type SyncReplayData = {
+  body?: {
+    directory: string
+    events: Array<{
+      id: string
+      aggregateID: string
+      seq: number
+      type: string
+      data: {
+        [key: string]: unknown
+      }
+    }>
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/sync/replay"
+}
+
+export type SyncReplayErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type SyncReplayError = SyncReplayErrors[keyof SyncReplayErrors]
+
+export type SyncReplayResponses = {
+  /**
+   * Replayed sync events
+   */
+  200: {
+    sessionID: string
+  }
+}
+
+export type SyncReplayResponse = SyncReplayResponses[keyof SyncReplayResponses]
+
+export type SyncHistoryListData = {
+  body?: {
+    [key: string]: number
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/sync/history"
+}
+
+export type SyncHistoryListErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type SyncHistoryListError = SyncHistoryListErrors[keyof SyncHistoryListErrors]
+
+export type SyncHistoryListResponses = {
+  /**
+   * Sync events
+   */
+  200: Array<{
+    id: string
+    aggregate_id: string
+    seq: number
+    type: string
+    data: {
+      [key: string]: unknown
+    }
+  }>
+}
+
+export type SyncHistoryListResponse = SyncHistoryListResponses[keyof SyncHistoryListResponses]
 
 export type FindTextData = {
   body?: never
@@ -4951,6 +4747,25 @@ export type FileStatusResponses = {
 }
 
 export type FileStatusResponse = FileStatusResponses[keyof FileStatusResponses]
+
+export type EventSubscribeData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/event"
+}
+
+export type EventSubscribeResponses = {
+  /**
+   * Event stream
+   */
+  200: Event
+}
+
+export type EventSubscribeResponse = EventSubscribeResponses[keyof EventSubscribeResponses]
 
 export type McpStatusData = {
   body?: never
@@ -5556,6 +5371,26 @@ export type VcsGetResponses = {
 
 export type VcsGetResponse = VcsGetResponses[keyof VcsGetResponses]
 
+export type VcsDiffData = {
+  body?: never
+  path?: never
+  query: {
+    directory?: string
+    workspace?: string
+    mode: "git" | "branch"
+  }
+  url: "/vcs/diff"
+}
+
+export type VcsDiffResponses = {
+  /**
+   * VCS diff
+   */
+  200: Array<VcsFileDiff>
+}
+
+export type VcsDiffResponse = VcsDiffResponses[keyof VcsDiffResponses]
+
 export type CommandListData = {
   body?: never
   path?: never
@@ -5574,53 +5409,6 @@ export type CommandListResponses = {
 }
 
 export type CommandListResponse = CommandListResponses[keyof CommandListResponses]
-
-export type AppLogData = {
-  body?: {
-    /**
-     * Service name for the log entry
-     */
-    service: string
-    /**
-     * Log level
-     */
-    level: "debug" | "info" | "error" | "warn"
-    /**
-     * Log message
-     */
-    message: string
-    /**
-     * Additional metadata for the log entry
-     */
-    extra?: {
-      [key: string]: unknown
-    }
-  }
-  path?: never
-  query?: {
-    directory?: string
-    workspace?: string
-  }
-  url: "/log"
-}
-
-export type AppLogErrors = {
-  /**
-   * Bad request
-   */
-  400: BadRequestError
-}
-
-export type AppLogError = AppLogErrors[keyof AppLogErrors]
-
-export type AppLogResponses = {
-  /**
-   * Log entry written successfully
-   */
-  200: boolean
-}
-
-export type AppLogResponse = AppLogResponses[keyof AppLogResponses]
 
 export type AppAgentsData = {
   body?: never
@@ -5702,22 +5490,3 @@ export type FormatterStatusResponses = {
 }
 
 export type FormatterStatusResponse = FormatterStatusResponses[keyof FormatterStatusResponses]
-
-export type EventSubscribeData = {
-  body?: never
-  path?: never
-  query?: {
-    directory?: string
-    workspace?: string
-  }
-  url: "/event"
-}
-
-export type EventSubscribeResponses = {
-  /**
-   * Event stream
-   */
-  200: Event
-}
-
-export type EventSubscribeResponse = EventSubscribeResponses[keyof EventSubscribeResponses]

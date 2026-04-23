@@ -1,5 +1,6 @@
 import type { Project, UserMessage } from "@opencode-ai/sdk/v2"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
+import { createQuery, skipToken, useMutation, useQueryClient } from "@tanstack/solid-query"
 import {
   batch,
   onCleanup,
@@ -12,6 +13,7 @@ import {
   on,
   onMount,
   untrack,
+  createResource,
 } from "solid-js"
 import { createMediaQuery } from "@solid-primitives/media"
 import { createResizeObserver } from "@solid-primitives/resize-observer"
@@ -25,7 +27,7 @@ import { createAutoScroll } from "@opencode-ai/ui/hooks"
 import { previewSelectedLines } from "@opencode-ai/ui/pierre/selection-bridge"
 import { Button } from "@opencode-ai/ui/button"
 import { showToast } from "@opencode-ai/ui/toast"
-import { base64Encode, checksum } from "@opencode-ai/util/encode"
+import { base64Encode, checksum } from "@opencode-ai/shared/util/encode"
 import { useNavigate, useSearchParams } from "@solidjs/router"
 import { NewSessionView, SessionHeader } from "@/components/session"
 import { useComments } from "@/context/comments"
@@ -54,13 +56,17 @@ import {
   WorkflowRuntimePanel,
   WorkflowSessionStrip,
 } from "@/pages/session/workflow-panel"
+import { diffs as list } from "@/utils/diffs"
 import { Identifier } from "@/utils/id"
+import { Persist, persisted } from "@/utils/persist"
 import { extractPromptFromParts } from "@/utils/prompt"
 import { same } from "@/utils/same"
 import { formatServerError } from "@/utils/server-errors"
 
 const emptyUserMessages: UserMessage[] = []
-const emptyFollowups: (FollowupDraft & { id: string })[] = []
+type FollowupItem = FollowupDraft & { id: string }
+type FollowupEdit = Pick<FollowupItem, "id" | "prompt" | "context">
+const emptyFollowups: FollowupItem[] = []
 
 type SessionHistoryWindowInput = {
   sessionID: () => string | undefined
@@ -308,6 +314,7 @@ export default function Page() {
   const local = useLocal()
   const file = useFile()
   const sync = useSync()
+  const queryClient = useQueryClient()
   const dialog = useDialog()
   const language = useLanguage()
   const navigate = useNavigate()
@@ -411,7 +418,9 @@ export default function Page() {
   }
 
   const info = createMemo(() => (params.id ? sync.session.get(params.id) : undefined))
-  const diffs = createMemo(() => (params.id ? (sync.data.session_diff[params.id] ?? []) : []))
+  const isChildSession = createMemo(() => !!info()?.parentID)
+  const diffs = createMemo(() => (params.id ? list(sync.data.session_diff[params.id]) : []))
+  const canReview = createMemo(() => !!sync.project)
   const workflowSnapshot = createMemo(() => workflowRuntime.snapshot())
   const workflowReady = createMemo(() => workflowRuntime.ready())
   const workflowRootSelected = createMemo(() => workflowRuntime.rootSelected())
@@ -460,8 +469,6 @@ export default function Page() {
     review: reviewTab,
     hasReview,
   })
-  const contextOpen = tabState.contextOpen
-  const openedTabs = tabState.openedTabs
   const activeTab = tabState.activeTab
   const activeFileTab = tabState.activeFileTab
   const revertMessageID = createMemo(() => info()?.revert?.messageID)
@@ -505,7 +512,7 @@ export default function Page() {
     if (!tab) return
 
     const path = file.pathFromTab(tab)
-    if (path) file.load(path)
+    if (path) void file.load(path)
   })
 
   createEffect(
@@ -665,16 +672,22 @@ export default function Page() {
     deferRender: false,
   })
 
-  const [followup, setFollowup] = createStore({
-    items: {} as Record<string, (FollowupDraft & { id: string })[] | undefined>,
-    sending: {} as Record<string, string | undefined>,
-    failed: {} as Record<string, string | undefined>,
-    paused: {} as Record<string, boolean | undefined>,
-    edit: {} as Record<
-      string,
-      { id: string; prompt: FollowupDraft["prompt"]; context: FollowupDraft["context"] } | undefined
-    >,
-  })
+  const [followup, setFollowup] = persisted(
+    Persist.workspace(sdk.directory, "followup", ["followup.v1"]),
+    createStore<{
+      items: Record<string, FollowupItem[] | undefined>
+      sending: Record<string, string | undefined>
+      failed: Record<string, string | undefined>
+      paused: Record<string, boolean | undefined>
+      edit: Record<string, FollowupEdit | undefined>
+    }>({
+      items: {},
+      sending: {},
+      failed: {},
+      paused: {},
+      edit: {},
+    }),
+  )
 
   const graph = createMemo(() => workflowRootSelected() && store.workflow === "graph")
   const desktopReviewOpen = createMemo(() => isDesktop() && !graph() && view().reviewPanel.opened())
@@ -717,7 +730,7 @@ export default function Page() {
     return open
   }, desktopReviewOpen())
 
-  const turnDiffs = createMemo(() => lastUserMessage()?.summary?.diffs ?? [])
+  const turnDiffs = createMemo(() => list(lastUserMessage()?.summary?.diffs))
   const reviewDiffs = createMemo(() => {
     if (workflowRootSelected()) return resolvedDiffs()
     return store.changes === "session" ? resolvedDiffs() : turnDiffs()
@@ -866,8 +879,9 @@ export default function Page() {
 
   const hasScrollGesture = () => Date.now() - ui.scrollGesture < scrollGestureWindowMs
 
-  createEffect(
-    on([() => sdk.directory, () => params.id] as const, ([, id]) => {
+  const [sessionSync] = createResource(
+    () => [sdk.directory, params.id] as const,
+    ([directory, id]) => {
       if (refreshFrame !== undefined) cancelAnimationFrame(refreshFrame)
       if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
       refreshFrame = undefined
@@ -878,7 +892,7 @@ export default function Page() {
       const stale = !cached
         ? false
         : (() => {
-            const info = getSessionPrefetch(sdk.directory, id)
+            const info = getSessionPrefetch(directory, id)
             if (!info) return true
             return Date.now() - info.at > SESSION_PREFETCH_TTL
           })()
@@ -899,7 +913,9 @@ export default function Page() {
           })
         }, 0)
       })
-    }),
+
+      return sync.session.sync(id)
+    },
   )
 
   createEffect(
@@ -1888,6 +1904,7 @@ export default function Page() {
       </Match>
       <Match when={true}>
         <div class="relative bg-background-base size-full overflow-hidden flex flex-col">
+          {sessionSync() ?? ""}
           <SessionHeader />
           <div class="flex-1 min-h-0 flex flex-col md:flex-row">
             <Show when={!isDesktop() && !!params.id}>

@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm"
-import { Database } from "../storage/db"
+import { Database } from "../storage"
 import { ScheduledTaskTable, type TaskType } from "./scheduler.sql"
 import type { Scheduler } from "./scheduler"
 
