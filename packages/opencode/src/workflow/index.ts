@@ -4167,6 +4167,246 @@ export namespace Workflow {
     },
   )
 
+  /**
+   * P4 — schedule analysis returned by `scanReady`. Surfaces ready candidates,
+   * dependency / resource blockers, and concurrency saturation. The runtime
+   * never auto-promotes nodes — the master uses this to decide what to run.
+   */
+  export const ScanReadyResult = z
+    .object({
+      workflow_id: z.string(),
+      max_concurrent: z.number().int().nonnegative(),
+      running_count: z.number().int().nonnegative(),
+      saturated: z.boolean(),
+      /** Ready candidates sorted by priority desc, then position asc.
+       *  Includes their declared resources so the master can plan acquisition. */
+      ready: z.array(
+        z.object({
+          node_id: z.string(),
+          title: z.string(),
+          agent: z.string(),
+          priority: z.number().int(),
+          position: z.number().int().nonnegative(),
+          status: WorkflowNodeStatus,
+          holds_resources: z.array(z.string()).optional(),
+          stale: z.boolean().optional(),
+        }),
+      ),
+      /** Nodes that aren't ready because at least one required upstream
+       *  hasn't produced a value. */
+      blocked_by_dependency: z.array(
+        z.object({
+          node_id: z.string(),
+          title: z.string(),
+          missing_from_node_ids: z.array(z.string()),
+        }),
+      ),
+      /** Nodes that would be ready except a declared resource is already
+       *  held by a running peer. */
+      blocked_by_resource: z.array(
+        z.object({
+          node_id: z.string(),
+          title: z.string(),
+          resource: z.string(),
+          held_by_node_id: z.string(),
+        }),
+      ),
+      /** Resources currently held (mirror of `workflow.resources_held`). */
+      resources_held: z.record(z.string(), z.string()),
+    })
+    .meta({ ref: "WorkflowScanReadyResult" })
+  export type ScanReadyResult = z.infer<typeof ScanReadyResult>
+
+  /**
+   * P4 — analyze the graph and return ready candidates / blockers / capacity.
+   *
+   * A node is a "ready candidate" iff:
+   *   - status is `pending` or `ready` (not running/terminal/paused)
+   *   - every incoming `required` edge originates from a `completed` node
+   *     (non-required edges are advisory and never block readiness)
+   *   - none of its `holds_resources` collide with `workflow.resources_held`
+   *     entries owned by a different node
+   *
+   * Ready candidates are sorted by `priority desc, position asc`. The list
+   * is NOT capped at `max_concurrent_nodes`; the master sees the full ranked
+   * queue and the `saturated` flag tells it whether starting more nodes would
+   * exceed the cap. This deliberately surfaces all information rather than
+   * making scheduling decisions.
+   */
+  export const scanReady = fn(z.string(), async (workflowID): Promise<ScanReadyResult> => {
+    await state()
+    const wfRow = Database.use((db) =>
+      db.select().from(WorkflowTable).where(eq(WorkflowTable.id, workflowID)).get(),
+    )
+    if (!wfRow) throw new NotFoundError({ message: `Workflow not found: ${workflowID}` })
+    const nodes = Database.use((db) =>
+      db.select().from(WorkflowNodeTable).where(eq(WorkflowNodeTable.workflow_id, workflowID)).all(),
+    ).map(fromNodeRow)
+    const edges = Database.use((db) =>
+      db.select().from(WorkflowEdgeTable).where(eq(WorkflowEdgeTable.workflow_id, workflowID)).all(),
+    ).map(fromEdgeRow)
+
+    const byID = new Map(nodes.map((n) => [n.id, n]))
+    const incomingByTarget = new Map<string, Edge[]>()
+    for (const e of edges) {
+      const list = incomingByTarget.get(e.to_node_id)
+      if (list) list.push(e)
+      else incomingByTarget.set(e.to_node_id, [e])
+    }
+
+    const resourcesHeld = (wfRow.resources_held ?? {}) as Record<string, string>
+    const maxConcurrent = wfRow.max_concurrent_nodes ?? 5
+    const runningCount = nodes.filter((n) => n.status === "running").length
+
+    const ready: ScanReadyResult["ready"] = []
+    const blockedByDep: ScanReadyResult["blocked_by_dependency"] = []
+    const blockedByRes: ScanReadyResult["blocked_by_resource"] = []
+
+    for (const n of nodes) {
+      if (n.status !== "pending" && n.status !== "ready") continue
+      // Dependency check — any required edge whose source isn't completed
+      // blocks readiness. `required` defaults to true server-side, so a
+      // missing/undefined value is treated as required.
+      const incoming = incomingByTarget.get(n.id) ?? []
+      const missingFromIDs: string[] = []
+      for (const e of incoming) {
+        const isRequired = e.required !== false
+        if (!isRequired) continue
+        const src = byID.get(e.from_node_id)
+        if (!src || src.status !== "completed") missingFromIDs.push(e.from_node_id)
+      }
+      if (missingFromIDs.length > 0) {
+        blockedByDep.push({
+          node_id: n.id,
+          title: n.title,
+          missing_from_node_ids: missingFromIDs,
+        })
+        continue
+      }
+
+      // Resource conflict check — any declared resource held by a different
+      // node blocks readiness. Holding a resource that *we* already own is
+      // fine (lets master pre-stage our own locks).
+      const holds = n.holds_resources ?? []
+      const conflict = holds
+        .map((r) => ({ resource: r, held_by: resourcesHeld[r] }))
+        .find((entry) => entry.held_by && entry.held_by !== n.id)
+      if (conflict && conflict.held_by) {
+        blockedByRes.push({
+          node_id: n.id,
+          title: n.title,
+          resource: conflict.resource,
+          held_by_node_id: conflict.held_by,
+        })
+        continue
+      }
+
+      ready.push({
+        node_id: n.id,
+        title: n.title,
+        agent: n.agent,
+        priority: n.priority ?? 0,
+        position: n.position,
+        status: n.status,
+        holds_resources: n.holds_resources,
+        stale: n.stale,
+      })
+    }
+
+    ready.sort((a, b) => {
+      if (b.priority !== a.priority) return b.priority - a.priority
+      return a.position - b.position
+    })
+
+    return {
+      workflow_id: workflowID,
+      max_concurrent: maxConcurrent,
+      running_count: runningCount,
+      saturated: runningCount >= maxConcurrent,
+      ready,
+      blocked_by_dependency: blockedByDep,
+      blocked_by_resource: blockedByRes,
+      resources_held: resourcesHeld,
+    }
+  })
+
+  /**
+   * P4 — master-controlled resource ledger update. The runtime never acquires
+   * or releases locks on its own; this is the only path that mutates
+   * `workflow.resources_held`.
+   *
+   *  - `acquire`: maps `resource_key → node_id`. Throws if the key is already
+   *    held by a *different* node (idempotent re-acquire by the same node is
+   *    a no-op). Use `force: true` to override (logs the override).
+   *  - `release`: list of resource keys to remove. Silent on already-absent.
+   *
+   * Bumps `version` on the workflow row but NOT `graph_rev` — resource
+   * ledger churn isn't a topology change.
+   */
+  export const updateResources = fn(
+    z.object({
+      workflowID: z.string(),
+      acquire: z.record(z.string(), z.string()).optional(),
+      release: z.array(z.string()).optional(),
+      force: z.boolean().optional(),
+    }),
+    async (input) => {
+      await state()
+      const wf = await workflowRow(input.workflowID)
+      if (!wf) throw new NotFoundError({ message: `Workflow not found: ${input.workflowID}` })
+      const next: Record<string, string> = { ...((wf.resources_held ?? {}) as Record<string, string>) }
+      const conflicts: Array<{ resource: string; held_by: string; requested_by: string }> = []
+      const acquired: Array<{ resource: string; node_id: string }> = []
+      const released: string[] = []
+
+      for (const [resource, nodeId] of Object.entries(input.acquire ?? {})) {
+        const current = next[resource]
+        if (current && current !== nodeId) {
+          if (!input.force) {
+            conflicts.push({ resource, held_by: current, requested_by: nodeId })
+            continue
+          }
+          log.warn("force-overriding resource hold", { resource, previous: current, new: nodeId })
+        }
+        next[resource] = nodeId
+        acquired.push({ resource, node_id: nodeId })
+      }
+      if (conflicts.length > 0) {
+        throw new Error(
+          `Resource acquisition conflicts: ${conflicts
+            .map((c) => `${c.resource} held by ${c.held_by}, requested by ${c.requested_by}`)
+            .join("; ")}. Pass force: true to override.`,
+        )
+      }
+      for (const r of input.release ?? []) {
+        if (next[r] !== undefined) {
+          released.push(r)
+          delete next[r]
+        }
+      }
+
+      const info = await touchWorkflow({
+        workflowID: input.workflowID,
+        patch: { resources_held: Object.keys(next).length === 0 ? null : next },
+      })
+
+      Database.effect(async () => {
+        await writeEvent({
+          workflowID: input.workflowID,
+          source: "orchestrator",
+          kind: "workflow.updated",
+          payload: {
+            kind: "resources_held",
+            acquired,
+            released,
+          },
+        })
+      })
+
+      return { workflow: info, acquired, released }
+    },
+  )
+
   export const setCheckpoint = fn(
     z.object({
       checkpointID: z.string(),

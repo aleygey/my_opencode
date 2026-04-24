@@ -42,6 +42,8 @@ import {
   WorkflowGraphApplyTool,
   WorkflowGraphProposeTool,
   WorkflowGraphRejectTool,
+  WorkflowGraphResourcesTool,
+  WorkflowGraphScanReadyTool,
   WorkflowNeedFulfillTool,
   WorkflowNodeAbortTool,
   WorkflowNodeCreateTool,
@@ -165,6 +167,8 @@ export const layer: Layer.Layer<
     const workflowGraphPropose = yield* WorkflowGraphProposeTool
     const workflowGraphApply = yield* WorkflowGraphApplyTool
     const workflowGraphReject = yield* WorkflowGraphRejectTool
+    const workflowGraphScanReady = yield* WorkflowGraphScanReadyTool
+    const workflowGraphResources = yield* WorkflowGraphResourcesTool
     const agent = yield* Agent.Service
 
     const state = yield* InstanceState.make<State>(
@@ -270,6 +274,8 @@ export const layer: Layer.Layer<
           workflowGraphPropose: Tool.init(workflowGraphPropose),
           workflowGraphApply: Tool.init(workflowGraphApply),
           workflowGraphReject: Tool.init(workflowGraphReject),
+          workflowGraphScanReady: Tool.init(workflowGraphScanReady),
+          workflowGraphResources: Tool.init(workflowGraphResources),
         })
 
         return {
@@ -314,6 +320,8 @@ export const layer: Layer.Layer<
             tool.workflowGraphPropose,
             tool.workflowGraphApply,
             tool.workflowGraphReject,
+            tool.workflowGraphScanReady,
+            tool.workflowGraphResources,
             ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [tool.lsp] : []),
             ...(Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE && Flag.OPENCODE_CLIENT === "cli" ? [tool.plan] : []),
           ],

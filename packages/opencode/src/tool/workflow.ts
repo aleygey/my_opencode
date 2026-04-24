@@ -420,6 +420,84 @@ export const WorkflowGraphRejectTool = Tool.define(
   }),
 )
 
+/**
+ * P4 — analyze the graph and return ready candidates / blockers / capacity.
+ * The runtime never auto-promotes nodes; the master uses this to decide what
+ * to start next, then calls `workflow_node_start` (or via a future
+ * `INSERT_NODE` op + apply followed by `workflow_node_start`).
+ */
+const WorkflowGraphScanReadyParameters = z.object({
+  workflow_id: z.string(),
+})
+
+export const WorkflowGraphScanReadyTool = Tool.define(
+  "workflow_graph_scan_ready",
+  Effect.gen(function* () {
+    return {
+      description:
+        "Master-only. Analyze the graph and return ready candidates (sorted by priority desc, position asc), nodes blocked by a missing upstream or a held resource, the running count, and whether max_concurrent_nodes is saturated.",
+      parameters: WorkflowGraphScanReadyParameters,
+      execute: (input: z.infer<typeof WorkflowGraphScanReadyParameters>, _ctx: Tool.Context) =>
+        Effect.gen(function* () {
+          const result = yield* Effect.promise(() => Workflow.scanReady(input.workflow_id))
+          return {
+            title: `scan ready (${result.ready.length} ready, ${result.running_count}/${result.max_concurrent} running${result.saturated ? ", saturated" : ""})`,
+            metadata: {
+              workflowID: input.workflow_id,
+              readyCount: result.ready.length,
+              runningCount: result.running_count,
+              saturated: result.saturated,
+            },
+            output: format(result),
+          }
+        }).pipe(Effect.orDie),
+    }
+  }),
+)
+
+/**
+ * P4 — master-controlled exclusive-resource ledger. The runtime never
+ * acquires or releases on its own; the master uses this tool whenever it
+ * starts / completes a node that holds resources.
+ */
+const WorkflowGraphResourcesParameters = z.object({
+  workflow_id: z.string(),
+  acquire: z.record(z.string(), z.string()).optional(),
+  release: z.array(z.string()).optional(),
+  force: z.boolean().optional(),
+})
+
+export const WorkflowGraphResourcesTool = Tool.define(
+  "workflow_graph_resources",
+  Effect.gen(function* () {
+    return {
+      description:
+        "Master-only. Acquire / release exclusive resource keys on a workflow. `acquire` maps resource_key→node_id (throws on conflict unless force=true; idempotent re-acquire by the same node is a no-op). `release` removes keys silently. Bumps workflow.version but not graph_rev.",
+      parameters: WorkflowGraphResourcesParameters,
+      execute: (input: z.infer<typeof WorkflowGraphResourcesParameters>, _ctx: Tool.Context) =>
+        Effect.gen(function* () {
+          const result = yield* Effect.promise(() =>
+            Workflow.updateResources({
+              workflowID: input.workflow_id,
+              acquire: input.acquire,
+              release: input.release,
+              force: input.force,
+            }),
+          )
+          return {
+            title: `resources ${result.acquired.length} acquired, ${result.released.length} released`,
+            metadata: {
+              workflowID: input.workflow_id,
+              acquired: result.acquired,
+              released: result.released,
+            },
+            output: format(result),
+          }
+        }).pipe(Effect.orDie),
+    }
+  }),
+)
+
 export const WorkflowNodeStartTool = Tool.define(
   "workflow_node_start",
   Effect.gen(function* () {
