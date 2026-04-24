@@ -39,6 +39,7 @@ import {
   WorkflowControlTool,
   WorkflowCreateTool,
   WorkflowEdgeCreateTool,
+  WorkflowFinalizeTool,
   WorkflowGraphApplyTool,
   WorkflowGraphProposeTool,
   WorkflowGraphRejectTool,
@@ -169,6 +170,7 @@ export const layer: Layer.Layer<
     const workflowGraphReject = yield* WorkflowGraphRejectTool
     const workflowGraphScanReady = yield* WorkflowGraphScanReadyTool
     const workflowGraphResources = yield* WorkflowGraphResourcesTool
+    const workflowFinalize = yield* WorkflowFinalizeTool
     const agent = yield* Agent.Service
 
     const state = yield* InstanceState.make<State>(
@@ -276,6 +278,7 @@ export const layer: Layer.Layer<
           workflowGraphReject: Tool.init(workflowGraphReject),
           workflowGraphScanReady: Tool.init(workflowGraphScanReady),
           workflowGraphResources: Tool.init(workflowGraphResources),
+          workflowFinalize: Tool.init(workflowFinalize),
         })
 
         return {
@@ -322,6 +325,7 @@ export const layer: Layer.Layer<
             tool.workflowGraphReject,
             tool.workflowGraphScanReady,
             tool.workflowGraphResources,
+            tool.workflowFinalize,
             ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [tool.lsp] : []),
             ...(Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE && Flag.OPENCODE_CLIENT === "cli" ? [tool.plan] : []),
           ],

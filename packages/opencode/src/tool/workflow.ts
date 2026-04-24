@@ -251,13 +251,14 @@ export const WorkflowCreateTool = Tool.define(
   }),
 )
 
+
 export const WorkflowNodeCreateTool = Tool.define(
   "workflow_node_create",
   Effect.gen(function* () {
     const session = yield* Session.Service
     return {
       description:
-        "Create a workflow node. Prefer creating the session only when the node actually starts running.",
+        "[DEPRECATED — prefer workflow_graph_propose with an INSERT_NODE op for a consistent edit-log audit trail.] Create a workflow node directly (skips workflow_edit row). Kept for backwards compatibility with existing master prompts; behaves exactly as before.",
       parameters: WorkflowNodeCreateParameters,
       execute: (input: z.infer<typeof WorkflowNodeCreateParameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
@@ -498,6 +499,55 @@ export const WorkflowGraphResourcesTool = Tool.define(
   }),
 )
 
+/**
+ * P5 — terminal-state finalizer for the entire workflow.
+ *
+ * Master calls this when the workflow has reached its goal (or has
+ * unrecoverably failed). Records the structured `result_json` on
+ * `workflow.result_json`, flips status, stamps `time_completed`, and emits
+ * a `workflow.updated` event with `kind: "finalized"`. Refuses to run
+ * while child nodes are still active unless `force: true`.
+ */
+const WorkflowFinalizeParameters = z.object({
+  workflow_id: z.string(),
+  status: z.enum(["completed", "failed", "cancelled"]),
+  result_json: z.record(z.string(), z.any()).optional(),
+  fail_reason: z.string().optional(),
+  force: z.boolean().optional(),
+})
+
+export const WorkflowFinalizeTool = Tool.define(
+  "workflow_finalize",
+  Effect.gen(function* () {
+    return {
+      description:
+        "Master-only. Finalize the workflow: write the structured result_json, flip status to completed/failed/cancelled, and stamp time_completed. Refuses if any node is still active (pending/ready/running/waiting/paused/interrupted) unless force: true. Bumps workflow.version but not graph_rev.",
+      parameters: WorkflowFinalizeParameters,
+      execute: (input: z.infer<typeof WorkflowFinalizeParameters>, _ctx: Tool.Context) =>
+        Effect.gen(function* () {
+          const result = yield* Effect.promise(() =>
+            Workflow.finalize({
+              workflowID: input.workflow_id,
+              status: input.status,
+              result_json: input.result_json,
+              fail_reason: input.fail_reason,
+              force: input.force,
+            }),
+          )
+          return {
+            title: `workflow ${input.status}`,
+            metadata: {
+              workflowID: input.workflow_id,
+              status: result.finalized_status,
+              forced: !!input.force,
+            },
+            output: format(result),
+          }
+        }).pipe(Effect.orDie),
+    }
+  }),
+)
+
 export const WorkflowNodeStartTool = Tool.define(
   "workflow_node_start",
   Effect.gen(function* () {
@@ -725,7 +775,8 @@ export const WorkflowEdgeCreateTool = Tool.define(
   "workflow_edge_create",
   Effect.gen(function* () {
     return {
-      description: "Create a dependency edge between two workflow nodes.",
+      description:
+        "[DEPRECATED — prefer workflow_graph_propose with an INSERT_EDGE op for a consistent edit-log audit trail.] Create a dependency edge between two workflow nodes directly (skips workflow_edit row). Kept for backwards compatibility; still validates DAG invariants and bumps graph_rev.",
       parameters: WorkflowEdgeCreateParameters,
       execute: (input: z.infer<typeof WorkflowEdgeCreateParameters>, _ctx: Tool.Context) =>
         Effect.gen(function* () {
@@ -755,7 +806,8 @@ export const WorkflowCheckpointCreateTool = Tool.define(
   "workflow_checkpoint_create",
   Effect.gen(function* () {
     return {
-      description: "Create a checkpoint attached to a workflow node.",
+      description:
+        "[LEGACY — checkpoints are not part of the dynamic-graph edit protocol.] Create a checkpoint attached to a workflow node. Use sparingly: in the master-controlled flow, prefer expressing acceptance criteria via node output_schema or an explicit verification node.",
       parameters: WorkflowCheckpointCreateParameters,
       execute: (input: z.infer<typeof WorkflowCheckpointCreateParameters>, _ctx: Tool.Context) =>
         Effect.gen(function* () {

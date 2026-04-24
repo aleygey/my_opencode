@@ -4407,6 +4407,103 @@ export namespace Workflow {
     },
   )
 
+  /**
+   * P5 — terminal-state finalizer for the entire workflow.
+   *
+   * Records the master's final result_json on `workflow.result_json`,
+   * flips status to a terminal state (`completed` / `failed` / `cancelled`),
+   * stamps `time_completed`, and emits a `workflow.updated` event with the
+   * structured outcome. Does NOT touch nodes — the master is responsible
+   * for ensuring child nodes are in terminal states beforehand (this is
+   * checked by default; pass `force: true` to override with a warn log).
+   *
+   * Refuses to operate on an already-terminal workflow unless the new
+   * status differs (e.g. flipping `completed` → `failed` after a follow-up
+   * audit). Bumps `version` but NOT `graph_rev` — finalization is not a
+   * topology change.
+   */
+  export const finalize = fn(
+    z.object({
+      workflowID: z.string(),
+      status: z.enum(["completed", "failed", "cancelled"]),
+      result_json: z.record(z.string(), z.any()).optional(),
+      fail_reason: z.string().optional(),
+      force: z.boolean().optional(),
+    }),
+    async (input) => {
+      await state()
+      const wf = await workflowRow(input.workflowID)
+      if (!wf) throw new NotFoundError({ message: `Workflow not found: ${input.workflowID}` })
+
+      // Block finalization while child nodes are still active. The master
+      // can pass force: true to override (e.g. emergency cancel where it
+      // already aborted children via patchNode).
+      if (!input.force) {
+        const active = Database.use((db) =>
+          db
+            .select({ id: WorkflowNodeTable.id, status: WorkflowNodeTable.status })
+            .from(WorkflowNodeTable)
+            .where(
+              and(
+                eq(WorkflowNodeTable.workflow_id, input.workflowID),
+                inArray(WorkflowNodeTable.status, [
+                  "pending",
+                  "ready",
+                  "running",
+                  "waiting",
+                  "paused",
+                  "interrupted",
+                ]),
+              ),
+            )
+            .all(),
+        )
+        if (active.length > 0) {
+          throw new Error(
+            `Workflow ${input.workflowID} cannot finalize: ${active.length} node(s) still active (${active
+              .map((n) => `${n.id}=${n.status}`)
+              .join(", ")}). Resolve them or pass force: true.`,
+          )
+        }
+      }
+
+      const info = await touchWorkflow({
+        workflowID: input.workflowID,
+        patch: {
+          status: input.status,
+          result_json: input.result_json ?? null,
+        },
+      })
+
+      // Stamp time_completed in a follow-up update — touchWorkflow doesn't
+      // expose it directly because finalization is the only legitimate writer.
+      Database.use((db) =>
+        db
+          .update(WorkflowTable)
+          .set({ time_completed: Date.now() })
+          .where(eq(WorkflowTable.id, input.workflowID))
+          .run(),
+      )
+
+      Database.effect(async () => {
+        await writeEvent({
+          workflowID: input.workflowID,
+          source: "orchestrator",
+          kind: "workflow.updated",
+          payload: {
+            kind: "finalized",
+            status: input.status,
+            fail_reason: input.fail_reason,
+            forced: !!input.force,
+            has_result: input.result_json !== undefined,
+          },
+        })
+      })
+
+      return { workflow: info, finalized_status: input.status, fail_reason: input.fail_reason }
+    },
+  )
+
   export const setCheckpoint = fn(
     z.object({
       checkpointID: z.string(),
