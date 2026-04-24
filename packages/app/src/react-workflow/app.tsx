@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import { useEffect, useMemo, useRef, useState } from "react"
-import type { FileDiff } from "@opencode-ai/sdk/v2/client"
+import type { SnapshotFileDiff as FileDiff } from "@opencode-ai/sdk/v2/client"
 import { TopBar } from "./components/top-bar"
 import { WorkflowCanvas } from "./components/workflow-canvas"
 import { EnhancedInspectorPanel } from "./components/enhanced-inspector-panel"

@@ -2,7 +2,7 @@ import { describeRoute, resolver, validator } from "hono-openapi"
 import { Hono } from "hono"
 import z from "zod"
 import { Workflow } from "@/workflow"
-import { errors } from "../error"
+import { errors } from "../../error"
 import { Snapshot } from "@/snapshot"
 import {
   discussionGet,
@@ -174,7 +174,7 @@ export function WorkflowRoutes() {
             description: "Aggregated workflow file diff",
             content: {
               "application/json": {
-                schema: resolver(Snapshot.FileDiff.array()),
+                schema: resolver(Snapshot.FileDiff.zod.array()),
               },
             },
           },
@@ -431,7 +431,7 @@ export function WorkflowRoutes() {
             description: "Node session file diff",
             content: {
               "application/json": {
-                schema: resolver(Snapshot.FileDiff.array()),
+                schema: resolver(Snapshot.FileDiff.zod.array()),
               },
             },
           },

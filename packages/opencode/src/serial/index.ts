@@ -1,6 +1,6 @@
 import { BusEvent } from "@/bus/bus-event"
 import { Bus } from "@/bus"
-import { InstanceState } from "@/effect/instance-state"
+import { InstanceState, EffectBridge } from "@/effect"
 import { makeRuntime } from "@/effect/run-service"
 import { Instance } from "@/project/instance"
 import type { SerialPort } from "#serial"
@@ -9,7 +9,6 @@ import { Log } from "../util"
 import { lazy } from "@opencode-ai/shared/util/lazy"
 import { SerialID } from "./schema"
 import { Effect, Layer, Context } from "effect"
-import { EffectLogger } from "@/effect/logger"
 
 export namespace Serial {
   const log = Log.create({ service: "serial" })
@@ -128,6 +127,7 @@ export namespace Serial {
     Service,
     Effect.gen(function* () {
       const bus = yield* Bus.Service
+      const bridge = yield* EffectBridge.make()
 
       function teardown(session: Active) {
         try {
@@ -242,9 +242,7 @@ export namespace Serial {
             session.buffer = session.buffer.slice(excess)
             session.bufferCursor += excess
 
-            Effect.runFork(
-              bus.publish(Event.Data, { id: session.info.id, data: chunk }).pipe(Effect.provide(EffectLogger.layer)),
-            )
+            bridge.fork(bus.publish(Event.Data, { id: session.info.id, data: chunk }))
           }),
         )
 
@@ -253,10 +251,8 @@ export namespace Serial {
             if (session.info.status === "disconnected") return
             log.info("session disconnected", { id, exitCode })
             session.info.status = "disconnected"
-            Effect.runFork(
-              bus.publish(Event.Disconnected, { id: session.info.id }).pipe(Effect.provide(EffectLogger.layer)),
-            )
-            Effect.runFork(remove(id).pipe(Effect.provide(EffectLogger.layer)))
+            bridge.fork(bus.publish(Event.Disconnected, { id: session.info.id }))
+            bridge.fork(remove(id))
           }),
         )
 

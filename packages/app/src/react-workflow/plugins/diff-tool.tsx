@@ -1,36 +1,50 @@
 /** @jsxImportSource react */
 import { useState } from "react"
-import { diffLines } from "diff"
 import { FileCode2, Plus, Minus, Check } from "lucide-react"
 import type { ToolPlugin, PluginContext } from "./types"
 import type { Detail } from "../app"
 
 type Change = NonNullable<Detail["codeChanges"]>[number]
 
+// Parse a unified diff patch (as emitted by git) into per-line rows. Each row
+// carries its sign (+/-/ ), synthetic before/after line numbers, and a mode
+// flag for styling. Hunk headers and file-meta lines are ignored — only body
+// lines show up in the output.
 function diffRows(item?: Change) {
-  if (!item) return []
-  let before = 1
-  let after = 1
-  return diffLines(item.before, item.after).flatMap((change) => {
-    const rows = change.value.split("\n")
-    if (rows.at(-1) === "") rows.pop()
-    return rows.map((text) => {
-      if (change.added) {
-        const line = { before: "", after: String(after), sign: "+", text, mode: "added" as const }
-        after += 1
-        return line
+  if (!item?.patch) return []
+  const rows: Array<{
+    before: string
+    after: string
+    sign: string
+    text: string
+    mode: "added" | "removed" | "plain"
+  }> = []
+  let before = 0
+  let after = 0
+  for (const raw of item.patch.split("\n")) {
+    if (raw.startsWith("@@")) {
+      const match = /@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw)
+      if (match) {
+        before = parseInt(match[1], 10)
+        after = parseInt(match[2], 10)
       }
-      if (change.removed) {
-        const line = { before: String(before), after: "", sign: "-", text, mode: "removed" as const }
-        before += 1
-        return line
-      }
-      const line = { before: String(before), after: String(after), sign: " ", text, mode: "plain" as const }
+      continue
+    }
+    if (raw.startsWith("+++") || raw.startsWith("---") || raw.startsWith("diff ") || raw.startsWith("index ")) continue
+    if (raw.startsWith("+")) {
+      rows.push({ before: "", after: String(after), sign: "+", text: raw.slice(1), mode: "added" })
+      after += 1
+    } else if (raw.startsWith("-")) {
+      rows.push({ before: String(before), after: "", sign: "-", text: raw.slice(1), mode: "removed" })
+      before += 1
+    } else if (raw.length > 0) {
+      const text = raw.startsWith(" ") ? raw.slice(1) : raw
+      rows.push({ before: String(before), after: String(after), sign: " ", text, mode: "plain" })
       before += 1
       after += 1
-      return line
-    })
-  })
+    }
+  }
+  return rows
 }
 
 function DiffTool({ nodeId, nodeStatus, detail }: PluginContext<Detail | null>) {

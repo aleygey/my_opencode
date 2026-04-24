@@ -1,5 +1,5 @@
-import type { FileDiff, Message, Part, TextPart, ToolPart } from "@opencode-ai/sdk/v2/client"
-import { base64Encode } from "@opencode-ai/util/encode"
+import type { SnapshotFileDiff as FileDiff, Message, Part, TextPart, ToolPart } from "@opencode-ai/sdk/v2/client"
+import { base64Encode } from "@opencode-ai/shared/util/encode"
 import { createEffect, createMemo, For, on, onCleanup, Show, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useNavigate, useParams } from "@solidjs/router"
@@ -14,6 +14,7 @@ import { useProviders } from "@/hooks/use-providers"
 import { useLocal } from "@/context/local"
 import { getSessionContextMetrics } from "@/components/session/session-context-metrics"
 import { WorkflowApp, type WorkflowAppProps } from "@/react-workflow/app"
+import type { Msg } from "@/react-workflow/components/chat-panel"
 import type { WorkflowPlan } from "@/react-workflow/components/plan-card"
 import type { SandTableDiscussion } from "@/react-workflow/components/sand-table-session-view"
 import { Identifier } from "@/utils/id"
@@ -1577,9 +1578,9 @@ export function WorkflowRuntimePanel(props: {
             retry: row.retry,
             agent: row.agent,
             plan: row.plan,
-            sandTable: row.sandTable,
-            question: row.question,
-            permission: row.permission,
+            sandTable: row.sandTable as Msg["sandTable"],
+            question: row.question as Msg["question"],
+            permission: row.permission as Msg["permission"],
           })),
         ] as const
       }),
@@ -1651,7 +1652,7 @@ export function WorkflowRuntimePanel(props: {
           providerID: msg.model.providerID,
           modelID: msg.model.modelID,
         })
-        if (msg.variant) local.model.variant.set(msg.variant)
+        if (msg.model.variant) local.model.variant.set(msg.model.variant)
       },
     ),
   )
@@ -1767,7 +1768,7 @@ export function WorkflowRuntimePanel(props: {
     // the canvas shows a linear "plan → first node → …" flow instead of
     // awkwardly splitting into two lanes. The plan node sits at position 0
     // when present; it's visually distinct (color + icon already encode it).
-    const merged: WorkflowAppProps["chains"][number]["nodes"] = []
+    const merged: NonNullable<WorkflowAppProps["chains"]>[number]["nodes"] = []
     if (plan) {
       merged.push({
         id: `sand-table:${plan.id}`,
@@ -1778,7 +1779,7 @@ export function WorkflowRuntimePanel(props: {
         summary: sandPlanBadges(plan),
       })
     }
-    for (const node of execution) merged.push(node)
+    for (const node of execution) merged.push(node as NonNullable<WorkflowAppProps["chains"]>[number]["nodes"][number])
     return [
       {
         id: "workflow",
@@ -1854,7 +1855,7 @@ export function WorkflowRuntimePanel(props: {
         context: "",
         round: plan.rounds,
         max_rounds: Math.max(plan.rounds, 3),
-        status: plan.status,
+        status: (plan.status === "pending" ? "running" : plan.status) as SandTableDiscussion["status"],
         participants: [],
         current_plan: plan.finalPlan,
         last_evaluation: plan.lastEvaluation,
@@ -2031,11 +2032,13 @@ export function WorkflowRuntimePanel(props: {
           role: "user",
           time: { created: Date.now() },
           agent,
-          model: model ?? {
-            providerID: "opencode",
-            modelID: "workflow",
+          model: {
+            ...(model ?? {
+              providerID: "opencode",
+              modelID: "workflow",
+            }),
+            ...(variant !== undefined ? { variant } : {}),
           },
-          variant,
         },
         parts: [
           {

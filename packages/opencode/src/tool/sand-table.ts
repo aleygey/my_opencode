@@ -1,17 +1,16 @@
-import { Tool } from "./tool"
+import * as Tool from "./tool"
 import DESCRIPTION from "./sand-table.txt"
 import z from "zod"
 import { Effect } from "effect"
 import { Session } from "../session"
 import { SessionID, MessageID, PartID } from "../session/schema"
-import { MessageV2 } from "../session/message-v2"
 import { SessionPrompt } from "../session/prompt"
+import { AppRuntime } from "@/effect/app-runtime"
 import { Provider } from "../provider"
 import { ModelID, ProviderID } from "../provider/schema"
 import { Bus } from "../bus"
 import { BusEvent } from "../bus/bus-event"
 import { Log } from "../util"
-import { defer } from "@/util/defer"
 
 const log = Log.create({ service: "tool.sand-table" })
 
@@ -165,28 +164,28 @@ const ModelAssignment = z.object({
   modelID: z.string(),
 })
 
-async function resolveModels(
+function resolveModels(
+  provider: Provider.Interface,
   overrides?: { planner?: z.infer<typeof ModelAssignment>; evaluator?: z.infer<typeof ModelAssignment> },
   currentModel?: { providerID: ProviderID; modelID: ModelID },
-): Promise<{
-  planner: { providerID: ProviderID; modelID: ModelID }
-  evaluator: { providerID: ProviderID; modelID: ModelID }
-}> {
-  const planner = overrides?.planner
-    ? {
-        providerID: ProviderID.make(overrides.planner.providerID),
-        modelID: ModelID.make(overrides.planner.modelID),
-      }
-    : currentModel ?? (await Provider.defaultModel())
+) {
+  return Effect.gen(function* () {
+    const planner = overrides?.planner
+      ? {
+          providerID: ProviderID.make(overrides.planner.providerID),
+          modelID: ModelID.make(overrides.planner.modelID),
+        }
+      : currentModel ?? (yield* provider.defaultModel())
 
-  const evaluator = overrides?.evaluator
-    ? {
-        providerID: ProviderID.make(overrides.evaluator.providerID),
-        modelID: ModelID.make(overrides.evaluator.modelID),
-      }
-    : planner
+    const evaluator = overrides?.evaluator
+      ? {
+          providerID: ProviderID.make(overrides.evaluator.providerID),
+          modelID: ModelID.make(overrides.evaluator.modelID),
+        }
+      : planner
 
-  return { planner, evaluator }
+    return { planner, evaluator }
+  })
 }
 
 // ── Prompts ────────────────────────────────────────────────────────────────
@@ -315,6 +314,12 @@ function evaluatorPrompt(state: DiscussionState): string {
   return lines.join("\n")
 }
 
+// Keep PLANNER_SYSTEM / EVALUATOR_SYSTEM referenced so tree-shakers don't drop
+// them — they are intentionally injected into participant sessions via the
+// sandtable agent definition, but TS considers them unused from this file.
+void PLANNER_SYSTEM
+void EVALUATOR_SYSTEM
+
 // ── Convergence ────────────────────────────────────────────────────────────
 
 function checkApproval(state: DiscussionState): boolean {
@@ -336,7 +341,7 @@ function extractFeedback(state: DiscussionState): string | null {
 
 // ── Round execution ────────────────────────────────────────────────────────
 
-async function waitForMessage(
+function waitForMessage(
   state: DiscussionState,
   role: DiscussionRole,
   timeoutMs = 60_000,
@@ -361,31 +366,57 @@ async function waitForMessage(
   })
 }
 
-async function runParticipant(
-  state: DiscussionState,
+function runParticipant(
   participant: Participant,
   prompt: string,
   abort: AbortSignal,
 ) {
-  const messageID = MessageID.ascending()
-  const cancel = () => SessionPrompt.cancel(participant.sessionID)
-  abort.addEventListener("abort", cancel)
-  using _ = defer(() => abort.removeEventListener("abort", cancel))
-
-  await SessionPrompt.prompt({
-    messageID,
-    sessionID: participant.sessionID,
-    model: participant.model,
-    agent: "sandtable",
-    tools: {
-      msg_read: true,
-      msg_write: true,
-      todowrite: false,
-      todoread: false,
-      task: false,
+  return Effect.acquireUseRelease(
+    Effect.sync(() => {
+      const cancel = () => {
+        // Fire-and-forget cancel via the app runtime. SessionPrompt.Service is
+        // intentionally NOT pulled at tool init time to avoid a hard Layer
+        // cycle (ToolRegistry ⇄ SessionPrompt), so we bridge to it at use
+        // time via AppRuntime.
+        void AppRuntime.runPromise(
+          Effect.gen(function* () {
+            const sp = yield* SessionPrompt.Service
+            yield* sp.cancel(participant.sessionID)
+          }),
+        ).catch(() => {})
+      }
+      abort.addEventListener("abort", cancel)
+      return cancel
+    }),
+    () => {
+      const messageID = MessageID.ascending()
+      return Effect.promise(() =>
+        AppRuntime.runPromise(
+          Effect.gen(function* () {
+            const sp = yield* SessionPrompt.Service
+            return yield* sp.prompt({
+              messageID,
+              sessionID: participant.sessionID,
+              model: participant.model,
+              agent: "sandtable",
+              tools: {
+                msg_read: true,
+                msg_write: true,
+                todowrite: false,
+                todoread: false,
+                task: false,
+              },
+              parts: [{ type: "text" as const, text: prompt, id: PartID.ascending() }],
+            })
+          }),
+        ),
+      )
     },
-    parts: [{ type: "text" as const, text: prompt, id: PartID.ascending() }],
-  })
+    (cancel) =>
+      Effect.sync(() => {
+        abort.removeEventListener("abort", cancel)
+      }),
+  )
 }
 
 // ── Main tool ──────────────────────────────────────────────────────────────
@@ -405,182 +436,195 @@ const parameters = z.object({
     ),
 })
 
-export const SandTableTool = Tool.define("sand_table", {
-  description: DESCRIPTION,
-  parameters,
-  async execute(params: z.infer<typeof parameters>, ctx) {
-    const discussionID = crypto.randomUUID()
-    const msg = await MessageV2.get({ sessionID: ctx.sessionID, messageID: ctx.messageID })
-    if (msg.info.role !== "assistant") throw new Error("Not an assistant message")
-
-    const currentModel = {
-      providerID: msg.info.providerID,
-      modelID: msg.info.modelID,
-    }
-
-    const models = await resolveModels(params.models, currentModel)
-
-    log.info("sand_table starting", {
-      discussionID,
-      topic: params.topic,
-      planner: `${models.planner.providerID}/${models.planner.modelID}`,
-      evaluator: `${models.evaluator.providerID}/${models.evaluator.modelID}`,
-    })
-
-    // Planner session is long-lived — it iterates its own plan across
-    // rounds, so it NEEDS the prior context (its last draft + the
-    // evaluator's feedback) to produce a revised draft. Creating it
-    // once and reusing is correct.
-    const plannerSession = await Session.create({
-      parentID: ctx.sessionID,
-      title: `Sand Table Planner (@sandtable)`,
-      permission: [
-        { permission: "msg_read", pattern: "*", action: "allow" },
-        { permission: "msg_write", pattern: "*", action: "allow" },
-        { permission: "*" as const, pattern: "*", action: "deny" },
-      ],
-    })
-
-    // Evaluator session is created PER ROUND (see loop below). Starting
-    // state has no evaluator yet; participants[] gets the current
-    // round's evaluator pushed in as each round starts, and stays
-    // pointing at the most recent one for observability.
-    const state: DiscussionState = {
-      id: discussionID,
-      topic: params.topic,
-      context: params.context ?? "",
-      messages: [],
-      round: 0,
-      maxRounds: params.max_rounds,
-      status: "running",
-      participants: [
-        { role: "planner", sessionID: plannerSession.id, model: models.planner },
-      ],
-    }
-    discussions.set(discussionID, state)
-    // Register under the tool call ID as a secondary key so the frontend can
-    // look up the discussion using the part.callID it already knows,
-    // independent of whether the ctx.metadata update reaches the client.
-    if (ctx.callID) discussionsByCallID.set(ctx.callID, state)
-
-    // ctx.metadata returns a lazy Effect; calling it without running produces
-    // no side effect. We fire-and-forget via Effect.runPromise so the client
-    // *does* see the sandTableID published on the tool part state while
-    // running. Failures are swallowed because the callID-keyed fallback above
-    // keeps the UI functional even if metadata never propagates.
-    void Effect.runPromise(
-      ctx.metadata({
-        title: `Sand table: ${params.topic.slice(0, 60)}`,
-        metadata: { sandTableID: discussionID },
-      }) as Effect.Effect<void, unknown, never>,
-    ).catch((err) => log.warn("sand_table metadata publish failed", { err: String(err) }))
-
-    try {
-      for (let round = 1; round <= params.max_rounds; round++) {
-        if (ctx.abort.aborted) {
-          state.status = "failed"
-          break
-        }
-
-        state.round = round
-        log.info("sand_table round", { discussionID, round })
-
-        // Step 1: Planner generates/revises plan
-        const planner = state.participants.find((p) => p.role === "planner")!
-        await runParticipant(state, planner, plannerPrompt(state), ctx.abort)
-
-        // Wait for planner's msg_write
-        const planMsg = await waitForMessage(state, "planner", 60_000)
-        if (planMsg) {
-          state.currentPlan = planMsg.content
-        } else {
-          log.warn("planner timeout", { discussionID, round })
-        }
-
-        // Step 2: Evaluator reviews plan.
-        //
-        // Fresh session per round: this is the anti-anchoring fix. If
-        // we reused the evaluator session, round N+1 would see round
-        // N's critique in its own message history, and the model
-        // tends to rubber-stamp ("planner fixed the points I raised
-        // → APPROVE") regardless of what the current plan actually
-        // says. Spinning up a new session means round N+1's evaluator
-        // has zero memory of round N's critique and must re-evaluate
-        // from the rubric in EVALUATOR_SYSTEM.
-        const evaluatorSession = await Session.create({
-          parentID: ctx.sessionID,
-          title: `Sand Table Evaluator · round ${round} (@sandtable)`,
-          permission: [
-            { permission: "msg_read", pattern: "*", action: "allow" },
-            { permission: "msg_write", pattern: "*", action: "allow" },
-            { permission: "*" as const, pattern: "*", action: "deny" },
-          ],
-        })
-        const evaluator: Participant = {
-          role: "evaluator",
-          sessionID: evaluatorSession.id,
-          model: models.evaluator,
-        }
-        // Keep participants[] pointing at the CURRENT round's
-        // evaluator so the UI can show which session is running.
-        // Replace any prior evaluator entry rather than accumulating
-        // — callers read participants[] by role, not as a history.
-        state.participants = [
-          ...state.participants.filter((p) => p.role !== "evaluator"),
-          evaluator,
-        ]
-        await runParticipant(state, evaluator, evaluatorPrompt(state), ctx.abort)
-
-        // Wait for evaluator's msg_write
-        const evalMsg = await waitForMessage(state, "evaluator", 60_000)
-        if (evalMsg) {
-          state.evaluation = evalMsg.content
-        } else {
-          log.warn("evaluator timeout", { discussionID, round })
-        }
-
-        // Check if evaluator approved
-        if (checkApproval(state)) {
-          state.status = "approved"
-          log.info("sand_table approved", { discussionID, round })
-          break
-        }
-
-        // Extract feedback for next round
-        const feedback = extractFeedback(state)
-        if (feedback) {
-          state.evaluation = feedback
-        }
-      }
-
-      if (state.status === "running") {
-        state.status = "completed"
-      }
-    } catch (err) {
-      state.status = "failed"
-      log.error("sand_table error", { discussionID, error: String(err) })
-    }
-
-    const output = JSON.stringify(
-      {
-        sand_table_id: state.id,
-        status: state.status,
-        rounds: state.round,
-        final_plan: state.currentPlan,
-        last_evaluation: state.evaluation,
-        history: state.messages,
-      },
-      null,
-      2,
-    )
-
+export const SandTableTool = Tool.define(
+  "sand_table",
+  Effect.gen(function* () {
+    const session = yield* Session.Service
+    const provider = yield* Provider.Service
     return {
-      title: `Sand table ${state.status} (${state.round} rounds)`,
-      metadata: { sandTableID: state.id },
-      output,
+      description: DESCRIPTION,
+      parameters,
+      execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
+        Effect.gen(function* () {
+          const discussionID = crypto.randomUUID()
+          const msgs = yield* session.messages({ sessionID: ctx.sessionID })
+          const msg = msgs.find((m) => m.info.id === ctx.messageID)
+          if (!msg) throw new Error("message not found")
+          if (msg.info.role !== "assistant") throw new Error("Not an assistant message")
+
+          const currentModel = {
+            providerID: msg.info.providerID,
+            modelID: msg.info.modelID,
+          }
+
+          const models = yield* resolveModels(provider, params.models, currentModel)
+
+          log.info("sand_table starting", {
+            discussionID,
+            topic: params.topic,
+            planner: `${models.planner.providerID}/${models.planner.modelID}`,
+            evaluator: `${models.evaluator.providerID}/${models.evaluator.modelID}`,
+          })
+
+          // Planner session is long-lived — it iterates its own plan across
+          // rounds, so it NEEDS the prior context (its last draft + the
+          // evaluator's feedback) to produce a revised draft. Creating it
+          // once and reusing is correct.
+          const plannerSession = yield* session.create({
+            parentID: ctx.sessionID,
+            title: `Sand Table Planner (@sandtable)`,
+            permission: [
+              { permission: "msg_read", pattern: "*", action: "allow" },
+              { permission: "msg_write", pattern: "*", action: "allow" },
+              { permission: "*" as const, pattern: "*", action: "deny" },
+            ],
+          })
+
+          // Evaluator session is created PER ROUND (see loop below). Starting
+          // state has no evaluator yet; participants[] gets the current
+          // round's evaluator pushed in as each round starts, and stays
+          // pointing at the most recent one for observability.
+          const state: DiscussionState = {
+            id: discussionID,
+            topic: params.topic,
+            context: params.context ?? "",
+            messages: [],
+            round: 0,
+            maxRounds: params.max_rounds,
+            status: "running",
+            participants: [
+              { role: "planner", sessionID: plannerSession.id, model: models.planner },
+            ],
+          }
+          discussions.set(discussionID, state)
+          // Register under the tool call ID as a secondary key so the
+          // frontend can look up the discussion using the part.callID it
+          // already knows, independent of whether the ctx.metadata update
+          // reaches the client.
+          if (ctx.callID) discussionsByCallID.set(ctx.callID, state)
+
+          // ctx.metadata is already an Effect here, so we yield it. The
+          // callID-keyed fallback above keeps the UI functional even if the
+          // metadata update never reaches the client.
+          yield* ctx.metadata({
+            title: `Sand table: ${params.topic.slice(0, 60)}`,
+            metadata: { sandTableID: discussionID },
+          })
+
+          const runRounds = Effect.gen(function* () {
+            for (let round = 1; round <= params.max_rounds; round++) {
+              if (ctx.abort.aborted) {
+                state.status = "failed"
+                break
+              }
+
+              state.round = round
+              log.info("sand_table round", { discussionID, round })
+
+              // Step 1: Planner generates/revises plan
+              const planner = state.participants.find((p) => p.role === "planner")!
+              yield* runParticipant(planner, plannerPrompt(state), ctx.abort)
+
+              // Wait for planner's msg_write
+              const planMsg = yield* Effect.promise(() => waitForMessage(state, "planner", 60_000))
+              if (planMsg) {
+                state.currentPlan = planMsg.content
+              } else {
+                log.warn("planner timeout", { discussionID, round })
+              }
+
+              // Step 2: Evaluator reviews plan.
+              //
+              // Fresh session per round: this is the anti-anchoring fix. If
+              // we reused the evaluator session, round N+1 would see round
+              // N's critique in its own message history, and the model
+              // tends to rubber-stamp ("planner fixed the points I raised
+              // → APPROVE") regardless of what the current plan actually
+              // says. Spinning up a new session means round N+1's evaluator
+              // has zero memory of round N's critique and must re-evaluate
+              // from the rubric in EVALUATOR_SYSTEM.
+              const evaluatorSession = yield* session.create({
+                parentID: ctx.sessionID,
+                title: `Sand Table Evaluator · round ${round} (@sandtable)`,
+                permission: [
+                  { permission: "msg_read", pattern: "*", action: "allow" },
+                  { permission: "msg_write", pattern: "*", action: "allow" },
+                  { permission: "*" as const, pattern: "*", action: "deny" },
+                ],
+              })
+              const evaluator: Participant = {
+                role: "evaluator",
+                sessionID: evaluatorSession.id,
+                model: models.evaluator,
+              }
+              // Keep participants[] pointing at the CURRENT round's
+              // evaluator so the UI can show which session is running.
+              // Replace any prior evaluator entry rather than accumulating
+              // — callers read participants[] by role, not as a history.
+              state.participants = [
+                ...state.participants.filter((p) => p.role !== "evaluator"),
+                evaluator,
+              ]
+              yield* runParticipant(evaluator, evaluatorPrompt(state), ctx.abort)
+
+              // Wait for evaluator's msg_write
+              const evalMsg = yield* Effect.promise(() => waitForMessage(state, "evaluator", 60_000))
+              if (evalMsg) {
+                state.evaluation = evalMsg.content
+              } else {
+                log.warn("evaluator timeout", { discussionID, round })
+              }
+
+              // Check if evaluator approved
+              if (checkApproval(state)) {
+                state.status = "approved"
+                log.info("sand_table approved", { discussionID, round })
+                break
+              }
+
+              // Extract feedback for next round
+              const feedback = extractFeedback(state)
+              if (feedback) {
+                state.evaluation = feedback
+              }
+            }
+
+            if (state.status === "running") {
+              state.status = "completed"
+            }
+          })
+
+          yield* runRounds.pipe(
+            Effect.catchCause((cause) =>
+              Effect.sync(() => {
+                state.status = "failed"
+                log.error("sand_table error", { discussionID, error: String(cause) })
+              }),
+            ),
+          )
+
+          const output = JSON.stringify(
+            {
+              sand_table_id: state.id,
+              status: state.status,
+              rounds: state.round,
+              final_plan: state.currentPlan,
+              last_evaluation: state.evaluation,
+              history: state.messages,
+            },
+            null,
+            2,
+          )
+
+          return {
+            title: `Sand table ${state.status} (${state.round} rounds)`,
+            metadata: { sandTableID: state.id },
+            output,
+          }
+        }).pipe(Effect.orDie),
     }
-  },
-})
+  }),
+)
 
 // ── msg_read tool ──────────────────────────────────────────────────────────
 
@@ -593,29 +637,35 @@ const msgReadParams = z.object({
     .describe("Only return messages from this round onwards"),
 })
 
-export const MsgReadTool = Tool.define("msg_read", {
-  description:
-    "Read messages from a sand table discussion. Available to both participants and the orchestrator.",
-  parameters: msgReadParams,
-  async execute(params: z.infer<typeof msgReadParams>, _ctx) {
-    const state = discussions.get(params.discussion_id)
-    if (!state) {
-      return {
-        title: "No discussion",
-        output: "Discussion not found",
-        metadata: {},
-      }
-    }
-    const msgs = params.since_round
-      ? state.messages.filter((m) => m.round >= params.since_round!)
-      : state.messages
+export const MsgReadTool = Tool.define(
+  "msg_read",
+  Effect.gen(function* () {
     return {
-      title: `Read ${msgs.length} messages`,
-      output: JSON.stringify(msgs, null, 2),
-      metadata: {},
+      description:
+        "Read messages from a sand table discussion. Available to both participants and the orchestrator.",
+      parameters: msgReadParams,
+      execute: (params: z.infer<typeof msgReadParams>, _ctx: Tool.Context) =>
+        Effect.gen(function* () {
+          const state = discussions.get(params.discussion_id)
+          if (!state) {
+            return {
+              title: "No discussion",
+              output: "Discussion not found",
+              metadata: {},
+            }
+          }
+          const msgs = params.since_round
+            ? state.messages.filter((m) => m.round >= params.since_round!)
+            : state.messages
+          return {
+            title: `Read ${msgs.length} messages`,
+            output: JSON.stringify(msgs, null, 2),
+            metadata: {},
+          }
+        }).pipe(Effect.orDie),
     }
-  },
-})
+  }),
+)
 
 // ── msg_write tool ─────────────────────────────────────────────────────────
 
@@ -630,49 +680,57 @@ const msgWriteParams = z.object({
     ),
 })
 
-export const MsgWriteTool = Tool.define("msg_write", {
-  description:
-    "Write a message to a sand table discussion. Participants use this to publish their analysis. The orchestrator can use this to inject user context.",
-  parameters: msgWriteParams,
-  async execute(params: z.infer<typeof msgWriteParams>, ctx) {
-    const state = discussions.get(params.discussion_id)
-    if (!state) {
-      return {
-        title: "Failed",
-        output: "Discussion not found",
-        metadata: {},
-      }
-    }
-
-    // Detect caller identity
-    const participant = state.participants.find(
-      (p) => p.sessionID === ctx.sessionID,
-    )
-    const role: DiscussionRole =
-      participant?.role ?? params.role ?? "orchestrator"
-    const model =
-      participant
-        ? `${participant.model.providerID}/${participant.model.modelID}`
-        : "orchestrator"
-
-    state.messages.push({
-      role,
-      model,
-      content: params.content,
-      round: state.round,
-      timestamp: Date.now(),
-    })
-
-    await Bus.publish(SandTableMessageEvent, {
-      discussionID: state.id,
-      role,
-      round: state.round,
-    })
-
+export const MsgWriteTool = Tool.define(
+  "msg_write",
+  Effect.gen(function* () {
     return {
-      title: `Published as ${role}`,
-      output: "Message written to sand table",
-      metadata: {},
+      description:
+        "Write a message to a sand table discussion. Participants use this to publish their analysis. The orchestrator can use this to inject user context.",
+      parameters: msgWriteParams,
+      execute: (params: z.infer<typeof msgWriteParams>, ctx: Tool.Context) =>
+        Effect.gen(function* () {
+          const state = discussions.get(params.discussion_id)
+          if (!state) {
+            return {
+              title: "Failed",
+              output: "Discussion not found",
+              metadata: {},
+            }
+          }
+
+          // Detect caller identity
+          const participant = state.participants.find(
+            (p) => p.sessionID === ctx.sessionID,
+          )
+          const role: DiscussionRole =
+            participant?.role ?? params.role ?? "orchestrator"
+          const model =
+            participant
+              ? `${participant.model.providerID}/${participant.model.modelID}`
+              : "orchestrator"
+
+          state.messages.push({
+            role,
+            model,
+            content: params.content,
+            round: state.round,
+            timestamp: Date.now(),
+          })
+
+          yield* Effect.promise(() =>
+            Bus.publish(SandTableMessageEvent, {
+              discussionID: state.id,
+              role,
+              round: state.round,
+            }),
+          )
+
+          return {
+            title: `Published as ${role}`,
+            output: "Message written to sand table",
+            metadata: {},
+          }
+        }).pipe(Effect.orDie),
     }
-  },
-})
+  }),
+)

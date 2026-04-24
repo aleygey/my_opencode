@@ -3781,13 +3781,42 @@ function MergeTray(props: {
 
 const CHAIN_EDGE_STYLE: Record<
   ChainEdgeKind,
-  { color: string; dash?: string; label: string; desc: string }
+  { color: string; dash?: string; label: string; code: ChainEdgeKind; desc: string }
 > = {
-  requires: { color: "#4f46e5", label: "requires", desc: "强依赖 · DAG" },
-  refines: { color: "#0ea5e9", dash: "4,3", label: "refines", desc: "细化特化" },
-  supports: { color: "#10b981", dash: "2,3", label: "supports", desc: "支持证据" },
-  contradicts: { color: "#ef4444", dash: "6,3", label: "contradicts", desc: "冲突" },
-  see_also: { color: "#9ca3af", dash: "1,4", label: "see_also", desc: "弱关联" },
+  requires: { color: "#4f46e5", label: "先决条件", code: "requires", desc: "强依赖 · DAG · 必须先完成对端" },
+  refines: { color: "#0ea5e9", dash: "4,3", label: "细化", code: "refines", desc: "本条是对端的特化/补充" },
+  supports: { color: "#10b981", dash: "2,3", label: "支持", code: "supports", desc: "本条为对端提供支持证据" },
+  contradicts: { color: "#ef4444", dash: "6,3", label: "冲突", code: "contradicts", desc: "本条与对端直接矛盾" },
+  see_also: { color: "#9ca3af", dash: "1,4", label: "相关", code: "see_also", desc: "同话题可参考，方向弱" },
+}
+
+/** 边语义 → 中文短语模板，用于组合悬浮卡片的"连环指引"。
+ *  `{self}` = 当前悬浮的 experience 标题；`{other}` = 关联 experience 标题。
+ *  `out` 对应 from=self→to=other 的方向；`in` 对应 from=other→to=self。 */
+const CHAIN_EDGE_PHRASE: Record<
+  ChainEdgeKind,
+  { out: string; in: string }
+> = {
+  requires: {
+    out: "先完成「{other}」，再执行「{self}」",
+    in: "「{other}」依赖本条，需先确保「{self}」成立",
+  },
+  refines: {
+    out: "「{self}」是对「{other}」的细化/特化",
+    in: "「{other}」对本条做了进一步细化",
+  },
+  supports: {
+    out: "「{self}」可作为「{other}」的佐证",
+    in: "「{other}」为本条提供支持证据",
+  },
+  contradicts: {
+    out: "注意：「{self}」与「{other}」存在冲突",
+    in: "注意：「{other}」与本条存在冲突",
+  },
+  see_also: {
+    out: "同话题可参考「{other}」",
+    in: "同话题可参考「{other}」",
+  },
 }
 
 type GraphLayoutNode = {
@@ -3895,6 +3924,67 @@ function ExperienceGraphView(props: {
   }))
 
   const [hovered, setHovered] = createSignal<string | null>(null)
+
+  // When a node is hovered, compose a Chinese "guidance card" by walking
+  // every outgoing/incoming edge and rendering it via CHAIN_EDGE_PHRASE.
+  // Edges hidden by the legend toggles are excluded — the card only composes
+  // what the user is currently looking at.
+  type HoverCardLine = {
+    edgeID: string
+    code: ChainEdgeKind
+    label: string
+    color: string
+    text: string
+    otherID: string
+  }
+  type HoverCard = {
+    exp: ChainGraphExperienceLite
+    x: number
+    y: number
+    outgoing: HoverCardLine[]
+    incoming: HoverCardLine[]
+  }
+  const hoverCard = createMemo<HoverCard | null>(() => {
+    const id = hovered()
+    if (!id) return null
+    const node = layout().get(id)
+    if (!node) return null
+    const exp = node.exp
+    const expTitle = exp.title
+    const expByID = new Map<string, ChainGraphExperienceLite>()
+    for (const e of props.data?.experiences ?? []) expByID.set(e.id, e)
+    const buildLine = (edge: ChainGraphEdge, role: "out" | "in"): HoverCardLine | null => {
+      const style = CHAIN_EDGE_STYLE[edge.kind]
+      if (!style) return null
+      const otherID = role === "out" ? edge.to : edge.from
+      const other = expByID.get(otherID)
+      if (!other) return null
+      const template = CHAIN_EDGE_PHRASE[edge.kind][role]
+      const text = template
+        .replaceAll("{self}", expTitle)
+        .replaceAll("{other}", other.title)
+      return {
+        edgeID: edge.id,
+        code: edge.kind,
+        label: style.label,
+        color: style.color,
+        text,
+        otherID,
+      }
+    }
+    const outgoing: HoverCardLine[] = []
+    const incoming: HoverCardLine[] = []
+    for (const e of visibleEdges()) {
+      if (e.from === id) {
+        const line = buildLine(e, "out")
+        if (line) outgoing.push(line)
+      } else if (e.to === id) {
+        const line = buildLine(e, "in")
+        if (line) incoming.push(line)
+      }
+    }
+    return { exp, x: node.x, y: node.y, outgoing, incoming }
+  })
 
   return (
     <div class="rf-graph-view" ref={(el) => (containerRef = el)}>
@@ -4031,6 +4121,99 @@ function ExperienceGraphView(props: {
           }}
         </For>
       </svg>
+      <Show when={hoverCard()} keyed>
+        {(c) => {
+          // Position the card beside the hovered node, clamped into view.
+          // SVG viewBox coords match CSS px (width/height attributes are set
+          // equal), so we can reuse node.x/y directly.
+          const cardW = 340
+          const cardMaxH = 360
+          const pad = 12
+          const style = () => {
+            const { w, h } = size()
+            const offset = 18
+            // Prefer right side; fall back to left if near right edge.
+            let left = c.x + offset
+            if (left + cardW + pad > w) left = c.x - offset - cardW
+            left = Math.max(pad, Math.min(w - cardW - pad, left))
+            let top = c.y - 20
+            top = Math.max(pad, Math.min(h - 80, top))
+            return {
+              left: `${left}px`,
+              top: `${top}px`,
+              "max-width": `${cardW}px`,
+              "max-height": `${cardMaxH}px`,
+            }
+          }
+          const total = () => c.outgoing.length + c.incoming.length
+          return (
+            <div class="rf-graph-hovercard" style={style()}>
+              <div class="rf-graph-hovercard-head">
+                <span
+                  class="rf-graph-hovercard-kind"
+                  data-palette={paletteFor(c.exp.kind)}
+                >
+                  {kindDisplay(c.exp.kind)}
+                </span>
+                <span class="rf-graph-hovercard-title">{clip(c.exp.title, 28)}</span>
+              </div>
+              <Show when={c.exp.abstract}>
+                <p class="rf-graph-hovercard-abstract">
+                  {clip(c.exp.abstract, 180)}
+                </p>
+              </Show>
+              <Show when={total() === 0}>
+                <div class="rf-graph-hovercard-empty">
+                  当前经验暂无连边
+                </div>
+              </Show>
+              <Show when={c.outgoing.length > 0}>
+                <div class="rf-graph-hovercard-section">
+                  <div class="rf-graph-hovercard-section-title">向外关联</div>
+                  <ul class="rf-graph-hovercard-list">
+                    <For each={c.outgoing}>
+                      {(ln) => (
+                        <li class="rf-graph-hovercard-item">
+                          <span
+                            class="rf-graph-hovercard-tag"
+                            style={{ "--rf-edge-color": ln.color } as never}
+                          >
+                            {ln.label}
+                          </span>
+                          <span class="rf-graph-hovercard-text">{ln.text}</span>
+                        </li>
+                      )}
+                    </For>
+                  </ul>
+                </div>
+              </Show>
+              <Show when={c.incoming.length > 0}>
+                <div class="rf-graph-hovercard-section">
+                  <div class="rf-graph-hovercard-section-title">来自其他</div>
+                  <ul class="rf-graph-hovercard-list">
+                    <For each={c.incoming}>
+                      {(ln) => (
+                        <li class="rf-graph-hovercard-item">
+                          <span
+                            class="rf-graph-hovercard-tag"
+                            style={{ "--rf-edge-color": ln.color } as never}
+                          >
+                            {ln.label}
+                          </span>
+                          <span class="rf-graph-hovercard-text">{ln.text}</span>
+                        </li>
+                      )}
+                    </For>
+                  </ul>
+                </div>
+              </Show>
+              <div class="rf-graph-hovercard-foot">
+                点击节点查看详情 · 共 {total()} 条关联
+              </div>
+            </div>
+          )
+        }}
+      </Show>
       <Show when={props.loading}>
         <div class="rf-graph-loading">载入中…</div>
       </Show>

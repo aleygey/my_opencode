@@ -68,6 +68,7 @@ import { Bus } from "../bus"
 import { Agent } from "../agent/agent"
 import { Skill } from "../skill"
 import { Permission } from "@/permission"
+import { Serial } from "@/serial"
 
 const log = Log.create({ service: "tool.registry" })
 
@@ -110,6 +111,7 @@ export const layer: Layer.Layer<
   | Ripgrep.Service
   | Format.Service
   | Truncate.Service
+  | Serial.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -411,6 +413,11 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Skill.defaultLayer),
     Layer.provide(Agent.defaultLayer),
     Layer.provide(Session.defaultLayer),
+    // Note: SessionPrompt is NOT a ToolRegistry dependency. Tools that need
+    // to call SessionPrompt (sand-table, workflow_node_start, workflow_control)
+    // bridge to it at execute time via AppRuntime rather than pulling the
+    // Service at init — pulling it at init would reintroduce a hard cycle
+    // (SessionPrompt.defaultLayer already provides ToolRegistry.defaultLayer).
     Layer.provide(Provider.defaultLayer),
     Layer.provide(LSP.defaultLayer),
     Layer.provide(Instruction.defaultLayer),
@@ -421,5 +428,6 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(CrossSpawnSpawner.defaultLayer),
     Layer.provide(Ripgrep.defaultLayer),
     Layer.provide(Truncate.defaultLayer),
+    Layer.provide(Serial.defaultLayer),
   ),
 )

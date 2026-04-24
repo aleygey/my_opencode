@@ -109,21 +109,36 @@ export const layer: Layer.Layer<Service> = Layer.effect(
       ),
     )
 
-    const persistToken = Effect.fn("AccountRepo.persistToken")((input) =>
-      query((db) =>
-        db
-          .update(AccountTable)
-          .set({
-            access_token: input.accessToken,
-            refresh_token: input.refreshToken,
-            token_expiry: Option.getOrNull(input.expiry),
-          })
-          .where(eq(AccountTable.id, input.accountID))
-          .run(),
-      ).pipe(Effect.asVoid),
+    const persistToken = Effect.fn("AccountRepo.persistToken")(
+      (input: {
+        accountID: AccountID
+        accessToken: AccessToken
+        refreshToken: RefreshToken
+        expiry: Option.Option<number>
+      }) =>
+        query((db) =>
+          db
+            .update(AccountTable)
+            .set({
+              access_token: input.accessToken,
+              refresh_token: input.refreshToken,
+              token_expiry: Option.getOrNull(input.expiry),
+            })
+            .where(eq(AccountTable.id, input.accountID))
+            .run(),
+        ).pipe(Effect.asVoid),
     )
 
-    const persistAccount = Effect.fn("AccountRepo.persistAccount")((input) =>
+    const persistAccount = Effect.fn("AccountRepo.persistAccount")(
+      (input: {
+        id: AccountID
+        email: string
+        url: string
+        accessToken: AccessToken
+        refreshToken: RefreshToken
+        expiry: number
+        orgID: Option.Option<OrgID>
+      }) =>
       tx((db) => {
         const url = normalizeServerUrl(input.url)
 

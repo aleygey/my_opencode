@@ -2,8 +2,12 @@ import type { SerialPort, PortInfo, SerialOpts } from "./serial"
 
 export type { Disp, Exit, PortInfo, SerialOpts, SerialPort } from "./serial"
 
+// serialport is an optional, unshipped native dep — we load it dynamically and
+// silently degrade when it isn't present. Static type-checking is intentionally
+// disabled via `@ts-ignore` on the module specifier.
 export async function listPorts(): Promise<PortInfo[]> {
   try {
+    // @ts-ignore — optional native dependency
     const { SerialPort: SP } = await import("serialport")
     return await SP.list()
   } catch {
@@ -15,6 +19,7 @@ export function open(path: string, opts: SerialOpts): SerialPort {
   try {
     // Bun does not have native serialport bindings;
     // dynamic import will likely fail, in which case we throw.
+    // @ts-ignore — optional native dependency
     const mod = require("serialport")
     const port = new mod.SerialPort({
       path,

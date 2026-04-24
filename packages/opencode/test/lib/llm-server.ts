@@ -685,8 +685,7 @@ export class TestLLMServer extends Context.Service<TestLLMServer, TestLLMServer.
         if (next.type !== "sse") return fail(next)
         if (mode === "responses") return send(responses(next, modelFrom(body)))
         if (next.reset) {
-          yield* reset(next)
-          return HttpServerResponse.empty()
+          return yield* reset(next)
         }
         return send(next)
       })

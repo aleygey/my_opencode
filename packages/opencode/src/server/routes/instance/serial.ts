@@ -5,7 +5,7 @@ import z from "zod"
 import { Serial } from "@/serial"
 import { SerialID } from "@/serial/schema"
 import { NotFoundError } from "@/storage"
-import { errors } from "../error"
+import { errors } from "../../error"
 
 export function SerialRoutes(upgradeWebSocket: UpgradeWebSocket) {
   return new Hono()

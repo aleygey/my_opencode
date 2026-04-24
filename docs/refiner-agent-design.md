@@ -1,1411 +1,377 @@
-# 优化层 Refiner Agent 设计文档
+# Refiner Agent 设计文档
 
-## 一、架构定位
-
-### 1.1 五层架构全景
-
-在现有四层架构基础上，新增第五层——**优化层**：
-
-```mermaid
-flowchart TB
-  U[用户]
-  O[编排层<br/>Root Agent]
-  R[运行时观察层<br/>Workflow Runtime]
-  E[执行层<br/>Subagent Nodes]
-  C[能力层<br/>Tools / Skills]
-  M[优化层<br/>Refiner Agent]
-  DB[(Memory DB)]
-
-  U --> O
-  O --> R
-  O --> E
-  O --> M
-  E --> R
-  E --> C
-  R --> O
-  R --> M
-  M --> DB
-  DB --> O
-  DB --> E
-```
-
-### 1.2 优化层职责
-
-| 职责              | 说明                                 | 触发时机                           |
-| ----------------- | ------------------------------------ | ---------------------------------- |
-| 上下文记忆提炼    | 从用户补充和执行过程中提炼可复用记忆 | 用户输入、node 状态变化            |
-| 问题模式记录      | 记录失败原因和解决方案               | node.failed、attempt_limit_reached |
-| Workflow 模式固化 | 将成功的 workflow 结构保存为模板     | workflow.completed                 |
-| 记忆检索注入      | 为新 workflow 推荐相关记忆和配置     | workflow_create 前                 |
-
-### 1.3 与其他层的关系
-
-| 交互方    | 数据流向 | 内容                                  |
-| --------- | -------- | ------------------------------------- |
-| 编排层    | 双向     | 接收提炼后的记忆，提供历史模式推荐    |
-| 运行时层  | 单向接收 | 监听 workflow/node event 获取执行事实 |
-| 执行层    | 单向接收 | 接收 attempt report 中的 needs/errors |
-| Memory DB | 双向     | 存储和检索记忆数据                    |
+> 本文只描述 Refiner 层的**模型、契约与推理规则**，不涉及前端界面、进度排期、版本划分。实现代码位于
+> `packages/opencode/src/refiner/`，提示词位于 `packages/opencode/src/agent/prompt/refiner.txt`，
+> 磁盘目录 `.opencode/refiner-memory/`。
 
 ---
 
-## 二、Refiner Agent 核心设计
+## 1. 角色与边界
 
-### 2.1 Agent 定义
+Refiner 是一个**离线/旁路**的 agent：它不参与 workflow 执行，也不直接回答用户。它的唯一职责是从会话
+与 workflow 快照中**提炼可复用的经验**，把它们组织成一张有向图，供 Master / Slave 在未来会话里
+按需召回。
 
-```typescript
-// packages/opencode/src/agent/refiner.ts
-interface RefinerAgent {
-  id: "refiner"
-  mode: "system" // 系统级 Agent，不直接对用户
-  triggers: TriggerRule[]
-  capabilities: RefinementCapability[]
-}
-```
+三条硬边界：
 
-### 2.2 三种提炼模式
-
-#### 模式 A：用户上下文提炼 (ContextRefiner)
-
-**触发条件**：用户在 root session 中补充上下文
-
-**处理流程**：
-
-```
-用户输入 → 判断是否与 workflow 相关 → 提炼记忆 → 存储/更新 DB
-```
-
-**判断规则**：
-
-```typescript
-interface ContextRelevanceCheck {
-  // 1. 是否包含 workflow 相关关键词
-  hasWorkflowKeywords: boolean // 如"提交"、"构建"、"验证"、"推送"等
-
-  // 2. 是否描述执行动作或约束
-  describesActionOrConstraint: boolean
-
-  // 3. 是否与当前活跃 workflow 的任务类型匹配
-  matchesActiveWorkflowType: boolean
-
-  // 4. 是否提供了新的工具/skill 使用方式
-  introducesNewToolUsage: boolean
-
-  // 综合判断
-  isRelevant: boolean // 以上任意 2 项为 true
-}
-```
-
-**提炼输出**：
-
-```typescript
-interface RefinedContext {
-  // 原始上下文摘要
-  originalSummary: string
-
-  // 提炼后的记忆（简洁表述）
-  refinedMemory: string // 如："代码完成后需 git 提交，推送到 gerrit，触发 jenkins 构建验证"
-
-  // 任务类型
-  taskType: TaskType // 见 3.2 节
-
-  // 与 workflow 的关系
-  workflowRelation: {
-    phase: string // 如 "post-coding", "pre-build", "verification"
-    position: "before" | "after" | "during"
-    targetNode: string // 关联的 node agent 类型
-  }
-
-  // 涉及的 skills/tools
-  requiredSkills: string[] // 如 ["gerrit", "jenkins"]
-  requiredTools: string[]
-
-  // 环境变量或配置
-  envVars: Record<string, string>
-  workingDir?: string
-}
-```
-
-#### 模式 B：执行问题提炼 (IssueRefiner)
-
-**触发条件**：node.failed、node.stalled、node.attempt_limit_reached
-
-**处理流程**：
-
-```
-执行失败 → 分析 attempt report → 判断缺失类型 → 记录问题模式
-```
-
-**判断规则**：
-
-```typescript
-interface IssueClassification {
-  // 从 attempt report 的 needs 字段分析
-  needType: "context" | "tool" | "skill" | "permission" | "environment" | "decision"
-
-  // 是否可通过补充上下文解决
-  isContextMissing: boolean
-
-  // 是否缺少工具或 skill
-  isToolMissing: boolean
-
-  // 补充后是否成功（用于验证记忆有效性）
-  resolvedAfterSupplement?: boolean
-
-  // 问题模式摘要
-  issuePattern: string // 如："coding agent 缺少目标分支信息导致 push 失败"
-
-  // 解决方案
-  solution: string // 如："在 node config 中注入 upstream_branch 参数"
-}
-```
-
-**提炼输出**：
-
-```typescript
-interface RefinedIssue {
-  // 问题分类
-  category: IssueCategory
-
-  // 问题描述
-  description: string
-
-  // 根因分析
-  rootCause: string
-
-  // 解决方案
-  solution: string
-
-  // 涉及的 agent 类型
-  affectedAgents: string[]
-
-  // 缺失的 NEED 类型
-  missingNeeds: NeedType[]
-
-  // 解决该问题需要的配置
-  requiredConfig: Record<string, unknown>
-
-  // 验证状态（后续 workflow 是否成功复用）
-  validationStatus: "unverified" | "verified" | "failed"
-}
-```
-
-#### 模式 C：Workflow 模式固化 (PatternRefiner)
-
-**触发条件**：workflow.completed 且 result_status = "success"
-
-**处理流程**：
-
-```
-workflow 完成 → 分析 graph 结构 → 提取成功模式 → 存储为模板
-```
-
-**提炼输出**：
-
-```typescript
-interface WorkflowPattern {
-  // 模式名称
-  name: string
-
-  // 任务类型
-  taskType: TaskType
-
-  // 节点序列（抽象化，去除具体 session_id）
-  nodeSequence: {
-    agent: string
-    title: string
-    position: number
-    config: Record<string, unknown> // 关键配置参数
-    checkpoints: string[]
-  }[]
-
-  // 节点间依赖关系
-  edges: {
-    from: string // agent 类型
-    to: string
-    label: string
-  }[]
-
-  // 成功关键因素
-  successFactors: string[]
-
-  // 常见陷阱
-  commonPitfalls: string[]
-
-  // 推荐模型路由
-  recommendedModels: {
-    [agent: string]: { providerID: string; modelID: string }
-  }
-
-  // 使用次数统计
-  usageCount: number
-  successRate: number
-}
-```
+1. **不复述**。Refiner 的输出是**抽象**，不是"用户说了什么"的记录。输出里看到大段用户原文 = 失败。
+2. **不裁决**。Refiner 只标记冲突（`contradicts` / `conflicts_with`），是否真正矛盾、哪条为准，
+   交给用户或上层 agent。
+3. **不混合**。Refiner 不把"已有经验"当作它的搜索结果来回答当前问题；它只决定**新观察怎么
+   沉淀进图**。召回（retrieve）是另一条路径。
 
 ---
 
-## 二.3 判断逻辑详解
+## 2. 模型
 
-### 2.3.1 用户上下文相关性判断决策树
+图谱由三种对象构成：
 
-当用户补充上下文时，Refiner Agent 需要判断是否与当前 workflow 相关：
+| 对象 | 含义 | 存储 |
+| --- | --- | --- |
+| **Observation（观察）** | 一次原始输入（一条用户消息 + 当时的 agent 上下文快照） | `.opencode/refiner-memory/observations/<session_id>/<id>.md` |
+| **Experience（经验）** | 从一条或多条 observation 中提炼出的可复用知识 | `.opencode/refiner-memory/experiences/<kind>/<id>.md` |
+| **Edge（边）** | 两个 experience 之间的有向关系 | `.opencode/refiner-memory/graph.ndjson` |
 
+配套文件：
+
+- `taxonomy.json` — 记录已经出现过的 `custom:<slug>` kind 和 category slug 频次。
+- `rejected.ndjson` — noise / 降级 / 守门拦截的审计流，追加写入，永不覆盖。
+- `config.json` — refiner 的用户覆盖（模型路由、分类归一化等）。
+
+### 2.1 Observation
+
+```ts
+type Observation = {
+  id: string                       // `${session_id}:${message_id}:${ts}`
+  observed_at: number
+  session_id: string
+  message_id: string               // 指向原始用户消息（可深链）
+  user_text: string                // 原文
+  source: "session" | "manual_augment" | "ingest"
+  note?: string                    // 仅 manual_augment 使用，用户补充说明
+  agent_context: {
+    session_history_excerpt: Array<{
+      role: "user" | "assistant"
+      text: string
+      message_id: string
+    }>                             // 当前消息之前的最多 3 条
+    workflow_snapshot?: {
+      workflow_id: string
+      node_id?: string
+      phase?: string
+      recent_events: Array<{ kind: string; at: number; summary: string }>
+    }
+  }
+}
 ```
-用户输入
-  │
-  ├─ 1. 是否包含 workflow 关键词？
-  │    ├─ 是 → 标记 keyword_match = true
-  │    └─ 否 → 继续判断
-  │
-  ├─ 2. 是否描述执行动作或约束？
-  │    ├─ 是 → 标记 action_constraint = true
-  │    └─ 否 → 继续判断
-  │
-  ├─ 3. 是否与当前活跃 workflow 的任务类型匹配？
-  │    ├─ 是 → 标记 task_type_match = true
-  │    └─ 否 → 继续判断
-  │
-  ├─ 4. 是否引入了新的工具/skill 使用方式？
-  │    ├─ 是 → 标记 new_tool_usage = true
-  │    └─ 否 → 继续判断
-  │
-  └─ 5. 综合判断：
-       ├─ 以上任意 2 项为 true → 相关，进入提炼流程
-       └─ 否则 → 跳过，记录日志
-```
 
-**示例判断过程**：
+两条设计约束：
 
-| 用户输入                          | keyword_match        | action_constraint | task_type_match     | new_tool_usage | 结果                 |
-| --------------------------------- | -------------------- | ----------------- | ------------------- | -------------- | -------------------- |
-| "修改后请帮我做提交"              | ✅ (提交)            | ✅ (描述动作)     | ✅ (coding 任务)    | ❌             | **相关** (3 项 true) |
-| "后续提交到 gerrit，jenkins 验证" | ✅ (gerrit, jenkins) | ✅ (描述流程)     | ✅ (firmware_build) | ✅ (新工具链)  | **相关** (4 项 true) |
-| "今天天气不错"                    | ❌                   | ❌                | ❌                  | ❌             | **跳过** (0 项 true) |
-| "代码风格用 prettier"             | ✅ (代码)            | ✅ (约束)         | ❌ (可能不匹配)     | ✅ (新工具)    | **相关** (3 项 true) |
+- **捕获是幂等的**：`captureObservation(session, message, text, observed_at, source)`
+  是 live / ingest 共用的唯一入口，保证"历史导入"和"实时捕获"在字段上完全等价。
+- **仅取前 3 条前文**：消息到达时后文尚未产生，不做异步补齐。若需要更早上下文，由 refiner
+  在路由时通过只读工具 `get_session_history` 主动拉取。
 
-### 2.3.2 任务执行缺失判断逻辑
+### 2.2 Experience
 
-当执行层 Agent 失败时，Refiner Agent 需要分析缺失类型：
-
-```typescript
-interface NeedClassification {
-  // 从 attempt report 的 needs 字段分析
-  needs: Array<{
-    type: "context" | "tool" | "skill" | "permission" | "environment" | "decision"
-    description: string
-    canBeSupplementedBy: "root" | "user" | "tool_agent" | "system"
-    priority: "high" | "medium" | "low"
+```ts
+type Experience = {
+  id: string
+  kind: CoreKind | `custom:${slug}`
+  title: string                    // 名词短语；不以动宾结句
+  abstract: string                 // 1–3 句提炼；保留规格 token，抽象叙事
+  statement?: string               // 可选，机器可读陈述 e.g. "after:commit => require:lint"
+  trigger_condition?: string
+  task_type?: string
+  scope: "workspace" | "project" | "repo" | "user"
+  categories: string[]             // 0–4 个 kebab-case 标签
+  observations: Observation[]
+  related_experience_ids: string[] // 软关联；与 graph.ndjson 的 see_also 语义相同
+  conflicts_with: string[]         // experience 级 soft marker
+  refinement_history: Array<{
+    at: number
+    trigger_observation_id: string
+    prev_snapshot?: { title; abstract; statement?; trigger_condition?; kind?; scope?; categories? }
+    prev_abstract_digest?: string  // 前版 abstract 的 sha1 前 12 位（兼容旧行）
+    kind?: "auto" | "manual_augment" | "manual_edit" | "merge" | "undo" | "re_refine"
+    source_ids?: string[]
+    model: string
   }>
-
-  // 缺失类型统计
-  missingContextCount: number
-  missingToolCount: number
-  missingSkillCount: number
-
-  // 判断主要缺失类型
-  primaryMissingType: "context" | "tool" | "skill" | "mixed"
-
-  // 处理建议
-  recommendation: {
-    action: "supplement_context" | "update_tool" | "install_skill" | "request_user_input"
-    target: string // root agent, tool agent, user, etc.
-    details: string
-  }
+  archived: boolean
+  archived_at?: number
+  created_at: number
+  last_refined_at: number
 }
 ```
 
-**判断规则**：
-
-| 缺失类型   | 判断依据                               | 处理动作             | 负责方            |
-| ---------- | -------------------------------------- | -------------------- | ----------------- |
-| 上下文缺失 | needs 中包含路径、配置、约束等信息缺失 | 补充上下文后重试     | Root Agent        |
-| 工具缺失   | needs 中包含工具未安装、命令不存在     | 启动 Tool Agent 更新 | Tool Agent        |
-| Skill 缺失 | needs 中包含 skill 未配置、流程不熟悉  | 记录并更新 skill     | Tool Agent        |
-| 权限缺失   | needs 中包含权限不足、认证失败         | 请求用户提供         | User              |
-| 环境缺失   | needs 中包含环境变量、依赖缺失         | 记录并更新环境配置   | System/Tool Agent |
-| 决策缺失   | needs 中包含需要用户确认的业务决策     | 暂停并请求用户       | User              |
-
-### 2.3.3 Tool Agent 设计
-
-Tool Agent 是专门负责工具链维护和更新的系统级 Agent：
-
-```typescript
-interface ToolAgent {
-  id: "tool-agent"
-  mode: "system"
-  capabilities: {
-    // 工具安装和更新
-    installTool: (toolName: string, version?: string) => Promise<InstallResult>
-    updateTool: (toolName: string) => Promise<UpdateResult>
-
-    // Skill 配置和更新
-    configureSkill: (skillName: string, config: Record<string, unknown>) => Promise<void>
-    updateSkill: (skillName: string) => Promise<void>
-
-    // 环境配置
-    setupEnvironment: (envVars: Record<string, string>) => Promise<void>
-    installDependencies: (packageManager: string, packages: string[]) => Promise<void>
-
-    // 工具验证
-    verifyTool: (toolName: string) => Promise<VerificationResult>
-    testSkill: (skillName: string) => Promise<TestResult>
-  }
-}
-```
-
-**Tool Agent 触发时机**：
-
-| 触发条件     | 来源                                    | 处理动作          |
-| ------------ | --------------------------------------- | ----------------- |
-| 工具未安装   | IssueRefiner 检测到 tool_missing        | 安装工具并验证    |
-| Skill 未配置 | IssueRefiner 检测到 skill_missing       | 配置 skill 并测试 |
-| 环境依赖缺失 | IssueRefiner 检测到 environment_missing | 安装依赖并验证    |
-| 工具版本过旧 | PatternRefiner 检测到版本不匹配         | 更新工具并验证    |
-| 新工具链引入 | ContextRefiner 检测到新工具使用方式     | 安装并配置工具链  |
-
-**Tool Agent 工作流程**：
-
-```
-Refiner Agent 检测到工具缺失
-  │
-  ├─ 1. 分类缺失类型
-  │    ├─ 工具未安装 → installTool
-  │    ├─ Skill 未配置 → configureSkill
-  │    └─ 环境依赖缺失 → installDependencies
-  │
-  ├─ 2. 执行安装/配置
-  │    └─ 记录执行日志
-  │
-  ├─ 3. 验证安装结果
-  │    ├─ 验证工具可用性 → verifyTool
-  │    └─ 测试 skill 功能 → testSkill
-  │
-  └─ 4. 更新 Memory DB
-       ├─ 记录工具安装状态
-       ├─ 更新相关 workflow 配置
-       └─ 标记问题为 resolved
-```
-
----
-
-## 三、Task 类型 AI 归类机制
-
-### 3.1 Task 类型分类体系
-
-Refiner Agent 使用多层分类体系来识别和归类任务类型：
-
-```typescript
-interface TaskTypeClassifier {
-  // 一级分类（粗粒度）
-  primaryCategory: "development" | "operations" | "documentation" | "testing" | "analysis"
-
-  // 二级分类（细粒度）
-  secondaryCategory: TaskType // 见下方枚举
-
-  // 分类置信度
-  confidence: number // 0-1
-
-  // 分类依据
-  reasoning: {
-    keywords: string[]
-    patterns: string[]
-    context: string[]
-  }
-}
-
-// 任务类型枚举（扩展版）
-export const TASK_TYPES = {
-  // 开发类
-  feature_development: "功能开发",
-  bug_fix: "缺陷修复",
-  refactoring: "代码重构",
-  api_development: "API 开发",
-  ui_development: "UI 开发",
-
-  // 运维类
-  firmware_build: "固件构建",
-  deployment: "部署发布",
-  environment_setup: "环境配置",
-  ci_cd_pipeline: "CI/CD 流水线",
-
-  // 文档类
-  documentation: "文档编写",
-  blog_writing: "博客撰写",
-  requirement_report: "需求报告",
-  form_filling: "单据填写",
-
-  // 测试类
-  performance_testing: "性能测试",
-  unit_testing: "单元测试",
-  integration_testing: "集成测试",
-  firmware_validation: "固件验证",
-
-  // 分析类
-  code_review: "代码审查",
-  log_analysis: "日志分析",
-  root_cause_analysis: "根因分析",
-} as const
-```
-
-### 3.2 AI 归类算法
-
-```typescript
-// packages/opencode/src/refiner/classifier.ts
-
-interface TaskClassificationResult {
-  taskType: TaskType
-  confidence: number
-  reasoning: string[]
-  alternativeTypes: Array<{ type: TaskType; confidence: number }>
-}
-
-async function classifyTaskType(
-  userInput: string,
-  workflowContext: WorkflowSnapshot,
-  history: MemoryRecord[],
-): Promise<TaskClassificationResult> {
-  // Step 1: 关键词匹配（快速初筛）
-  const keywordMatches = matchTaskKeywords(userInput)
-
-  // Step 2: 语义匹配（LLM 辅助判断）
-  const semanticResult = await llmClassifyTask({
-    input: userInput,
-    workflowContext: {
-      taskType: workflowContext.taskType,
-      agents: workflowContext.agents,
-      nodes: workflowContext.nodes,
-    },
-    history: history.slice(0, 10), // 最近 10 条记忆
-  })
-
-  // Step 3: 上下文关联（参考当前 workflow 类型）
-  const contextScore = workflowContext.taskType ? 0.3 : 0
-
-  // Step 4: 历史模式匹配（参考相似任务）
-  const historyMatches = findSimilarTasksInHistory(userInput, history)
-
-  // Step 5: 综合判断
-  const finalResult = combineClassificationResults({
-    keywordMatches,
-    semanticResult,
-    contextScore,
-    historyMatches,
-  })
-
-  return finalResult
-}
-
-// 关键词映射表
-const TASK_KEYWORDS = {
-  feature_development: ["实现", "开发", "新增", "功能", "feature", "implement"],
-  bug_fix: ["修复", "bug", "缺陷", "错误", "fix", "patch"],
-  firmware_build: ["编译", "构建", "固件", "build", "compile", "firmware"],
-  deployment: ["部署", "发布", "上线", "deploy", "release", "publish"],
-  documentation: ["文档", "说明", "手册", "doc", "manual", "guide"],
-  // ... 更多映射
-}
-```
-
-### 3.3 归类示例
-
-| 用户输入                          | 一级分类      | 二级分类            | 置信度 | 判断依据                        |
-| --------------------------------- | ------------- | ------------------- | ------ | ------------------------------- |
-| "帮我实现用户登录功能"            | development   | feature_development | 0.92   | 关键词"实现"+"功能"             |
-| "修复登录页面的样式问题"          | development   | bug_fix             | 0.88   | 关键词"修复"+"问题"             |
-| "编译固件并烧录到设备"            | operations    | firmware_build      | 0.95   | 关键词"编译"+"固件"+"烧录"      |
-| "写一份 API 接口文档"             | documentation | documentation       | 0.90   | 关键词"文档"+"API"              |
-| "提交到 gerrit 并在 jenkins 构建" | operations    | ci_cd_pipeline      | 0.87   | 关键词"gerrit"+"jenkins"+"构建" |
-
----
-
-## 四、Memory 数据库设计
-
-### 3.1 Schema 总览
-
-使用 Drizzle ORM 在 SQLite 上定义，新增 4 张表：
-
-```
-workflow_memory      - 提炼后的记忆记录
-workflow_pattern     - 成功的 workflow 模式模板
-workflow_issue       - 问题模式和解决方案
-context_rule         - 用户上下文规则
-```
-
-### 3.2 表结构定义
-
-#### 表 1：workflow_memory
-
-存储提炼后的上下文记忆。
-
-```typescript
-// packages/opencode/src/refiner/memory.sql.ts
-import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core"
-
-export const workflowMemoryTable = sqliteTable("workflow_memory", {
-  id: text().primaryKey(),
-
-  // 记忆类型
-  memory_type: text().notNull(), // "context" | "issue" | "pattern"
-
-  // 任务类型分类
-  task_type: text().notNull(), // 见下方枚举
-
-  // 记忆内容（提炼后的简洁表述）
-  content: text().notNull(),
-
-  // 原始上下文摘要（用于追溯）
-  original_context: text(),
-
-  // 关联的 workflow_id（如果有）
-  workflow_id: text(),
-
-  // 涉及的 agent 类型
-  agents: text().notNull(), // JSON array: ["coding", "build-flash"]
-
-  // 涉及的 skills/tools
-  skills: text(), // JSON array
-  tools: text(), // JSON array
-
-  // 环境变量
-  env_vars: text(), // JSON object
-
-  // 工作目录
-  working_dir: text(),
-
-  // 记忆来源
-  source: text().notNull(), // "user_input" | "execution_failure" | "workflow_completion"
-
-  // 置信度（基于使用次数和成功率）
-  confidence: integer().notNull().default(50), // 0-100
-
-  // 使用统计
-  usage_count: integer().notNull().default(0),
-  success_count: integer().notNull().default(0),
-
-  // 时间戳
-  created_at: integer().notNull(),
-  updated_at: integer().notNull(),
-
-  // 是否激活
-  is_active: integer().notNull().default(1), // 0 or 1
-})
-
-// 任务类型枚举
-export const TASK_TYPES = [
-  "feature_development", // 功能开发
-  "bug_fix", // 缺陷修复
-  "form_filling", // 单据填写
-  "requirement_report", // 需求报告
-  "blog_writing", // 博客撰写
-  "performance_testing", // 性能测试
-  "firmware_build", // 固件构建
-  "code_review", // 代码审查
-  "documentation", // 文档编写
-  "deployment", // 部署发布
-] as const
-```
-
-#### 表 2：workflow_pattern
-
-存储成功的 workflow 模式模板。
-
-```typescript
-export const workflowPatternTable = sqliteTable("workflow_pattern", {
-  id: text().primaryKey(),
-
-  // 模式名称
-  name: text().notNull(),
-
-  // 任务类型
-  task_type: text().notNull(),
-
-  // 模式描述
-  description: text().notNull(),
-
-  // 节点定义（抽象化）
-  nodes: text().notNull(), // JSON: [{agent, title, position, config, checkpoints}]
-
-  // 边定义
-  edges: text().notNull(), // JSON: [{from, to, label}]
-
-  // 检查点定义
-  checkpoints: text(), // JSON: [{node_id, label, status}]
-
-  // 成功因素
-  success_factors: text(), // JSON array
-
-  // 常见陷阱
-  common_pitfalls: text(), // JSON array
-
-  // 推荐模型路由
-  recommended_models: text(), // JSON: {agent: {providerID, modelID}}
-
-  // 配置模板
-  config_template: text(), // JSON object
-
-  // 统计
-  usage_count: integer().notNull().default(0),
-  success_count: integer().notNull().default(0),
-  avg_actions_per_node: text(), // JSON: {agent: avg_count}
-
-  // 时间戳
-  created_at: integer().notNull(),
-  updated_at: integer().notNull(),
-
-  // 是否推荐
-  is_recommended: integer().notNull().default(0),
-})
-```
-
-#### 表 3：workflow_issue
-
-记录问题模式和解决方案。
-
-```typescript
-export const workflowIssueTable = sqliteTable("workflow_issue", {
-  id: text().primaryKey(),
-
-  // 问题分类
-  category: text().notNull(), // "context_missing" | "tool_missing" | "skill_missing" | "permission" | "environment" | "decision"
-
-  // 任务类型
-  task_type: text().notNull(),
-
-  // 问题描述
-  description: text().notNull(),
-
-  // 根因分析
-  root_cause: text().notNull(),
-
-  // 解决方案
-  solution: text().notNull(),
-
-  // 涉及的 agent
-  affected_agents: text().notNull(), // JSON array
-
-  // 缺失的 NEED 类型
-  missing_needs: text().notNull(), // JSON array
-
-  // 解决所需配置
-  required_config: text(), // JSON object
-
-  // 验证状态
-  validation_status: text().notNull().default("unverified"), // "unverified" | "verified" | "failed"
-
-  // 关联的 workflow_id
-  workflow_id: text(),
-  node_id: text(),
-
-  // 时间戳
-  created_at: integer().notNull(),
-  resolved_at: integer(),
-})
-```
-
-#### 表 4：context_rule
-
-存储用户上下文规则（长期有效的约束）。
-
-```typescript
-export const contextRuleTable = sqliteTable("context_rule", {
-  id: text().primaryKey(),
-
-  // 规则名称
-  name: text().notNull(),
-
-  // 规则描述
-  description: text().notNull(),
-
-  // 规则类型
-  rule_type: text().notNull(), // "commit_format" | "build_process" | "deployment" | "code_style" | "review_process"
-
-  // 规则内容
-  content: text().notNull(),
-
-  // 适用任务类型
-  applicable_task_types: text(), // JSON array
-
-  // 适用 agent 类型
-  applicable_agents: text(), // JSON array
-
-  // 优先级
-  priority: integer().notNull().default(50), // 0-100
-
-  // 是否激活
-  is_active: integer().notNull().default(1),
-
-  // 时间戳
-  created_at: integer().notNull(),
-  updated_at: integer().notNull(),
-})
-```
-
----
-
-## 四、上下文提炼逻辑
-
-### 4.1 相关性判断引擎
-
-```typescript
-// packages/opencode/src/refiner/relevance.ts
-
-interface RelevanceScorer {
-  // 关键词匹配权重
-  keywordWeight: number // 默认 0.3
-
-  // 语义匹配权重
-  semanticWeight: number // 默认 0.4
-
-  // 上下文关联权重
-  contextWeight: number // 默认 0.3
-}
-
-function calculateRelevance(
-  userInput: string,
-  activeWorkflow: WorkflowSnapshot,
-  scorer: RelevanceScorer = defaultScorer,
-): RelevanceResult {
-  // 1. 关键词匹配
-  const keywordScore = matchWorkflowKeywords(userInput)
-
-  // 2. 语义匹配（使用 embedding 或 LLM 判断）
-  const semanticScore = await assessSemanticRelevance(userInput, activeWorkflow)
-
-  // 3. 上下文关联（是否与当前节点任务相关）
-  const contextScore = assessContextRelation(userInput, activeWorkflow.activeNodes)
-
-  // 加权计算
-  const totalScore =
-    keywordScore * scorer.keywordWeight + semanticScore * scorer.semanticWeight + contextScore * scorer.contextWeight
-
-  return {
-    score: totalScore,
-    isRelevant: totalScore >= 0.6, // 阈值可配置
-    breakdown: { keywordScore, semanticScore, contextScore },
-  }
-}
-
-// 关键词库
-const WORKFLOW_KEYWORDS = [
-  // 构建相关
-  "构建",
-  "编译",
-  "build",
-  "compile",
-  "package",
-  // 提交相关
-  "提交",
-  "commit",
-  "push",
-  "gerrit",
-  "merge",
-  // 验证相关
-  "验证",
-  "测试",
-  "test",
-  "verify",
-  "validate",
-  "jenkins",
-  // 部署相关
-  "部署",
-  "deploy",
-  "发布",
-  "release",
-  "flash",
-  // 代码相关
-  "代码",
-  "code",
-  "实现",
-  "implement",
-  "修复",
-  "fix",
-  // 流程相关
-  "流程",
-  "流程",
-  "步骤",
-  "step",
-  "顺序",
-  "order",
-]
-```
-
-### 4.2 记忆提炼流程
-
-```typescript
-// packages/opencode/src/refiner/refine.ts
-
-async function refineUserContext(userInput: string, workflow: WorkflowSnapshot): Promise<RefinedContext> {
-  // Step 1: 判断相关性
-  const relevance = calculateRelevance(userInput, workflow)
-  if (!relevance.isRelevant) {
-    return { skip: true, reason: "与当前 workflow 无关" }
-  }
-
-  // Step 2: 识别任务类型
-  const taskType = classifyTaskType(userInput, workflow)
-
-  // Step 3: 提炼与 workflow 的关系
-  const relation = extractWorkflowRelation(userInput, workflow)
-
-  // Step 4: 识别涉及的 skills/tools
-  const skills = extractRequiredSkills(userInput)
-  const tools = extractRequiredTools(userInput)
-
-  // Step 5: 生成简洁记忆
-  const refinedMemory = await generateRefinedMemory({
-    original: userInput,
-    taskType,
-    relation,
-    skills,
-    tools,
-  })
-
-  return {
-    skip: false,
-    refinedMemory,
-    taskType,
-    workflowRelation: relation,
-    requiredSkills: skills,
-    requiredTools: tools,
-  }
-}
-```
-
-### 4.3 提炼示例
-
-#### 示例 1：用户补充提交要求
-
-**用户输入**：
-
-> 修改后请帮我做提交，提交格式符合：
-> 【问题原因】xxxx
-> 【提交说明】xxxx
-
-**提炼结果**：
-
-```json
-{
-  "refinedMemory": "代码修改完成后需执行 git commit，提交信息包含【问题原因】和【提交说明】两个段落",
-  "taskType": "feature_development",
-  "workflowRelation": {
-    "phase": "post-coding",
-    "position": "after",
-    "targetNode": "coding"
-  },
-  "requiredSkills": ["git"],
-  "requiredTools": ["bash"],
-  "contextRule": {
-    "name": "commit_format_requirement",
-    "type": "commit_format",
-    "content": "提交信息必须包含【问题原因】和【提交说明】两个段落"
-  }
-}
-```
-
-#### 示例 2：用户补充构建流程
-
-**用户输入**：
-
-> 后续提交到 gerrit 上，并在 jenkins 上编译验证固件
-
-**提炼结果**：
-
-```json
-{
-  "refinedMemory": "代码提交到 gerrit 后，触发 jenkins 构建 job 验证固件",
-  "taskType": "firmware_build",
-  "workflowRelation": {
-    "phase": "post-commit",
-    "position": "after",
-    "targetNode": "build-flash"
-  },
-  "requiredSkills": ["gerrit", "jenkins"],
-  "requiredTools": ["bash"],
-  "contextRule": {
-    "name": "gerrit_jenkins_pipeline",
-    "type": "build_process",
-    "content": "提交到 gerrit → 触发 jenkins job → 构建验证固件"
-  }
+`kind` 与 `categories` 是**正交**的：前者是认知形态（这是规则？还是领域事实？），后者是主题索引
+（`git-workflow`、`compile-pipeline` …）。同一经验允许属于多个 categories，但只能归入一种 kind。
+
+### 2.3 Edge
+
+```ts
+type Edge = {
+  id: string                       // hash(from, to, kind)
+  from: string                     // experience id
+  to: string
+  kind: "requires" | "refines" | "supports" | "contradicts" | "see_also"
+  reason: string                   // ≤ 80 字中文
+  confidence: number               // 0–1，默认 0.7
+  created_at: number
+  created_by: "llm_route" | "llm_refine" | "user_manual" | "system"
+  source_observation_id?: string
 }
 ```
 
 ---
 
-## 五、触发机制和生命周期
+## 3. Taxonomy
 
-### 5.1 触发事件矩阵
+### 3.1 七个核心 kind
 
-| 触发事件                     | 来源         | 提炼模式        | 处理动作               |
-| ---------------------------- | ------------ | --------------- | ---------------------- |
-| `user.message`               | Root Session | ContextRefiner  | 判断相关性，提炼记忆   |
-| `node.failed`                | Runtime      | IssueRefiner    | 分析失败原因，记录问题 |
-| `node.stalled`               | Runtime      | IssueRefiner    | 分析停滞原因           |
-| `node.attempt_limit_reached` | Runtime      | IssueRefiner    | 记录达到上限的问题     |
-| `node.completed`             | Runtime      | PatternRefiner  | 记录成功模式           |
-| `workflow.completed`         | Runtime      | PatternRefiner  | 固化完整 workflow 模式 |
-| `workflow.created`           | Runtime      | MemoryRetriever | 检索相关记忆并注入     |
+| kind | 定位 | 典型例子 |
+| --- | --- | --- |
+| `workflow_rule` | 流程规则（顺序/因果） | "commit 前必须跑 `pnpm lint`" |
+| `workflow_gap` | 流程缺口 | "这里缺 gerrit 推送工具，需要 `git review -R`" |
+| `know_how` | 操作性指导 | "用 `bun test --only` 跑单条用例" |
+| `constraint_or_policy` | 硬约束/禁令 | "永远不动 `legacy/` 目录"；"UI 文字禁用 emoji" |
+| `domain_knowledge` | 领域/事实 | "Q3 指 7-9 月"；"order-svc 仅部署在 UTC+8" |
+| `preference_style` | 风格/偏好 | "代码注释用中文"；"commit message 不超 50 字" |
+| `pitfall_or_caveat` | 常见坑/注意点 | "首次 `bun install` 会拉镜像，慢是正常的" |
 
-### 5.2 Refiner Agent 生命周期
+### 3.2 动态扩展：`custom:<slug>`
 
-```mermaid
-stateDiagram-v2
-  [*] --> Idle: 系统启动
-  Idle --> Listening: 注册事件监听器
-  Listening --> ContextRefining: user.message
-  Listening --> IssueRefining: node.failed/stalled
-  Listening --> PatternRefining: workflow.completed
-  Listening --> MemoryRetrieving: workflow.created
+当七类都不贴切且确实存在可复用模式时，LLM 可输出 `custom:<slug>`（小写 ascii、kebab-case、
+≤ 24 字符，例如 `custom:env-setup`）。运行时把它记入 `taxonomy.json` 并在后续调用时把已知
+custom slug 列表回喂给 LLM，避免重复造词。**不做自动晋升**：是否把常见 custom 提升为核心类，
+是人工动作。
 
-  ContextRefining --> Evaluating: 提炼完成
-  IssueRefining --> Evaluating: 分析完成
-  PatternRefining --> Evaluating: 模式提取完成
-  MemoryRetrieving --> Injecting: 检索完成
+### 3.3 Categories（正交索引）
 
-  Evaluating --> Storing: 需要存储/更新
-  Evaluating --> Skipping: 不相关或无需处理
-  Injecting --> Storing: 更新使用统计
-
-  Storing --> Listening: 存储完成
-  Skipping --> Listening: 跳过
-```
-
-### 5.3 事件监听实现
-
-```typescript
-// packages/opencode/src/refiner/listener.ts
-
-export function startRefinerListener() {
-  // 监听用户消息
-  bus.subscribe("user.message", async (event) => {
-    const workflow = getActiveWorkflow(event.projectID)
-    if (!workflow) return
-
-    const result = await refineUserContext(event.message, workflow)
-    if (!result.skip) {
-      await storeMemory(result)
-    }
-  })
-
-  // 监听节点失败
-  bus.subscribe("node.failed", async (event) => {
-    const attemptReport = await getAttemptReport(event.nodeID)
-    const issue = await refineIssue(event, attemptReport)
-    await storeIssue(issue)
-  })
-
-  // 监听 workflow 完成
-  bus.subscribe("workflow.completed", async (event) => {
-    const workflow = await getWorkflow(event.workflowID)
-    if (workflow.result_status === "success") {
-      const pattern = await extractWorkflowPattern(workflow)
-      await storePattern(pattern)
-    }
-  })
-
-  // 监听 workflow 创建（用于记忆检索）
-  bus.subscribe("workflow.created", async (event) => {
-    const memories = await retrieveRelevantMemories(event.taskType)
-    if (memories.length > 0) {
-      await injectMemoriesToWorkflow(event.workflowID, memories)
-    }
-  })
-}
-```
+每条经验额外携带 0–4 个 category slug。运行时 `config.json` 支持 `category_aliases` 做归一化
+（例如把 `git_workflow` 规范成 `git-workflow`），避免同义词打散图谱。
 
 ---
 
-## 六、记忆检索和使用机制
+## 4. 边语义与图不变量
 
-### 6.1 检索策略
+### 4.1 五种边
 
-```typescript
-// packages/opencode/src/refiner/retriever.ts
+| 代码（存储） | 展示名 | 方向性 | 约束 | 常用意图 |
+| --- | --- | --- | --- | --- |
+| `requires` | 先决条件 | 严格有向 | **必须无环（DAG）** | "先完成 B 才能执行 A" |
+| `refines` | 细化 | 严格有向 | **必须无环（DAG）** | "A 是 B 的特化版本" |
+| `supports` | 支持 | 有向，允许回环 | — | "A 为 B 提供佐证" |
+| `contradicts` | 冲突 | 存储有向，语义对称 | — | "A 与 B 直接矛盾" |
+| `see_also` | 相关 | 弱方向 | — | "同话题可参考" |
 
-interface MemoryRetriever {
-  // 检索相关记忆
-  retrieve(context: RetrievalContext): Promise<MemoryMatch[]>
+展示名是 UI 和 hover card 默认读给用户看的标签；enum 值永远保持英文以稳定序列化。
 
-  // 检索成功模式
-  retrievePatterns(taskType: string): Promise<WorkflowPattern[]>
+### 4.2 写入时的不变量
 
-  // 检索已知问题
-  retrieveIssues(taskType: string, agents: string[]): Promise<WorkflowIssue[]>
-
-  // 检索上下文规则
-  retrieveRules(taskType: string, agents: string[]): Promise<ContextRule[]>
-}
-
-interface RetrievalContext {
-  taskType: string
-  agents: string[]
-  keywords: string[]
-  workingDir?: string
-}
-
-interface MemoryMatch {
-  memory: WorkflowMemory
-  relevanceScore: number // 0-1
-  matchReason: string
-}
+```
+tryApplyProposal(edges, proposal):
+  if proposal.from == proposal.to             → drop (self_loop)
+  if (from, to, kind) already exists           → idempotent skip
+  if kind ∈ {requires, refines} AND cycle      → downgrade + log:
+      requires → supports   (supports 允许回环)
+      refines  → see_also   (弱关联)
+  else                                          → append
 ```
 
-### 6.2 检索算法
+批量提案（LLM 一次路由可提交最多 5 条边）走 `applyBatch`：逐条评估，整体写盘，个别失败不回滚
+其他成功提案；守门降级与 dedup 都在内存快照里完成。
 
-```typescript
-async function retrieveRelevantMemories(context: RetrievalContext): Promise<MemoryMatch[]> {
-  const memories = await db.select().from(workflowMemoryTable).where(eq(workflowMemoryTable.is_active, 1))
-
-  const matches = memories.map((memory) => {
-    let score = 0
-    const reasons: string[] = []
-
-    // 1. 任务类型匹配（权重 0.4）
-    if (memory.task_type === context.taskType) {
-      score += 0.4
-      reasons.push("task_type_match")
-    }
-
-    // 2. Agent 类型匹配（权重 0.3）
-    const memoryAgents = JSON.parse(memory.agents)
-    const agentOverlap = intersection(memoryAgents, context.agents).length
-    if (agentOverlap > 0) {
-      score += 0.3 * (agentOverlap / context.agents.length)
-      reasons.push("agent_overlap")
-    }
-
-    // 3. 关键词匹配（权重 0.2）
-    const keywordMatches = context.keywords.filter((k) => memory.content.includes(k)).length
-    if (keywordMatches > 0) {
-      score += 0.2 * Math.min(keywordMatches / 3, 1)
-      reasons.push("keyword_match")
-    }
-
-    // 4. 置信度加成（权重 0.1）
-    score += 0.1 * (memory.confidence / 100)
-
-    return {
-      memory,
-      relevanceScore: score,
-      matchReason: reasons.join(", "),
-    }
-  })
-
-  // 过滤并排序
-  return matches
-    .filter((m) => m.relevanceScore >= 0.3)
-    .sort((a, b) => b.relevanceScore - a.relevanceScore)
-    .slice(0, 5) // 最多返回 5 条
-}
-```
-
-### 6.3 记忆注入方式
-
-#### 方式 A：Workflow 创建时注入
-
-```typescript
-// 在 orchestrator 创建 workflow 前调用
-async function prepareWorkflowWithMemory(taskDescription: string, taskType: string): Promise<WorkflowCreationContext> {
-  // 检索相关记忆
-  const memories = await retriever.retrieve({
-    taskType,
-    agents: inferAgents(taskDescription),
-    keywords: extractKeywords(taskDescription),
-  })
-
-  // 检索成功模式
-  const patterns = await retriever.retrievePatterns(taskType)
-
-  // 检索已知问题
-  const issues = await retriever.retrieveIssues(taskType, inferAgents(taskDescription))
-
-  // 检索上下文规则
-  const rules = await retriever.retrieveRules(taskType, inferAgents(taskDescription))
-
-  return {
-    memories,
-    patterns,
-    issues,
-    rules,
-    // 生成注入 prompt
-    injectionPrompt: generateInjectionPrompt({ memories, patterns, issues, rules }),
-  }
-}
-```
-
-#### 方式 B：Node 执行时注入
-
-```typescript
-// 在 workflow_node_start 时注入相关记忆
-async function startNodeWithMemory(node: WorkflowNode) {
-  const relevantMemories = await retrieveMemoriesForNode(node)
-
-  const contextInjection = relevantMemories.map((m) => `记忆提示：${m.refinedMemory}`).join("\n")
-
-  await workflow_node_start({
-    node_id: node.id,
-    initial_prompt: `${node.initial_prompt}\n\n## 相关记忆\n${contextInjection}`,
-  })
-}
-```
-
-#### 方式 C：执行失败时检索解决方案
-
-```typescript
-// 在 node.failed 时检索已知解决方案
-async function handleNodeFailureWithMemory(event: NodeFailedEvent) {
-  const issues = await retriever.retrieveIssues(event.taskType, [event.agent])
-
-  const matchingIssue = issues.find((issue) => isSimilarIssue(event.fail_reason, issue.description))
-
-  if (matchingIssue && matchingIssue.validation_status === "verified") {
-    // 应用已知解决方案
-    await workflow_control({
-      node_id: event.nodeID,
-      command: "inject_context",
-      payload: {
-        context: `已知解决方案：${matchingIssue.solution}`,
-      },
-    })
-  }
-}
-```
+`pruneDangling(baseDir, aliveIDs)` 在 experience 被删除/归档时被调用，清理悬空的边；
+`rewireEdges(from, to)` 在手动合并时把指向旧 id 的边改指向新 id。
 
 ---
 
-## 七、与现有系统集成
+## 5. 管道
 
-### 7.1 集成点
-
-| 集成点         | 位置                  | 集成方式                        |
-| -------------- | --------------------- | ------------------------------- |
-| Workflow 创建  | `workflow_create` 前  | 检索记忆并注入到 initial_prompt |
-| Node 启动      | `workflow_node_start` | 注入节点相关记忆                |
-| 事件监听       | `bus.subscribe`       | 监听 runtime 事件触发提炼       |
-| Attempt Report | `report()` 函数       | 扩展 needs 字段包含记忆引用     |
-| Root Wake      | `queueWake`           | 在 wake prompt 中包含记忆建议   |
-
-### 7.2 扩展 Attempt Report
-
-```typescript
-// 在现有 attempt report 基础上增加记忆相关字段
-interface EnhancedAttemptReport {
-  result: string
-  summary: string
-  needs: Need[]
-  actions: string[]
-  errors: string[]
-
-  // 新增：记忆相关
-  memory_references?: {
-    // 本次执行使用的记忆 ID
-    used_memories: string[]
-
-    // 建议新增的记忆（执行中发现的新知识）
-    suggested_memories: {
-      content: string
-      type: "context" | "issue" | "tip"
-    }[]
-  }
-}
+```
+observeUserMessage(sessionID, messageID)
+      │
+      ▼
+ captureObservation  ──► 写 observation md 文件
+      │
+      ▼
+ routeObservation (LLM, task: "route")
+      │
+      ├─ action: "noise"      → 追加 rejected.ndjson
+      ├─ action: "edge_only"  → persistEdgeBatch（只加边）
+      └─ action: "new"        → createExperience + （可选）persistEdgeBatch
+                                         │
+                                         ▼
+                             attachAndRefine 可在后续通过
+                             manual_augment / merge 再次触发
+                                         │
+                                         ▼
+                             refineExperience (LLM, task: "refine")
+                                         │
+                                         ▼
+                             写 experience md，追加 refinement_history
 ```
 
-### 7.3 扩展 Root Wake Prompt
+### 5.1 单次 route 可输出多项决定
 
-```typescript
-// 在 orchestrator wake 时包含记忆建议
-function buildWakePromptWithMemory(wakeEvent: WakeEvent, memories: MemoryMatch[]): string {
-  const basePrompt = buildBaseWakePrompt(wakeEvent)
+LLM 返回的是 `{ decisions: [...] }`，一条用户消息若同时夹带多个**明确不同主题**（不同 kind 或
+显著不同的指代对象）的想法，会被拆成多条决定，各自走 `new` / `edge_only` / `noise`。
+拆分上限 8 条；不确定时倾向合并，避免出现近似重复的经验。
 
-  const memorySection =
-    memories.length > 0
-      ? `\n\n## 相关记忆建议\n${memories
-          .map((m) => `- [${m.relevanceScore.toFixed(2)}] ${m.memory.refinedMemory}`)
-          .join("\n")}`
-      : ""
+### 5.2 Attach 的弃用
 
-  return basePrompt + memorySection
-}
-```
+早期版本允许 `action: "attach"` 把新观察挂到既有 experience 然后重炼。现在运行时**拒绝**
+LLM 的 attach 输出：Prompt 不再宣告该分支，运行时若看到会降级为 noise 并写审计。只有**用户
+手动操作**（merge、manual_augment）才会触发重炼。
+
+这个决定的动机：LLM 的相似度判定在真实语料上过宽，反复 attach 会污染 abstract 向着平均意义漂
+移。保留新建路径 + 人工合并，能得到更稳的图。
+
+### 5.3 重炼的守门
+
+`refineExperience` 产出的新 abstract 进入三道守门：
+
+1. **等于原文**：`sha1(abstract) == sha1(user_text[:200])` ⇒ 视为退化，重试一次。
+2. **结构化占位符**：以 `"见 observation"`、`"参考前述"` 等形式为主体 ⇒ 视为空壳，重试一次。
+3. **两次失败**：回滚到上一版 snapshot，写 rejected.ndjson，不覆盖 experience。
+
+历史每一次重炼都会在 `refinement_history` 中保留 `prev_snapshot`，因此 undo、diff、追溯都可
+实现。
 
 ---
 
-## 八、配置和调优
+## 6. 规格 token 与过度抽象
 
-### 8.1 可配置参数
+Refiner 最典型的失败不是"不抽象"，而是"**抽象过头**"——把用户明确给出的命令、URL、Flag、环境
+变量替换成"指定地址""特定命令"之类的空话，使得召回时什么也不剩。
 
-```typescript
-// packages/opencode/src/refiner/config.ts
+规则拆成两层：
 
-interface RefinerConfig {
-  // 相关性判断阈值
-  relevanceThreshold: number // 默认 0.6
+- **对叙事散文**：严禁连续 ≥ 10 个汉字（或 ≥ 8 个英文单词）直接从 `user_text` 抄写。要改写成
+  可复用的"条件 + 规则"表述。
+- **对规格 token**：`URL`、`path`、CLI 命令、flag、config key、环境变量名、稳定的标识符
+  名词、带单位的阈值 —— **必须原样保留**，即使这意味着超过 10 字的连续抄写。
 
-  // 记忆检索返回数量
-  maxRetrievedMemories: number // 默认 5
+Prompt 里给的反例对照：
 
-  // 记忆过期时间（秒）
-  memoryTTL: number // 默认 30 天
+> ❌ "推送到指定的 gerrit 地址"
+> ❌ "用户要求把当前分支 push 到 ssh://gerrit.example.com:29418/acme/core"
+> ✅ "推送代码时使用 `git review -R`；远端为 `ssh://gerrit.example.com:29418/acme/core`"
 
-  // 置信度更新权重
-  confidenceUpdateWeight: number // 默认 0.1
-
-  // 是否启用自动注入
-  autoInjectEnabled: boolean // 默认 true
-
-  // 提炼模式开关
-  modes: {
-    contextRefiner: boolean
-    issueRefiner: boolean
-    patternRefiner: boolean
-  }
-
-  // 日志级别
-  logLevel: "debug" | "info" | "warn" | "error"
-}
-```
-
-### 8.2 配置文件
-
-```json
-// .opencode/refiner.json
-{
-  "relevanceThreshold": 0.6,
-  "maxRetrievedMemories": 5,
-  "memoryTTL": 2592000,
-  "autoInjectEnabled": true,
-  "modes": {
-    "contextRefiner": true,
-    "issueRefiner": true,
-    "patternRefiner": true
-  }
-}
-```
+可判断的分水岭：规格是否"反复可用"。稳定的 URL / 命令 / env 是可复用的；一次性 PR 编号、临时分支
+名、工单号 不是——它们应该被判 `noise`。
 
 ---
 
-## 九、实施路线图
+## 7. 冲突标记
 
-### 阶段一：基础架构（1-2 周）
+有两套冲突标记，彼此独立，**可共存**：
 
-| 任务                      | 产出                             |
-| ------------------------- | -------------------------------- |
-| 创建 refiner 模块目录结构 | `packages/opencode/src/refiner/` |
-| 实现数据库 Schema         | 4 张表的 Drizzle 定义            |
-| 实现事件监听器            | bus.subscribe 绑定               |
-| 实现基础提炼逻辑          | ContextRefiner 核心函数          |
+- **Experience 级 `conflicts_with: string[]`** — 软标记。当新建或重炼时，LLM 觉察与某已有条目
+  直接矛盾，就把被矛盾项的 id 加进来。不会自动裁决；UI 上以徽标提示。
+- **Edge 级 `contradicts`** — 显式方向性标注。和其他边一起存进 `graph.ndjson`，在图谱里可视化。
 
-### 阶段二：记忆检索（1 周）
-
-| 任务           | 产出                                 |
-| -------------- | ------------------------------------ |
-| 实现检索算法   | retrieveRelevantMemories             |
-| 实现记忆注入   | 集成到 workflow_create 和 node_start |
-| 实现置信度更新 | 基于使用统计更新 confidence          |
-
-### 阶段三：问题模式（1 周）
-
-| 任务              | 产出                        |
-| ----------------- | --------------------------- |
-| 实现 IssueRefiner | 分析 attempt report         |
-| 实现解决方案匹配  | handleNodeFailureWithMemory |
-| 实现验证机制      | validation_status 更新      |
-
-### 阶段四：模式固化（1 周）
-
-| 任务                | 产出                      |
-| ------------------- | ------------------------- |
-| 实现 PatternRefiner | 提取成功 workflow 模式    |
-| 实现模式推荐        | retrievePatterns          |
-| 实现使用统计        | usage_count, success_rate |
-
-### 阶段五：优化和调优（持续）
-
-| 任务           | 产出                    |
-| -------------- | ----------------------- |
-| 相关性判断优化 | 引入 embedding 语义匹配 |
-| 记忆去重       | 合并相似记忆            |
-| 性能优化       | 索引优化、缓存          |
-| 用户反馈       | 允许用户标记记忆有效性  |
+哪个用？能给出**方向性理由**（"A 声称永不 force push，但 B 要求 force push 用于 hotfix"）就用
+`contradicts`；只是标记"这两条互斥，具体怎么选由人决定"就用 `conflicts_with`。
 
 ---
 
-## 十、示例场景
+## 8. 召回组合（读路径）
 
-### 场景 1：用户补充上下文
+召回不是 Refiner agent 内部动作，但图谱设计必须支持它。组合规则：
 
-**时间线**：
+1. 按 `categories` / `task_type` / `scope` 过滤候选集合。
+2. 对每条候选经验，按 `last_refined_at` 取 Top-N summary 注入。
+3. 对每条被选中的经验，**沿 `requires`、`refines` 边展开 1 层**，把先决条件/细化子项一并带入。
+4. `contradicts` 与 `conflicts_with` 作为警示区块，不参与主注入流。
+5. `see_also` 只有在用户主动查看时才展开（UI hover），注入链路默认忽略。
 
-1. 用户启动 workflow：帮我实现用户登录功能
-2. Root Agent 规划 plan，创建 coding node
-3. 用户补充：修改后请帮我做提交，提交到 gerrit，jenkins 验证
-4. **Refiner Agent 触发**：
-   - 判断相关性：✅ 与 workflow 相关（描述执行动作）
-   - 提炼记忆："代码完成后需 git 提交到 gerrit，触发 jenkins 构建验证"
-   - 识别 skills：["git", "gerrit", "jenkins"]
-   - 存储到 workflow_memory 表
-5. 后续类似任务时，自动检索并注入该记忆
+在 UI 层，节点 hover 卡按相同的边语义生成中文叙事：
 
-### 场景 2：执行失败学习
-
-**时间线**：
-
-1. coding node 执行失败，原因是缺少目标分支信息
-2. **Refiner Agent 触发**：
-   - 分析 attempt report：needs 包含 "target_branch"
-   - 分类问题类型：context_missing
-   - 记录问题模式："coding agent 缺少目标分支信息导致 push 失败"
-   - 记录解决方案："在 node config 中注入 upstream_branch 参数"
-3. root agent 补充上下文后重试成功
-4. 更新 validation_status 为 "verified"
-5. 后续类似任务时，自动在 coding node config 中注入 upstream_branch
-
-### 场景 3：成功模式固化
-
-**时间线**：
-
-1. workflow 成功完成：coding → build-flash → debug
-2. **Refiner Agent 触发**：
-   - 提取节点序列和依赖关系
-   - 记录成功因素："coding 完成后先局部编译验证，再烧录测试"
-   - 记录常见陷阱："直接烧录未编译的代码会导致设备变砖"
-   - 存储为 workflow_pattern
-3. 下次类似任务时，推荐该模式给 root agent
+| 边 | 自身指向对端（out） | 对端指向自身（in） |
+| --- | --- | --- |
+| `requires` | 先完成「B」，再执行「A」 | 「B」依赖本条，需先确保「A」成立 |
+| `refines` | 「A」是对「B」的细化/特化 | 「B」对本条做了进一步细化 |
+| `supports` | 「A」可作为「B」的佐证 | 「B」为本条提供支持证据 |
+| `contradicts` | 注意：「A」与「B」存在冲突 | 注意：「B」与本条存在冲突 |
+| `see_also` | 同话题可参考「B」 | 同话题可参考「B」 |
 
 ---
 
-## 十一、文件结构
+## 9. LLM 压力与预算
+
+一次 route 调用最大上下文含：
+
+- 一条 observation（+ 前 3 条 history + workflow 快照）。
+- 最多 N 条 experience summary（`id / kind / title / abstract / task_type / observation_count /
+  last_refined_at`）。
+- taxonomy 列表（7 核心 + 已知 custom + 已知 categories）。
+- 7 类 kind 和 5 类 edge 的中文释义。
+
+实际测试下来，N = 50 左右可稳定塞入 32k-window 的模型；更大规模时需要：
+
+1. 用 `last_refined_at` 降序 + `task_type` 加权选 Top-N。
+2. 其余以 `"(omitted N, use get_experience_detail to pull)"` 提示 LLM 按需调用工具。
+3. Summary 里的 `title ≤ 30` 字、`abstract ≤ 200` 字是硬截断，就是为了保住预算。
+
+对"能不能一次组合多条边"的压力评估：Prompt 允许每次 route **最多 5 条边**；实际 decisions[]
+上限 8 条，5×8 = 40 条边是硬顶。超过时应分多次会话提交，而不是在一次调用里堆叠。
+
+---
+
+## 10. 触发与摄入入口
+
+当前只有两个写入触发：
+
+1. **`observeUserMessage`**（live）—— 每条用户消息触发。Master→Slave 生成的 prompt 因为
+   `Session.parentID != null` 会被过滤掉，避免把编排器的话当成用户输入。
+2. **`ingestSession` / history import**（batch）—— 用户显式从历史会话里 cherry-pick 消息注入。
+   字段等价于 live 捕获，只是 `source: "ingest"` 且通常没有 `workflow_snapshot`。
+
+被明确**不做**的触发：
+
+- `observeWorkflowEvent`（node.failed / workflow.completed 等）—— 一度设计过，现已删除。workflow
+  事件要沉淀成经验，必须先由用户在 slave session 里把它描述清楚，再走标准捕获路径。避免
+  runtime 噪音淹没用户意图。
+
+---
+
+## 11. 目录与文件布局
 
 ```
-packages/opencode/src/refiner/
-├── index.ts                 # 模块入口
-├── listener.ts              # 事件监听器
-├── refine.ts                # 提炼核心逻辑
-│   ├── context.ts           # ContextRefiner
-│   ├── issue.ts             # IssueRefiner
-│   └── pattern.ts           # PatternRefiner
-├── retriever.ts             # 记忆检索
-├── injector.ts              # 记忆注入
-├── relevance.ts             # 相关性判断
-├── config.ts                # 配置管理
-├── memory.sql.ts            # 数据库 Schema
-└── types.ts                 # 类型定义
+.opencode/refiner-memory/
+├── experiences/
+│   ├── workflow_rule/          <id>.md
+│   ├── workflow_gap/           <id>.md
+│   ├── know_how/               <id>.md
+│   ├── constraint_or_policy/   <id>.md
+│   ├── domain_knowledge/       <id>.md
+│   ├── preference_style/       <id>.md
+│   ├── pitfall_or_caveat/      <id>.md
+│   └── custom:<slug>/          <id>.md
+├── observations/<session_id>/  <id>.md
+├── graph.ndjson                # 每行一条 Edge
+├── taxonomy.json               # { custom_kinds: [...], categories: [...] }
+├── rejected.ndjson             # noise / 守门拒绝 / 降级 审计
+└── config.json                 # 用户覆盖（模型、category aliases 等）
 ```
+
+Experience 和 observation 都是 YAML frontmatter + markdown body 的结构化文件，body 部分是
+`renderExperience` / `renderObservation` 产出的人类可读概要；frontmatter 是权威数据，反序列化由
+Zod schema 保证。
 
 ---
 
-## 十二、总结
+## 12. 设计取舍小结
 
-优化层 Refiner Agent 的核心价值：
-
-1. **持续学习**：从每次 workflow 执行中学习，无论是成功还是失败
-2. **上下文传承**：用户补充的约束和要求不会随 session 结束而丢失
-3. **模式复用**：成功的 workflow 结构可以被推荐和复用
-4. **问题预防**：已知问题和解决方案可以自动注入，避免重复踩坑
-5. **自我进化**：通过置信度和使用统计，记忆质量持续提升
-
-与现有四层架构的关系：
-
-- 不改变现有四层架构的职责
-- 作为横切关注点，监听事件、提炼记忆、注入上下文
-- 通过扩展 attempt report 和 wake prompt 与现有机制无缝集成
+| 取舍 | 选择 | 为什么 |
+| --- | --- | --- |
+| 记忆形态 | 图谱（典型节点 + 类型边），**不是**扁平列表 | 先决条件/细化这种依赖关系本质是关系数据；扁平化会把所有推理成本推给召回端 |
+| 存储 | YAML + markdown + NDJSON，**不是**SQLite | 经验必须人工可读/可编辑；图谱规模远未到需要关系型的程度 |
+| 相似度合并 | 只由用户触发，**LLM 不做 attach** | 自动合并会缓慢腐蚀 abstract；代价是图可能有近似重复，用人工合并能精准修复 |
+| kind 体系 | 7 核 + `custom:<slug>` | 核心类覆盖日常 >90%；custom 是扩展通道而不是兜底箱 |
+| categories | 独立于 kind 的多值索引 | 一条"commit 前必跑 lint"既属于 `workflow_rule`，又属于 `git-workflow` + `ci-pipeline`，用单一分类强行坍缩会丢掉召回面 |
+| 规格 token | 必须原样保留 | 抽象的目的是召回时还能被复用；抽掉 URL/命令就失去了这份经验存在的理由 |
+| history 前文 | 固定 3 条前文 + 工具按需 | 异步补全后文会导致状态机爆炸；LLM 需要更多时可主动拉 |
+| 冲突处理 | 标记不裁决 | Refiner 不掌握业务优先级，强行择一会造成静默覆盖 |

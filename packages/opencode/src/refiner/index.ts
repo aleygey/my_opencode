@@ -2,6 +2,7 @@ import path from "path"
 import { unlink } from "fs/promises"
 import matter from "gray-matter"
 import z from "zod"
+import { Effect } from "effect"
 import { generateText, jsonSchema, stepCountIs, streamText, tool, type ModelMessage } from "ai"
 import { Agent } from "@/agent/agent"
 import { Auth } from "@/auth"
@@ -13,6 +14,7 @@ import { Provider } from "@/provider"
 import { ProviderID, ModelID } from "@/provider/schema"
 import { ProviderTransform } from "@/provider"
 import { Instance } from "@/project/instance"
+import { AppRuntime } from "@/effect/app-runtime"
 import { Workflow } from "@/workflow"
 import { Filesystem, Log } from "@/util"
 import { Glob } from "@opencode-ai/shared/util/glob"
@@ -457,9 +459,113 @@ type RefinerOverview = {
 // State & test overrides
 // -----------------------------------------------------------------------------
 
-const state = Instance.state(() => ({
-  userSeen: {} as Record<string, string>,
-}))
+// Local replacement for upstream's removed `Instance.state` helper: keeps a
+// per-instance State keyed by `Instance.directory`. Call `state()` synchronously
+// from inside an instance ALS context (same requirement as `Instance.state`).
+type RefinerInstanceState = {
+  userSeen: Record<string, string>
+}
+const __refinerStateByDirectory = new Map<string, RefinerInstanceState>()
+function state(): RefinerInstanceState {
+  const key = Instance.directory
+  let existing = __refinerStateByDirectory.get(key)
+  if (!existing) {
+    existing = { userSeen: {} }
+    __refinerStateByDirectory.set(key, existing)
+  }
+  return existing
+}
+
+// -----------------------------------------------------------------------------
+// Effect-Service bridges
+// -----------------------------------------------------------------------------
+//
+// Upstream's Session / Provider / Agent / Auth / Config now live behind Effect
+// `Context.Service`. Refiner stays as a namespace module with async entrypoints,
+// so every Service call is funneled through `AppRuntime.runPromise(Effect.gen)`
+// in this single block. Each helper returns `Promise<T | undefined>` so
+// legacy `.catch(() => undefined)` call-sites keep their graceful fallback.
+
+async function svcConfigGet() {
+  return AppRuntime.runPromise(
+    Effect.gen(function* () {
+      const c = yield* Config.Service
+      return yield* c.get()
+    }),
+  ).catch(() => undefined)
+}
+
+async function svcSessionMessages(input: { sessionID: SessionID; limit?: number }) {
+  return AppRuntime.runPromise(
+    Effect.gen(function* () {
+      const s = yield* Session.Service
+      return yield* s.messages(input)
+    }),
+  ).catch(() => [] as Array<MessageV2.WithParts>)
+}
+
+async function svcSessionGet(id: SessionID) {
+  return AppRuntime.runPromise(
+    Effect.gen(function* () {
+      const s = yield* Session.Service
+      return yield* s.get(id)
+    }),
+  ).catch(() => undefined)
+}
+
+async function svcAgentGet(name: string) {
+  return AppRuntime.runPromise(
+    Effect.gen(function* () {
+      const a = yield* Agent.Service
+      return yield* a.get(name)
+    }),
+  ).catch(() => undefined)
+}
+
+async function svcProviderGetModel(providerID: ProviderID, modelID: ModelID) {
+  return AppRuntime.runPromise(
+    Effect.gen(function* () {
+      const p = yield* Provider.Service
+      return yield* p.getModel(providerID, modelID)
+    }),
+  ).catch(() => undefined)
+}
+
+async function svcProviderGetLanguage(model: Provider.Model) {
+  return AppRuntime.runPromise(
+    Effect.gen(function* () {
+      const p = yield* Provider.Service
+      return yield* p.getLanguage(model)
+    }),
+  ).catch(() => undefined)
+}
+
+async function svcProviderGetSmallModel(providerID: ProviderID) {
+  return AppRuntime.runPromise(
+    Effect.gen(function* () {
+      const p = yield* Provider.Service
+      return yield* p.getSmallModel(providerID)
+    }),
+  ).catch(() => undefined)
+}
+
+async function svcProviderDefaultModel() {
+  return AppRuntime.runPromise(
+    Effect.gen(function* () {
+      const p = yield* Provider.Service
+      return yield* p.defaultModel()
+    }),
+  ).catch(() => undefined)
+}
+
+async function svcAuthGet(providerID: string) {
+  return AppRuntime.runPromise(
+    Effect.gen(function* () {
+      const a = yield* Auth.Service
+      return yield* a.get(providerID)
+    }),
+  ).catch(() => undefined)
+}
 
 // The override may return a single decision (legacy convenience) or an array
 // of decisions (to exercise the multi-decision path in tests). The caller
@@ -550,7 +656,7 @@ async function withTimeout<T>(promise: Promise<T>, ms: number) {
 }
 
 async function settings() {
-  const cfg = await Config.get().catch(() => undefined)
+  const cfg = await svcConfigGet()
   const refiner = cfg?.experimental?.refiner
   const enabled = refiner?.enabled ?? true
   const base = refiner?.directory
@@ -570,7 +676,7 @@ async function writeMatter(filepath: string, data: Record<string, unknown>, cont
   await Filesystem.write(filepath, matter.stringify(content, cleanUndefined(data)))
 }
 
-function messageText(message: Awaited<ReturnType<typeof Session.messages>>[number]) {
+function messageText(message: MessageV2.WithParts) {
   return compactText(
     message.parts
       .flatMap((part) => {
@@ -818,7 +924,13 @@ async function writeObservation(observation: Observation) {
 }
 
 async function extractUserMessage(sessionID: SessionID, messageID: MessageID) {
-  const message = MessageV2.get({ sessionID, messageID })
+  let message: MessageV2.WithParts
+  try {
+    // MessageV2.get is now synchronous and throws NotFoundError on miss.
+    message = MessageV2.get({ sessionID, messageID })
+  } catch {
+    return
+  }
   if (message.info.role !== "user") return
   const text = message.parts
     .flatMap((part) => (part.type === "text" && !part.synthetic && !part.ignored ? [part.text.trim()] : []))
@@ -845,10 +957,10 @@ async function captureObservation(input: {
   // LLM the same kind of temporal context. NOTE: these three messages are
   // temporally adjacent but not guaranteed topically relevant — the prompt
   // explicitly instructs the LLM to self-assess relevance before using them.
-  const allMessages = await Session.messages({
+  const allMessages = await svcSessionMessages({
     sessionID: SessionID.make(input.sessionID),
     limit: 40,
-  }).catch(() => [])
+  })
   const prior = allMessages
     .filter((m) => m.info.id !== input.messageID && m.info.time.created < input.observedAt)
     .sort((a, b) => a.info.time.created - b.info.time.created)
@@ -1017,17 +1129,17 @@ async function writeConfigOverride(next: ConfigOverride): Promise<void> {
 type ModelSource = "override" | "agent" | "default"
 
 async function resolveRefinerModel() {
-  const agent = await Agent.get("refiner").catch(() => undefined)
+  const agent = await svcAgentGet("refiner")
   if (!agent) return
 
   // 1. Runtime override (PUT /experimental/refiner/config) takes highest priority
   const override = await readConfigOverride()
   if (override?.model) {
     const model = await withTimeout(
-      Provider.getModel(
+      svcProviderGetModel(
         ProviderID.make(override.model.providerID),
         ModelID.make(override.model.modelID),
-      ).catch(() => undefined),
+      ),
       300,
     )
     if (model) return { agent, model, selected: override.model, source: "override" as ModelSource }
@@ -1038,19 +1150,19 @@ async function resolveRefinerModel() {
   // 2. Static agent config (opencode.jsonc: agent.refiner.model)
   if (agent.model) {
     const model = await withTimeout(
-      Provider.getModel(agent.model.providerID, agent.model.modelID).catch(() => undefined),
+      svcProviderGetModel(agent.model.providerID, agent.model.modelID),
       300,
     )
     if (model) return { agent, model, selected: agent.model, source: "agent" as ModelSource }
   }
 
   // 3. Provider default + small-model fallback
-  const selected = await withTimeout(Provider.defaultModel().catch(() => undefined), 300)
+  const selected = await withTimeout(svcProviderDefaultModel(), 300)
   if (!selected) return
 
   const model =
-    (await withTimeout(Provider.getSmallModel(selected.providerID).catch(() => undefined), 300)) ??
-    (await withTimeout(Provider.getModel(selected.providerID, selected.modelID).catch(() => undefined), 300))
+    (await withTimeout(svcProviderGetSmallModel(selected.providerID), 300)) ??
+    (await withTimeout(svcProviderGetModel(selected.providerID, selected.modelID), 300))
   if (!model) return
 
   return { agent, model, selected, source: "default" as ModelSource }
@@ -1070,10 +1182,10 @@ function createRefinerTools(input: { observation: Observation }) {
       }),
       execute: async ({ session_id, limit }) => {
         const sessionID = session_id ?? input.observation.session_id
-        const messages = await Session.messages({
+        const messages = await svcSessionMessages({
           sessionID: SessionID.make(sessionID),
           limit: limit ?? 20,
-        }).catch(() => [])
+        })
         return messages.slice(-1 * (limit ?? 20)).map((message) => ({
           id: message.info.id,
           role: message.info.role,
@@ -1193,10 +1305,10 @@ async function routeObservation(input: {
 
   const resolved = await resolveRefinerModel()
   if (!resolved?.model) return []
-  const language = await Provider.getLanguage(resolved.model).catch(() => undefined)
+  const language = await svcProviderGetLanguage(resolved.model)
   if (!language) return []
-  const auth = await Auth.get(resolved.model.providerID).catch(() => undefined)
-  const cfg = await Config.get().catch(() => undefined)
+  const auth = await svcAuthGet(resolved.model.providerID)
+  const cfg = await svcConfigGet()
   const isOpenaiOauth = resolved.model.providerID === "openai" && auth?.type === "oauth"
 
   const systemPrompt = resolved.agent.prompt
@@ -1322,10 +1434,10 @@ async function refineExperience(input: {
 
   const resolved = await resolveRefinerModel()
   if (!resolved?.model) return
-  const language = await Provider.getLanguage(resolved.model).catch(() => undefined)
+  const language = await svcProviderGetLanguage(resolved.model)
   if (!language) return
-  const auth = await Auth.get(resolved.model.providerID).catch(() => undefined)
-  const cfg = await Config.get().catch(() => undefined)
+  const auth = await svcAuthGet(resolved.model.providerID)
+  const cfg = await svcConfigGet()
   const isOpenaiOauth = resolved.model.providerID === "openai" && auth?.type === "oauth"
   const systemPrompt = resolved.agent.prompt
 
@@ -1919,7 +2031,7 @@ export namespace Refiner {
     // to a sub-agent. In that case the "user" message is in fact a master
     // prompt, not real user intent, and must not be observed. Top-level user
     // sessions (UI new session, Session.fork) have parentID = undefined.
-    const session = await Session.get(input.sessionID).catch(() => undefined)
+    const session = await svcSessionGet(input.sessionID)
     if (session?.parentID) {
       log.debug("refiner.observe: skipping child session (master→slave prompt)", {
         sessionID: input.sessionID,
@@ -2556,9 +2668,7 @@ export namespace Refiner {
   }): Promise<{ ok: true; stats: { processed: number; observed: number; skipped: number } }> {
     const cfg = await settings()
     const stats = { processed: 0, observed: 0, skipped: 0 }
-    const messages = await Session.messages({ sessionID: SessionID.make(input.sessionID), limit: 500 }).catch(
-      () => [],
-    )
+    const messages = await svcSessionMessages({ sessionID: SessionID.make(input.sessionID), limit: 500 })
     const filter = input.messageIDs && input.messageIDs.length > 0 ? new Set(input.messageIDs) : null
     for (const msg of messages) {
       stats.processed++

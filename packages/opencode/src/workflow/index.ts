@@ -1,6 +1,8 @@
 import { BusEvent } from "@/bus/bus-event"
 import { Bus } from "@/bus"
-import { Database, NotFoundError, eq, desc, asc, and, inArray, notInArray, gt, sql } from "@/storage"
+import { Database, NotFoundError, eq, desc, asc, and, inArray, gt, sql } from "@/storage"
+import { notInArray } from "drizzle-orm"
+import { Effect } from "effect"
 import { AppRuntime } from "@/effect/app-runtime"
 import { Identifier } from "@/id/id"
 import { Instance } from "@/project/instance"
@@ -27,10 +29,39 @@ import {
 
 const log = Log.create({ service: "workflow" })
 
-const workflowID = () => `wfl_${Identifier.create("workspace", false).slice(4)}`
-const nodeID = () => `wfn_${Identifier.create("workspace", false).slice(4)}`
-const edgeID = () => `wfe_${Identifier.create("workspace", false).slice(4)}`
-const checkpointID = () => `wfc_${Identifier.create("workspace", false).slice(4)}`
+// Local shim for the previous `Instance.state(init, cleanup)` API that
+// returned a lazy, per-directory state. The upstream API was removed, but
+// this module still uses it for module-scope subscriptions. Cleanup runs
+// best-effort on process exit.
+function instanceState<T>(init: () => T, cleanup: (entry: T) => void | Promise<void>) {
+  const cache = new Map<string, T>()
+  let registered = false
+  return () => {
+    const dir = Instance.directory
+    let entry = cache.get(dir)
+    if (!entry) {
+      entry = init()
+      cache.set(dir, entry)
+      if (!registered) {
+        registered = true
+        process.on("beforeExit", () => {
+          for (const e of cache.values()) {
+            try {
+              void cleanup(e)
+            } catch {}
+          }
+          cache.clear()
+        })
+      }
+    }
+    return entry
+  }
+}
+
+const workflowID = () => `wfl_${Identifier.create("workspace", "ascending").slice(4)}`
+const nodeID = () => `wfn_${Identifier.create("workspace", "ascending").slice(4)}`
+const edgeID = () => `wfe_${Identifier.create("workspace", "ascending").slice(4)}`
+const checkpointID = () => `wfc_${Identifier.create("workspace", "ascending").slice(4)}`
 
 const WorkflowStatus = z.enum(["pending", "running", "paused", "interrupted", "completed", "failed", "cancelled"])
 const WorkflowNodeStatus = z.enum([
@@ -979,34 +1010,39 @@ export namespace Workflow {
         trigger_event_id: wake.eventID,
       },
     })
-    await SessionPrompt.prompt({
-      sessionID: SessionID.make(wake.sessionID),
-      agent: "orchestrator",
-      parts: [
-        {
-          type: "text",
-          synthetic: true,
-          metadata: {
-            workflow_wake: true,
-            wake_kind: wake.kind,
-            wake_reason: wake.reason,
-            trigger_event_id: wake.eventID,
-          },
-          text: [
-            `Workflow wake event: ${wake.kind}`,
-            `Reason: ${wake.reason}`,
-            `Workflow ID: ${wake.workflowID}`,
-            wake.nodeID ? `Node ID: ${wake.nodeID}` : "",
-            `Trigger event ID: ${wake.eventID}`,
-            "",
-            `Call workflow_read with workflow_id="${wake.workflowID}" and cursor=${Math.max(0, wake.eventID - 1)} first.`,
-            hint,
-          ]
-            .filter(Boolean)
-            .join("\n"),
-        },
-      ],
-    })
+    await AppRuntime.runPromise(
+      Effect.gen(function* () {
+        const sp = yield* SessionPrompt.Service
+        return yield* sp.prompt({
+          sessionID: SessionID.make(wake.sessionID),
+          agent: "orchestrator",
+          parts: [
+            {
+              type: "text",
+              synthetic: true,
+              metadata: {
+                workflow_wake: true,
+                wake_kind: wake.kind,
+                wake_reason: wake.reason,
+                trigger_event_id: wake.eventID,
+              },
+              text: [
+                `Workflow wake event: ${wake.kind}`,
+                `Reason: ${wake.reason}`,
+                `Workflow ID: ${wake.workflowID}`,
+                wake.nodeID ? `Node ID: ${wake.nodeID}` : "",
+                `Trigger event ID: ${wake.eventID}`,
+                "",
+                `Call workflow_read with workflow_id="${wake.workflowID}" and cursor=${Math.max(0, wake.eventID - 1)} first.`,
+                hint,
+              ]
+                .filter(Boolean)
+                .join("\n"),
+            },
+          ],
+        })
+      }),
+    )
   }
 
   function classify(event: EventInfo) {
@@ -1247,10 +1283,15 @@ export namespace Workflow {
     const done = curr.msg[info.id]
     if (done === info.time.completed) return
     curr.msg[info.id] = info.time.completed
-    const msg = await MessageV2.get({
-      sessionID: info.sessionID,
-      messageID: info.id,
-    }).catch(() => undefined)
+    let msg: MessageV2.WithParts | undefined
+    try {
+      msg = MessageV2.get({
+        sessionID: info.sessionID,
+        messageID: info.id,
+      })
+    } catch {
+      msg = undefined
+    }
     if (!msg) return
     const rep = report(node, msg)
     const delta = messageUsage(msg)
@@ -1531,7 +1572,19 @@ export namespace Workflow {
     }
   }
 
-  const state = Instance.state(() => {
+  type State = {
+    unsubPart: () => void
+    unsubMsg: () => void
+    unsubWorkflow: () => void
+    unsubStatus: () => void
+    timer: ReturnType<typeof setInterval>
+    queue: Record<string, Wake[]>
+    seen: Record<string, number>
+    stall: Record<string, string>
+    parts: Record<string, string>
+    msg: Record<string, number>
+  }
+  function createState(): State {
     const unsubPart = Bus.subscribe(MessageV2.Event.PartUpdated, async (event) => {
       const part = event.properties.part
       if (part.type === "tool") {
@@ -1593,7 +1646,8 @@ export namespace Workflow {
       parts: {} as Record<string, string>,
       msg: {} as Record<string, number>,
     }
-  }, async (entry) => {
+  }
+  const state = instanceState<State>(createState, async (entry) => {
     entry.unsubPart()
     entry.unsubMsg()
     entry.unsubWorkflow()
@@ -2230,7 +2284,12 @@ export namespace Workflow {
     // master agent passed at creation time ("Workflow", "Plan via Sand Table",
     // etc.). Failures fall back silently to the stored workflow title.
     try {
-      const session = await Session.get(SessionID.make(workflow.session_id))
+      const session = await AppRuntime.runPromise(
+        Effect.gen(function* () {
+          const svc = yield* Session.Service
+          return yield* svc.get(SessionID.make(workflow.session_id))
+        }),
+      )
       if (session?.title && !Session.isDefaultTitle(session.title)) {
         workflow.title = session.title
       }
@@ -2302,9 +2361,19 @@ export namespace Workflow {
       ...snap.nodes.map((node) => node.session_id).filter((id): id is string => !!id),
     ]
     for (const id of ids) {
-      SessionPrompt.cancel(SessionID.make(id))
+      await AppRuntime.runPromise(
+        Effect.gen(function* () {
+          const sp = yield* SessionPrompt.Service
+          yield* sp.cancel(SessionID.make(id))
+        }),
+      ).catch(() => undefined)
     }
-    await Session.remove(SessionID.make(snap.workflow.session_id))
+    await AppRuntime.runPromise(
+      Effect.gen(function* () {
+        const s = yield* Session.Service
+        yield* s.remove(SessionID.make(snap.workflow.session_id))
+      }),
+    )
     return true
   })
 
@@ -2759,7 +2828,7 @@ export namespace Workflow {
         }
       }
 
-      const command_id = input.command_id ?? `cmd_${Identifier.create("workspace", false).slice(4)}`
+      const command_id = input.command_id ?? `cmd_${Identifier.create("workspace", "ascending").slice(4)}`
 
       // P1.1 ACK: track the command in state_json.pending_commands so the
       // slave sees it via pull and can ack it via workflow_update.patch.ack.
@@ -2902,7 +2971,7 @@ export namespace Workflow {
       const existing = open.find((entry) => isRec(entry) && entry.title === input.title && !entry.resolved_at)
       const need_id = existing && typeof existing.need_id === "string"
         ? (existing.need_id as string)
-        : (input.need_id ?? `nd_${Identifier.create("workspace", false).slice(4)}`)
+        : (input.need_id ?? `nd_${Identifier.create("workspace", "ascending").slice(4)}`)
       const entry = {
         need_id,
         title: input.title,
@@ -3044,7 +3113,13 @@ export namespace Workflow {
       const node = await getNode(input.nodeID)
       if (node.status === "cancelled") return node
       if (node.session_id) {
-        SessionPrompt.cancel(SessionID.make(node.session_id))
+        const sessionID = SessionID.make(node.session_id)
+        await AppRuntime.runPromise(
+          Effect.gen(function* () {
+            const sp = yield* SessionPrompt.Service
+            yield* sp.cancel(sessionID)
+          }),
+        ).catch(() => undefined)
       }
       return patchNode({
         nodeID: node.id,
@@ -3075,7 +3150,13 @@ export namespace Workflow {
       const node = await getNode(input.nodeID)
       if (node.status === "cancelled") return node
       if (node.session_id) {
-        SessionPrompt.cancel(SessionID.make(node.session_id))
+        const sessionID = SessionID.make(node.session_id)
+        await AppRuntime.runPromise(
+          Effect.gen(function* () {
+            const sp = yield* SessionPrompt.Service
+            yield* sp.cancel(sessionID)
+          }),
+        ).catch(() => undefined)
       }
       return patchNode({
         nodeID: node.id,
@@ -3208,14 +3289,23 @@ export namespace Workflow {
     },
   )
 
+  const runSessionDiff = (sessionID: SessionID) =>
+    AppRuntime.runPromise(
+      Effect.gen(function* () {
+        const s = yield* Session.Service
+        return yield* s.diff(sessionID)
+      }),
+    )
+
   export const diff = fn(z.string(), async (workflowID) => {
     await state()
     const snapshot = await get(workflowID)
-    const byFile = new Map<string, Awaited<ReturnType<typeof Session.diff>>[number]>()
+    type DiffEntry = Awaited<ReturnType<typeof runSessionDiff>>[number]
+    const byFile = new Map<string, DiffEntry>()
 
     for (const sessionID of [snapshot.workflow.session_id, ...snapshot.nodes.map((node) => node.session_id).filter(Boolean)]) {
       if (!sessionID) continue
-      const diffs = await Session.diff(SessionID.make(sessionID))
+      const diffs = await runSessionDiff(SessionID.make(sessionID))
       for (const diff of diffs) {
         const existing = byFile.get(diff.file)
         if (!existing) {
@@ -3243,6 +3333,6 @@ export namespace Workflow {
     await state()
     const node = await getNode(nodeID)
     if (!node.session_id) return []
-    return Session.diff(SessionID.make(node.session_id))
+    return runSessionDiff(SessionID.make(node.session_id))
   })
 }

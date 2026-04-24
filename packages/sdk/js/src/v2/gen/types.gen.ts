@@ -445,6 +445,239 @@ export type EventCommandExecuted = {
   }
 }
 
+export type EventSandtableMessage = {
+  type: "sandtable.message"
+  properties: {
+    discussionID: string
+    role: string
+    round: number
+  }
+}
+
+export type Serial = {
+  id: string
+  title: string
+  path: string
+  baudRate: number
+  dataBits?: number
+  stopBits?: number
+  parity?: "none" | "even" | "odd" | "mark" | "space"
+  status: "connected" | "disconnected" | "error"
+}
+
+export type EventSerialCreated = {
+  type: "serial.created"
+  properties: {
+    info: Serial
+  }
+}
+
+export type EventSerialUpdated = {
+  type: "serial.updated"
+  properties: {
+    info: Serial
+  }
+}
+
+export type EventSerialData = {
+  type: "serial.data"
+  properties: {
+    id: string
+    data: string
+  }
+}
+
+export type EventSerialDisconnected = {
+  type: "serial.disconnected"
+  properties: {
+    id: string
+  }
+}
+
+export type EventSerialDeleted = {
+  type: "serial.deleted"
+  properties: {
+    id: string
+  }
+}
+
+export type WorkflowSummary = {
+  objective?: string
+  plan?: Array<{
+    label: string
+    status?: "todo" | "doing" | "done" | "blocked"
+    node_id?: string
+  }>
+  badges?: Array<string>
+  scratch?: {
+    [key: string]: unknown
+  }
+  [key: string]:
+    | unknown
+    | string
+    | Array<{
+        label: string
+        status?: "todo" | "doing" | "done" | "blocked"
+        node_id?: string
+      }>
+    | Array<string>
+    | {
+        [key: string]: unknown
+      }
+    | undefined
+}
+
+export type Workflow = {
+  id: string
+  session_id: string
+  title: string
+  status: "pending" | "running" | "paused" | "interrupted" | "completed" | "failed" | "cancelled"
+  current_node_id?: string
+  selected_node_id?: string
+  version: number
+  config?: {
+    [key: string]: unknown
+  }
+  summary?: WorkflowSummary
+  time: {
+    created: number
+    updated: number
+    paused?: number
+    completed?: number
+  }
+}
+
+export type EventWorkflowCreated = {
+  type: "workflow.created"
+  properties: {
+    info: Workflow
+  }
+}
+
+export type EventWorkflowUpdated = {
+  type: "workflow.updated"
+  properties: {
+    info: Workflow
+  }
+}
+
+export type WorkflowNode = {
+  id: string
+  workflow_id: string
+  session_id?: string
+  title: string
+  agent: string
+  model?: {
+    providerID?: string
+    modelID?: string
+    variant?: string
+  }
+  config?: {
+    [key: string]: unknown
+  }
+  status: "pending" | "ready" | "running" | "waiting" | "paused" | "interrupted" | "completed" | "failed" | "cancelled"
+  result_status: "unknown" | "success" | "fail" | "partial"
+  fail_reason?: string
+  action_count: number
+  attempt: number
+  max_attempts: number
+  max_actions: number
+  version: number
+  state_json?: {
+    [key: string]: unknown
+  }
+  result_json?: {
+    [key: string]: unknown
+  }
+  position: number
+  time: {
+    created: number
+    updated: number
+    started?: number
+    completed?: number
+  }
+}
+
+export type EventWorkflowNodeCreated = {
+  type: "workflow.node.created"
+  properties: {
+    info: WorkflowNode
+  }
+}
+
+export type EventWorkflowNodeUpdated = {
+  type: "workflow.node.updated"
+  properties: {
+    info: WorkflowNode
+  }
+}
+
+export type WorkflowEdge = {
+  id: string
+  workflow_id: string
+  from_node_id: string
+  to_node_id: string
+  label?: string
+  config?: {
+    [key: string]: unknown
+  }
+  time_created: number
+}
+
+export type EventWorkflowEdgeCreated = {
+  type: "workflow.edge.created"
+  properties: {
+    info: WorkflowEdge
+  }
+}
+
+export type WorkflowCheckpoint = {
+  id: string
+  workflow_id: string
+  node_id: string
+  label: string
+  status: "pending" | "passed" | "failed" | "skipped"
+  config?: {
+    [key: string]: unknown
+  }
+  result_json?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+    updated: number
+  }
+}
+
+export type EventWorkflowCheckpointUpdated = {
+  type: "workflow.checkpoint.updated"
+  properties: {
+    info: WorkflowCheckpoint
+  }
+}
+
+export type WorkflowEvent = {
+  id: number
+  workflow_id: string
+  node_id?: string
+  session_id?: string
+  target_node_id?: string
+  kind: string
+  source: string
+  audience?: "orchestrator" | "ui" | "both"
+  payload: {
+    [key: string]: unknown
+  }
+  time_created: number
+}
+
+export type EventWorkflowEventCreated = {
+  type: "workflow.event.created"
+  properties: {
+    info: WorkflowEvent
+  }
+}
+
 export type EventVcsBranchUpdated = {
   type: "vcs.branch.updated"
   properties: {
@@ -1138,6 +1371,19 @@ export type GlobalEvent = {
     | EventMcpToolsChanged
     | EventMcpBrowserOpenFailed
     | EventCommandExecuted
+    | EventSandtableMessage
+    | EventSerialCreated
+    | EventSerialUpdated
+    | EventSerialData
+    | EventSerialDisconnected
+    | EventSerialDeleted
+    | EventWorkflowCreated
+    | EventWorkflowUpdated
+    | EventWorkflowNodeCreated
+    | EventWorkflowNodeUpdated
+    | EventWorkflowEdgeCreated
+    | EventWorkflowCheckpointUpdated
+    | EventWorkflowEventCreated
     | EventVcsBranchUpdated
     | EventWorktreeReady
     | EventWorktreeFailed
@@ -1542,7 +1788,7 @@ export type Config = {
    */
   small_model?: string
   /**
-   * Default agent to use when none is specified. Must be a primary agent. Falls back to 'build' if not set or if the specified agent is invalid.
+   * Default agent to use when none is specified. Must be a primary agent. Defaults to 'orchestrator' when not set.
    */
   default_agent?: string
   /**
@@ -1661,6 +1907,16 @@ export type Config = {
      * Enable the batch tool
      */
     batch_tool?: boolean
+    refiner?: {
+      /**
+       * Enable the background refiner agent
+       */
+      enabled?: boolean
+      /**
+       * Directory for persisted refiner memory artifacts
+       */
+      directory?: string
+    }
     /**
      * Enable OpenTelemetry spans for AI SDK calls (using the 'experimental_telemetry' flag)
      */
@@ -2064,6 +2320,19 @@ export type Event =
   | EventMcpToolsChanged
   | EventMcpBrowserOpenFailed
   | EventCommandExecuted
+  | EventSandtableMessage
+  | EventSerialCreated
+  | EventSerialUpdated
+  | EventSerialData
+  | EventSerialDisconnected
+  | EventSerialDeleted
+  | EventWorkflowCreated
+  | EventWorkflowUpdated
+  | EventWorkflowNodeCreated
+  | EventWorkflowNodeUpdated
+  | EventWorkflowEdgeCreated
+  | EventWorkflowCheckpointUpdated
+  | EventWorkflowEventCreated
   | EventVcsBranchUpdated
   | EventWorktreeReady
   | EventWorktreeFailed
@@ -2111,6 +2380,54 @@ export type McpStatus =
   | McpStatusFailed
   | McpStatusNeedsAuth
   | McpStatusNeedsClientRegistration
+
+export type WorkflowUsage = {
+  input_tokens: number
+  output_tokens: number
+  reasoning_tokens: number
+  cache_read_tokens: number
+  cache_write_tokens: number
+  cost_usd: number
+  tool_calls: number
+  updated_at: number
+}
+
+export type WorkflowRuntime = {
+  phase: "planning" | "running" | "waiting" | "interrupted" | "failed" | "completed"
+  active_node_id?: string
+  waiting_node_ids: Array<string>
+  failed_node_ids: Array<string>
+  command_count: number
+  update_count: number
+  pull_count: number
+  last_event_id: number
+  usage?: WorkflowUsage
+  limits?: {
+    max_input_tokens?: number
+    max_output_tokens?: number
+    max_cost_usd?: number
+  }
+}
+
+export type WorkflowSnapshot = {
+  workflow: Workflow
+  runtime: WorkflowRuntime
+  nodes: Array<WorkflowNode>
+  edges: Array<WorkflowEdge>
+  checkpoints: Array<WorkflowCheckpoint>
+  events: Array<WorkflowEvent>
+  cursor: number
+}
+
+export type WorkflowReadResult = {
+  workflow?: Workflow
+  runtime?: WorkflowRuntime
+  nodes: Array<WorkflowNode>
+  edges: Array<WorkflowEdge>
+  checkpoints: Array<WorkflowCheckpoint>
+  events: Array<WorkflowEvent>
+  cursor: number
+}
 
 export type Path = {
   home: string
@@ -2862,6 +3179,241 @@ export type PtyConnectResponses = {
 
 export type PtyConnectResponse = PtyConnectResponses[keyof PtyConnectResponses]
 
+export type SerialListData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/serial"
+}
+
+export type SerialListResponses = {
+  /**
+   * List of sessions
+   */
+  200: Array<Serial>
+}
+
+export type SerialListResponse = SerialListResponses[keyof SerialListResponses]
+
+export type SerialCreateData = {
+  body?: {
+    path: string
+    baudRate?: number
+    title?: string
+    dataBits?: number
+    stopBits?: number
+    parity?: "none" | "even" | "odd" | "mark" | "space"
+    flowControl?: boolean
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/serial"
+}
+
+export type SerialCreateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type SerialCreateError = SerialCreateErrors[keyof SerialCreateErrors]
+
+export type SerialCreateResponses = {
+  /**
+   * Created session
+   */
+  200: Serial
+}
+
+export type SerialCreateResponse = SerialCreateResponses[keyof SerialCreateResponses]
+
+export type SerialPortsData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/serial/ports"
+}
+
+export type SerialPortsResponses = {
+  /**
+   * Available ports
+   */
+  200: Array<{
+    path: string
+    manufacturer?: string
+    serialNumber?: string
+    pnpId?: string
+    vendorId?: string
+    productId?: string
+  }>
+}
+
+export type SerialPortsResponse = SerialPortsResponses[keyof SerialPortsResponses]
+
+export type SerialRemoveData = {
+  body?: never
+  path: {
+    serialID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/serial/{serialID}"
+}
+
+export type SerialRemoveErrors = {
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SerialRemoveError = SerialRemoveErrors[keyof SerialRemoveErrors]
+
+export type SerialRemoveResponses = {
+  /**
+   * Session removed
+   */
+  200: boolean
+}
+
+export type SerialRemoveResponse = SerialRemoveResponses[keyof SerialRemoveResponses]
+
+export type SerialGetData = {
+  body?: never
+  path: {
+    serialID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/serial/{serialID}"
+}
+
+export type SerialGetErrors = {
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SerialGetError = SerialGetErrors[keyof SerialGetErrors]
+
+export type SerialGetResponses = {
+  /**
+   * Session info
+   */
+  200: Serial
+}
+
+export type SerialGetResponse = SerialGetResponses[keyof SerialGetResponses]
+
+export type SerialUpdateData = {
+  body?: {
+    title?: string
+  }
+  path: {
+    serialID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/serial/{serialID}"
+}
+
+export type SerialUpdateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type SerialUpdateError = SerialUpdateErrors[keyof SerialUpdateErrors]
+
+export type SerialUpdateResponses = {
+  /**
+   * Updated session
+   */
+  200: Serial
+}
+
+export type SerialUpdateResponse = SerialUpdateResponses[keyof SerialUpdateResponses]
+
+export type SerialWriteData = {
+  body?: {
+    data: string
+  }
+  path: {
+    serialID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/serial/{serialID}/write"
+}
+
+export type SerialWriteErrors = {
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SerialWriteError = SerialWriteErrors[keyof SerialWriteErrors]
+
+export type SerialWriteResponses = {
+  /**
+   * Bytes written
+   */
+  200: boolean
+}
+
+export type SerialWriteResponse = SerialWriteResponses[keyof SerialWriteResponses]
+
+export type SerialConnectData = {
+  body?: never
+  path: {
+    serialID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/serial/{serialID}/connect"
+}
+
+export type SerialConnectErrors = {
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SerialConnectError = SerialConnectErrors[keyof SerialConnectErrors]
+
+export type SerialConnectResponses = {
+  /**
+   * Connected session
+   */
+  200: boolean
+}
+
+export type SerialConnectResponse = SerialConnectResponses[keyof SerialConnectResponses]
+
 export type ConfigGetData = {
   body?: never
   path?: never
@@ -3003,6 +3555,807 @@ export type ExperimentalConsoleSwitchOrgResponses = {
 
 export type ExperimentalConsoleSwitchOrgResponse =
   ExperimentalConsoleSwitchOrgResponses[keyof ExperimentalConsoleSwitchOrgResponses]
+
+export type ExperimentalRefinerOverviewGetData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+    session_id?: string
+    workflow_id?: string
+    limit?: number
+    include_archived?: boolean
+    scope?: "all" | "session" | "workflow"
+  }
+  url: "/experimental/refiner/overview"
+}
+
+export type ExperimentalRefinerOverviewGetResponses = {
+  /**
+   * Refiner overview
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRefinerOverviewGetResponse =
+  ExperimentalRefinerOverviewGetResponses[keyof ExperimentalRefinerOverviewGetResponses]
+
+export type ExperimentalRefinerExperienceDeleteData = {
+  body?: never
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+    cascade?: boolean
+    reason?: string
+  }
+  url: "/experimental/refiner/experience/{id}"
+}
+
+export type ExperimentalRefinerExperienceDeleteErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalRefinerExperienceDeleteError =
+  ExperimentalRefinerExperienceDeleteErrors[keyof ExperimentalRefinerExperienceDeleteErrors]
+
+export type ExperimentalRefinerExperienceDeleteResponses = {
+  /**
+   * Deletion result
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRefinerExperienceDeleteResponse =
+  ExperimentalRefinerExperienceDeleteResponses[keyof ExperimentalRefinerExperienceDeleteResponses]
+
+export type ExperimentalRefinerExperienceGetData = {
+  body?: never
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/refiner/experience/{id}"
+}
+
+export type ExperimentalRefinerExperienceGetErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalRefinerExperienceGetError =
+  ExperimentalRefinerExperienceGetErrors[keyof ExperimentalRefinerExperienceGetErrors]
+
+export type ExperimentalRefinerExperienceGetResponses = {
+  /**
+   * Refiner experience
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRefinerExperienceGetResponse =
+  ExperimentalRefinerExperienceGetResponses[keyof ExperimentalRefinerExperienceGetResponses]
+
+export type ExperimentalRefinerExperiencePatchData = {
+  body?: {
+    title?: string
+    abstract?: string
+    statement?: string | null
+    trigger_condition?: string | null
+    task_type?: string | null
+    scope?: "workspace" | "project" | "repo" | "user"
+    categories?: Array<string>
+  }
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/refiner/experience/{id}"
+}
+
+export type ExperimentalRefinerExperiencePatchErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalRefinerExperiencePatchError =
+  ExperimentalRefinerExperiencePatchErrors[keyof ExperimentalRefinerExperiencePatchErrors]
+
+export type ExperimentalRefinerExperiencePatchResponses = {
+  /**
+   * Patched experience
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRefinerExperiencePatchResponse =
+  ExperimentalRefinerExperiencePatchResponses[keyof ExperimentalRefinerExperiencePatchResponses]
+
+export type ExperimentalRefinerTaxonomyGetData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/refiner/taxonomy"
+}
+
+export type ExperimentalRefinerTaxonomyGetResponses = {
+  /**
+   * Refiner taxonomy
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRefinerTaxonomyGetResponse =
+  ExperimentalRefinerTaxonomyGetResponses[keyof ExperimentalRefinerTaxonomyGetResponses]
+
+export type ExperimentalRefinerConfigGetData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/refiner/config"
+}
+
+export type ExperimentalRefinerConfigGetResponses = {
+  /**
+   * Refiner config
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRefinerConfigGetResponse =
+  ExperimentalRefinerConfigGetResponses[keyof ExperimentalRefinerConfigGetResponses]
+
+export type ExperimentalRefinerConfigUpdateData = {
+  body?: {
+    model?: {
+      providerID: string
+      modelID: string
+    } | null
+    temperature?: number | null
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/refiner/config"
+}
+
+export type ExperimentalRefinerConfigUpdateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalRefinerConfigUpdateError =
+  ExperimentalRefinerConfigUpdateErrors[keyof ExperimentalRefinerConfigUpdateErrors]
+
+export type ExperimentalRefinerConfigUpdateResponses = {
+  /**
+   * Updated refiner config
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRefinerConfigUpdateResponse =
+  ExperimentalRefinerConfigUpdateResponses[keyof ExperimentalRefinerConfigUpdateResponses]
+
+export type ExperimentalRefinerCategoriesListData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/refiner/categories"
+}
+
+export type ExperimentalRefinerCategoriesListResponses = {
+  /**
+   * Categories
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRefinerCategoriesListResponse =
+  ExperimentalRefinerCategoriesListResponses[keyof ExperimentalRefinerCategoriesListResponses]
+
+export type ExperimentalRefinerExperienceArchiveData = {
+  body?: {
+    archived: boolean
+  }
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/refiner/experience/{id}/archive"
+}
+
+export type ExperimentalRefinerExperienceArchiveErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalRefinerExperienceArchiveError =
+  ExperimentalRefinerExperienceArchiveErrors[keyof ExperimentalRefinerExperienceArchiveErrors]
+
+export type ExperimentalRefinerExperienceArchiveResponses = {
+  /**
+   * Archive result
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRefinerExperienceArchiveResponse =
+  ExperimentalRefinerExperienceArchiveResponses[keyof ExperimentalRefinerExperienceArchiveResponses]
+
+export type ExperimentalRefinerExperienceAugmentData = {
+  body?: {
+    user_text: string
+    note?: string
+  }
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/refiner/experience/{id}/observation"
+}
+
+export type ExperimentalRefinerExperienceAugmentErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalRefinerExperienceAugmentError =
+  ExperimentalRefinerExperienceAugmentErrors[keyof ExperimentalRefinerExperienceAugmentErrors]
+
+export type ExperimentalRefinerExperienceAugmentResponses = {
+  /**
+   * Augmented experience
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRefinerExperienceAugmentResponse =
+  ExperimentalRefinerExperienceAugmentResponses[keyof ExperimentalRefinerExperienceAugmentResponses]
+
+export type ExperimentalRefinerExperienceCreateData = {
+  body?: {
+    user_text: string
+    kind_hint?: string
+    scope_hint?: "workspace" | "project" | "repo" | "user"
+    task_type_hint?: string
+    note?: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/refiner/experience"
+}
+
+export type ExperimentalRefinerExperienceCreateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalRefinerExperienceCreateError =
+  ExperimentalRefinerExperienceCreateErrors[keyof ExperimentalRefinerExperienceCreateErrors]
+
+export type ExperimentalRefinerExperienceCreateResponses = {
+  /**
+   * Created experience
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRefinerExperienceCreateResponse =
+  ExperimentalRefinerExperienceCreateResponses[keyof ExperimentalRefinerExperienceCreateResponses]
+
+export type ExperimentalRefinerExperienceReRefineData = {
+  body?: never
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/refiner/experience/{id}/refine"
+}
+
+export type ExperimentalRefinerExperienceReRefineErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalRefinerExperienceReRefineError =
+  ExperimentalRefinerExperienceReRefineErrors[keyof ExperimentalRefinerExperienceReRefineErrors]
+
+export type ExperimentalRefinerExperienceReRefineResponses = {
+  /**
+   * Re-refined experience
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRefinerExperienceReRefineResponse =
+  ExperimentalRefinerExperienceReRefineResponses[keyof ExperimentalRefinerExperienceReRefineResponses]
+
+export type ExperimentalRefinerExperienceUndoRefinementData = {
+  body?: never
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/refiner/experience/{id}/undo-refinement"
+}
+
+export type ExperimentalRefinerExperienceUndoRefinementErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalRefinerExperienceUndoRefinementError =
+  ExperimentalRefinerExperienceUndoRefinementErrors[keyof ExperimentalRefinerExperienceUndoRefinementErrors]
+
+export type ExperimentalRefinerExperienceUndoRefinementResponses = {
+  /**
+   * Restored experience
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRefinerExperienceUndoRefinementResponse =
+  ExperimentalRefinerExperienceUndoRefinementResponses[keyof ExperimentalRefinerExperienceUndoRefinementResponses]
+
+export type ExperimentalRefinerObservationDeleteData = {
+  body?: never
+  path: {
+    experience_id: string
+    observation_id: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/refiner/experience/{experience_id}/observation/{observation_id}"
+}
+
+export type ExperimentalRefinerObservationDeleteErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalRefinerObservationDeleteError =
+  ExperimentalRefinerObservationDeleteErrors[keyof ExperimentalRefinerObservationDeleteErrors]
+
+export type ExperimentalRefinerObservationDeleteResponses = {
+  /**
+   * Delete result
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRefinerObservationDeleteResponse =
+  ExperimentalRefinerObservationDeleteResponses[keyof ExperimentalRefinerObservationDeleteResponses]
+
+export type ExperimentalRefinerObservationMoveData = {
+  body?: {
+    observation_id: string
+    from_experience_id: string
+    to_experience_id: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/refiner/observation/move"
+}
+
+export type ExperimentalRefinerObservationMoveErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalRefinerObservationMoveError =
+  ExperimentalRefinerObservationMoveErrors[keyof ExperimentalRefinerObservationMoveErrors]
+
+export type ExperimentalRefinerObservationMoveResponses = {
+  /**
+   * Move result
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRefinerObservationMoveResponse =
+  ExperimentalRefinerObservationMoveResponses[keyof ExperimentalRefinerObservationMoveResponses]
+
+export type ExperimentalRefinerExperienceMergeData = {
+  body?: {
+    ids: Array<string>
+    reason?: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/refiner/experience/merge"
+}
+
+export type ExperimentalRefinerExperienceMergeErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalRefinerExperienceMergeError =
+  ExperimentalRefinerExperienceMergeErrors[keyof ExperimentalRefinerExperienceMergeErrors]
+
+export type ExperimentalRefinerExperienceMergeResponses = {
+  /**
+   * Merged experience
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRefinerExperienceMergeResponse =
+  ExperimentalRefinerExperienceMergeResponses[keyof ExperimentalRefinerExperienceMergeResponses]
+
+export type ExperimentalRefinerGraphGetData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+    include_archived?: boolean
+  }
+  url: "/experimental/refiner/graph"
+}
+
+export type ExperimentalRefinerGraphGetResponses = {
+  /**
+   * Chain graph
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRefinerGraphGetResponse =
+  ExperimentalRefinerGraphGetResponses[keyof ExperimentalRefinerGraphGetResponses]
+
+export type ExperimentalRefinerExperienceNeighborsData = {
+  body?: never
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+    edge_kinds?: string
+    direction?: "in" | "out" | "both"
+    max_depth?: number
+  }
+  url: "/experimental/refiner/experience/{id}/neighbors"
+}
+
+export type ExperimentalRefinerExperienceNeighborsErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalRefinerExperienceNeighborsError =
+  ExperimentalRefinerExperienceNeighborsErrors[keyof ExperimentalRefinerExperienceNeighborsErrors]
+
+export type ExperimentalRefinerExperienceNeighborsResponses = {
+  /**
+   * Neighbor subgraph
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRefinerExperienceNeighborsResponse =
+  ExperimentalRefinerExperienceNeighborsResponses[keyof ExperimentalRefinerExperienceNeighborsResponses]
+
+export type ExperimentalRefinerEdgeCreateData = {
+  body?: {
+    from: string
+    to: string
+    kind: "requires" | "refines" | "supports" | "contradicts" | "see_also"
+    reason?: string
+    confidence?: number
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/refiner/edge"
+}
+
+export type ExperimentalRefinerEdgeCreateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalRefinerEdgeCreateError =
+  ExperimentalRefinerEdgeCreateErrors[keyof ExperimentalRefinerEdgeCreateErrors]
+
+export type ExperimentalRefinerEdgeCreateResponses = {
+  /**
+   * Edge create result
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRefinerEdgeCreateResponse =
+  ExperimentalRefinerEdgeCreateResponses[keyof ExperimentalRefinerEdgeCreateResponses]
+
+export type ExperimentalRefinerEdgeDeleteData = {
+  body?: never
+  path: {
+    edge_id: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/refiner/edge/{edge_id}"
+}
+
+export type ExperimentalRefinerEdgeDeleteErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalRefinerEdgeDeleteError =
+  ExperimentalRefinerEdgeDeleteErrors[keyof ExperimentalRefinerEdgeDeleteErrors]
+
+export type ExperimentalRefinerEdgeDeleteResponses = {
+  /**
+   * Edge delete result
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRefinerEdgeDeleteResponse =
+  ExperimentalRefinerEdgeDeleteResponses[keyof ExperimentalRefinerEdgeDeleteResponses]
+
+export type ExperimentalRefinerSearchData = {
+  body?: never
+  path?: never
+  query: {
+    directory?: string
+    workspace?: string
+    q: string
+    limit?: number
+    include_archived?: boolean
+  }
+  url: "/experimental/refiner/search"
+}
+
+export type ExperimentalRefinerSearchResponses = {
+  /**
+   * Search results
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRefinerSearchResponse =
+  ExperimentalRefinerSearchResponses[keyof ExperimentalRefinerSearchResponses]
+
+export type ExperimentalRefinerIngestSessionData = {
+  body?: {
+    message_ids?: Array<string>
+  }
+  path: {
+    session_id: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/refiner/ingest-session/{session_id}"
+}
+
+export type ExperimentalRefinerIngestSessionErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalRefinerIngestSessionError =
+  ExperimentalRefinerIngestSessionErrors[keyof ExperimentalRefinerIngestSessionErrors]
+
+export type ExperimentalRefinerIngestSessionResponses = {
+  /**
+   * Ingest stats
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRefinerIngestSessionResponse =
+  ExperimentalRefinerIngestSessionResponses[keyof ExperimentalRefinerIngestSessionResponses]
+
+export type ExperimentalRefinerListIngestedObservationsData = {
+  body?: never
+  path: {
+    session_id: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/refiner/ingested-observations/{session_id}"
+}
+
+export type ExperimentalRefinerListIngestedObservationsResponses = {
+  /**
+   * Ingested observation message_ids
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRefinerListIngestedObservationsResponse =
+  ExperimentalRefinerListIngestedObservationsResponses[keyof ExperimentalRefinerListIngestedObservationsResponses]
+
+export type ExperimentalRefinerExportData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/refiner/export"
+}
+
+export type ExperimentalRefinerExportResponses = {
+  /**
+   * Export bundle
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRefinerExportResponse =
+  ExperimentalRefinerExportResponses[keyof ExperimentalRefinerExportResponses]
+
+export type ExperimentalRefinerImportData = {
+  body?: {
+    data: unknown
+    mode?: "merge" | "replace"
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/refiner/import"
+}
+
+export type ExperimentalRefinerImportErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalRefinerImportError = ExperimentalRefinerImportErrors[keyof ExperimentalRefinerImportErrors]
+
+export type ExperimentalRefinerImportResponses = {
+  /**
+   * Import result
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRefinerImportResponse =
+  ExperimentalRefinerImportResponses[keyof ExperimentalRefinerImportResponses]
 
 export type ToolIdsData = {
   body?: never
@@ -5313,6 +6666,767 @@ export type TuiControlResponseResponses = {
 }
 
 export type TuiControlResponseResponse = TuiControlResponseResponses[keyof TuiControlResponseResponses]
+
+export type WorkflowSandTableGetData = {
+  body?: never
+  path: {
+    discussionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow/sand_table/{discussionID}"
+}
+
+export type WorkflowSandTableGetErrors = {
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type WorkflowSandTableGetError = WorkflowSandTableGetErrors[keyof WorkflowSandTableGetErrors]
+
+export type WorkflowSandTableGetResponses = {
+  /**
+   * Sand table discussion
+   */
+  200: {
+    id: string
+    topic: string
+    context: string
+    round: number
+    max_rounds: number
+    status: "running" | "approved" | "completed" | "failed"
+    participants: Array<{
+      role: "planner" | "evaluator"
+      sessionID: string
+      model: {
+        providerID: string
+        modelID: string
+      }
+    }>
+    current_plan?: string
+    last_evaluation?: string
+    messages: Array<{
+      role: "planner" | "evaluator" | "orchestrator"
+      model: string
+      content: string
+      round: number
+      timestamp: number
+    }>
+  }
+}
+
+export type WorkflowSandTableGetResponse = WorkflowSandTableGetResponses[keyof WorkflowSandTableGetResponses]
+
+export type WorkflowSandTableMessageData = {
+  body?: {
+    content: string
+    role?: "planner" | "evaluator" | "orchestrator"
+  }
+  path: {
+    discussionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow/sand_table/{discussionID}/message"
+}
+
+export type WorkflowSandTableMessageErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type WorkflowSandTableMessageError = WorkflowSandTableMessageErrors[keyof WorkflowSandTableMessageErrors]
+
+export type WorkflowSandTableMessageResponses = {
+  /**
+   * Updated sand table discussion
+   */
+  200: {
+    id: string
+    topic: string
+    context: string
+    round: number
+    max_rounds: number
+    status: "running" | "approved" | "completed" | "failed"
+    participants: Array<{
+      role: "planner" | "evaluator"
+      sessionID: string
+      model: {
+        providerID: string
+        modelID: string
+      }
+    }>
+    current_plan?: string
+    last_evaluation?: string
+    messages: Array<{
+      role: "planner" | "evaluator" | "orchestrator"
+      model: string
+      content: string
+      round: number
+      timestamp: number
+    }>
+  }
+}
+
+export type WorkflowSandTableMessageResponse =
+  WorkflowSandTableMessageResponses[keyof WorkflowSandTableMessageResponses]
+
+export type WorkflowDeleteSessionData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow/session/{sessionID}"
+}
+
+export type WorkflowDeleteSessionErrors = {
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type WorkflowDeleteSessionError = WorkflowDeleteSessionErrors[keyof WorkflowDeleteSessionErrors]
+
+export type WorkflowDeleteSessionResponses = {
+  /**
+   * Deleted workflow task
+   */
+  200: boolean
+}
+
+export type WorkflowDeleteSessionResponse = WorkflowDeleteSessionResponses[keyof WorkflowDeleteSessionResponses]
+
+export type WorkflowSessionData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow/session/{sessionID}"
+}
+
+export type WorkflowSessionErrors = {
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type WorkflowSessionError = WorkflowSessionErrors[keyof WorkflowSessionErrors]
+
+export type WorkflowSessionResponses = {
+  /**
+   * Workflow snapshot
+   */
+  200: WorkflowSnapshot
+}
+
+export type WorkflowSessionResponse = WorkflowSessionResponses[keyof WorkflowSessionResponses]
+
+export type WorkflowGetData = {
+  body?: never
+  path: {
+    workflowID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow/{workflowID}"
+}
+
+export type WorkflowGetErrors = {
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type WorkflowGetError = WorkflowGetErrors[keyof WorkflowGetErrors]
+
+export type WorkflowGetResponses = {
+  /**
+   * Workflow snapshot
+   */
+  200: WorkflowSnapshot
+}
+
+export type WorkflowGetResponse = WorkflowGetResponses[keyof WorkflowGetResponses]
+
+export type WorkflowReadData = {
+  body?: never
+  path: {
+    workflowID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+    cursor?: number
+  }
+  url: "/workflow/{workflowID}/read"
+}
+
+export type WorkflowReadErrors = {
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type WorkflowReadError = WorkflowReadErrors[keyof WorkflowReadErrors]
+
+export type WorkflowReadResponses = {
+  /**
+   * Workflow changes since cursor
+   */
+  200: WorkflowReadResult
+}
+
+export type WorkflowReadResponse = WorkflowReadResponses[keyof WorkflowReadResponses]
+
+export type WorkflowDiffData = {
+  body?: never
+  path: {
+    workflowID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow/{workflowID}/diff"
+}
+
+export type WorkflowDiffErrors = {
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type WorkflowDiffError = WorkflowDiffErrors[keyof WorkflowDiffErrors]
+
+export type WorkflowDiffResponses = {
+  /**
+   * Aggregated workflow file diff
+   */
+  200: Array<SnapshotFileDiff>
+}
+
+export type WorkflowDiffResponse = WorkflowDiffResponses[keyof WorkflowDiffResponses]
+
+export type WorkflowCreateData = {
+  body?: {
+    session_id: string
+    title: string
+    config?: {
+      [key: string]: unknown
+    }
+    summary?: WorkflowSummary
+    nodes?: Array<{
+      id?: string
+      session_id?: string
+      title: string
+      agent: string
+      model?: {
+        providerID?: string
+        modelID?: string
+        variant?: string
+      }
+      config?: {
+        [key: string]: unknown
+      }
+      status?:
+        | "pending"
+        | "ready"
+        | "running"
+        | "waiting"
+        | "paused"
+        | "interrupted"
+        | "completed"
+        | "failed"
+        | "cancelled"
+      result_status?: "unknown" | "success" | "fail" | "partial"
+      fail_reason?: string
+      action_count?: number
+      attempt?: number
+      max_attempts?: number
+      max_actions?: number
+      state_json?: {
+        [key: string]: unknown
+      }
+      result_json?: {
+        [key: string]: unknown
+      }
+      position?: number
+    }>
+    edges?: Array<{
+      id?: string
+      from_node_id: string
+      to_node_id: string
+      label?: string
+      config?: {
+        [key: string]: unknown
+      }
+    }>
+    checkpoints?: Array<{
+      id?: string
+      node_id: string
+      label: string
+      status?: "pending" | "passed" | "failed" | "skipped"
+      config?: {
+        [key: string]: unknown
+      }
+      result_json?: {
+        [key: string]: unknown
+      }
+    }>
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow"
+}
+
+export type WorkflowCreateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type WorkflowCreateError = WorkflowCreateErrors[keyof WorkflowCreateErrors]
+
+export type WorkflowCreateResponses = {
+  /**
+   * Created workflow
+   */
+  200: Workflow
+}
+
+export type WorkflowCreateResponse = WorkflowCreateResponses[keyof WorkflowCreateResponses]
+
+export type WorkflowNodeCreateData = {
+  body?: {
+    session_id?: string
+    title: string
+    agent: string
+    model?: {
+      providerID?: string
+      modelID?: string
+      variant?: string
+    }
+    config?: {
+      [key: string]: unknown
+    }
+    status?:
+      | "pending"
+      | "ready"
+      | "running"
+      | "waiting"
+      | "paused"
+      | "interrupted"
+      | "completed"
+      | "failed"
+      | "cancelled"
+    result_status?: "unknown" | "success" | "fail" | "partial"
+    max_attempts?: number
+    max_actions?: number
+    position?: number
+  }
+  path: {
+    workflowID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow/{workflowID}/node"
+}
+
+export type WorkflowNodeCreateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type WorkflowNodeCreateError = WorkflowNodeCreateErrors[keyof WorkflowNodeCreateErrors]
+
+export type WorkflowNodeCreateResponses = {
+  /**
+   * Created workflow node
+   */
+  200: WorkflowNode
+}
+
+export type WorkflowNodeCreateResponse = WorkflowNodeCreateResponses[keyof WorkflowNodeCreateResponses]
+
+export type WorkflowEdgeCreateData = {
+  body?: {
+    from_node_id: string
+    to_node_id: string
+    label?: string
+    config?: {
+      [key: string]: unknown
+    }
+  }
+  path: {
+    workflowID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow/{workflowID}/edge"
+}
+
+export type WorkflowEdgeCreateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type WorkflowEdgeCreateError = WorkflowEdgeCreateErrors[keyof WorkflowEdgeCreateErrors]
+
+export type WorkflowEdgeCreateResponses = {
+  /**
+   * Created workflow edge
+   */
+  200: WorkflowEdge
+}
+
+export type WorkflowEdgeCreateResponse = WorkflowEdgeCreateResponses[keyof WorkflowEdgeCreateResponses]
+
+export type WorkflowCheckpointCreateData = {
+  body?: {
+    node_id: string
+    label: string
+    status?: "pending" | "passed" | "failed" | "skipped"
+    config?: {
+      [key: string]: unknown
+    }
+    result_json?: {
+      [key: string]: unknown
+    }
+  }
+  path: {
+    workflowID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow/{workflowID}/checkpoint"
+}
+
+export type WorkflowCheckpointCreateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type WorkflowCheckpointCreateError = WorkflowCheckpointCreateErrors[keyof WorkflowCheckpointCreateErrors]
+
+export type WorkflowCheckpointCreateResponses = {
+  /**
+   * Created workflow checkpoint
+   */
+  200: WorkflowCheckpoint
+}
+
+export type WorkflowCheckpointCreateResponse =
+  WorkflowCheckpointCreateResponses[keyof WorkflowCheckpointCreateResponses]
+
+export type WorkflowControlData = {
+  body?: {
+    nodeID: string
+    source: string
+    command: "continue" | "resume" | "retry" | "inject_context"
+    payload?: {
+      [key: string]: unknown
+    }
+    command_id?: string
+    force?: boolean
+  }
+  path: {
+    workflowID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow/{workflowID}/control"
+}
+
+export type WorkflowControlErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type WorkflowControlError = WorkflowControlErrors[keyof WorkflowControlErrors]
+
+export type WorkflowControlResponses = {
+  /**
+   * Control accepted
+   */
+  200: {
+    ok: true
+    deduped: boolean
+    command_id?: string
+  }
+}
+
+export type WorkflowControlResponse = WorkflowControlResponses[keyof WorkflowControlResponses]
+
+export type WorkflowNodeUpdateData = {
+  body?: {
+    source: string
+    patch: {
+      status?:
+        | "pending"
+        | "ready"
+        | "running"
+        | "waiting"
+        | "paused"
+        | "interrupted"
+        | "completed"
+        | "failed"
+        | "cancelled"
+      result_status?: "unknown" | "success" | "fail" | "partial"
+      fail_reason?: string | null
+      session_id?: string | null
+      model?: {
+        providerID?: string
+        modelID?: string
+        variant?: string
+      } | null
+      config?: {
+        mode?: "replace" | "merge"
+        value?: {
+          [key: string]: unknown
+        }
+      }
+      state_json?: {
+        mode?: "replace" | "merge"
+        value?: {
+          [key: string]: unknown
+        }
+      }
+      result_json?: {
+        mode?: "replace" | "merge"
+        value?: {
+          [key: string]: unknown
+        }
+      }
+      attempt_delta?: number
+      action_count?: number
+      max_attempts?: number
+      max_actions?: number
+      title?: string
+    }
+    action_delta?: number
+    event?: {
+      kind: string
+      target_node_id?: string
+      payload?: {
+        [key: string]: unknown
+      }
+    }
+  }
+  path: {
+    nodeID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow/node/{nodeID}"
+}
+
+export type WorkflowNodeUpdateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type WorkflowNodeUpdateError = WorkflowNodeUpdateErrors[keyof WorkflowNodeUpdateErrors]
+
+export type WorkflowNodeUpdateResponses = {
+  /**
+   * Updated workflow node
+   */
+  200: WorkflowNode
+}
+
+export type WorkflowNodeUpdateResponse = WorkflowNodeUpdateResponses[keyof WorkflowNodeUpdateResponses]
+
+export type WorkflowNodePauseData = {
+  body?: {
+    reason?: string
+  }
+  path: {
+    nodeID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow/node/{nodeID}/pause"
+}
+
+export type WorkflowNodePauseErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type WorkflowNodePauseError = WorkflowNodePauseErrors[keyof WorkflowNodePauseErrors]
+
+export type WorkflowNodePauseResponses = {
+  /**
+   * Paused workflow node
+   */
+  200: WorkflowNode
+}
+
+export type WorkflowNodePauseResponse = WorkflowNodePauseResponses[keyof WorkflowNodePauseResponses]
+
+export type WorkflowNodeAbortData = {
+  body?: {
+    reason?: string
+  }
+  path: {
+    nodeID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow/node/{nodeID}/abort"
+}
+
+export type WorkflowNodeAbortErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type WorkflowNodeAbortError = WorkflowNodeAbortErrors[keyof WorkflowNodeAbortErrors]
+
+export type WorkflowNodeAbortResponses = {
+  /**
+   * Aborted workflow node
+   */
+  200: WorkflowNode
+}
+
+export type WorkflowNodeAbortResponse = WorkflowNodeAbortResponses[keyof WorkflowNodeAbortResponses]
+
+export type WorkflowNodePullData = {
+  body?: never
+  path: {
+    nodeID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+    cursor?: number
+  }
+  url: "/workflow/node/{nodeID}/pull"
+}
+
+export type WorkflowNodePullErrors = {
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type WorkflowNodePullError = WorkflowNodePullErrors[keyof WorkflowNodePullErrors]
+
+export type WorkflowNodePullResponses = {
+  /**
+   * Pending node events
+   */
+  200: {
+    node: WorkflowNode
+    cursor: number
+    events: Array<WorkflowEvent>
+  }
+}
+
+export type WorkflowNodePullResponse = WorkflowNodePullResponses[keyof WorkflowNodePullResponses]
+
+export type WorkflowNodeCodeChangesData = {
+  body?: never
+  path: {
+    nodeID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow/node/{nodeID}/code_changes"
+}
+
+export type WorkflowNodeCodeChangesErrors = {
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type WorkflowNodeCodeChangesError = WorkflowNodeCodeChangesErrors[keyof WorkflowNodeCodeChangesErrors]
+
+export type WorkflowNodeCodeChangesResponses = {
+  /**
+   * Node session file diff
+   */
+  200: Array<SnapshotFileDiff>
+}
+
+export type WorkflowNodeCodeChangesResponse = WorkflowNodeCodeChangesResponses[keyof WorkflowNodeCodeChangesResponses]
 
 export type InstanceDisposeData = {
   body?: never

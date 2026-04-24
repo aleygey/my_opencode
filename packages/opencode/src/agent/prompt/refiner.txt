@@ -240,16 +240,75 @@ Output schema (call `StructuredOutput` once):
 ```
 
 ==============================================================================
+SPECIFICATION TOKENS — PRESERVE VERBATIM
+==============================================================================
+
+A common failure mode is over-abstraction: when a user says "push to
+`ssh://gerrit.example.com:29418/acme/core` via `git review -R`", the refiner
+shrinks it to "需要推送到指定的 gerrit 地址". The rule becomes unusable at
+recall time because the specific URL/command/flag is the **only thing worth
+remembering**.
+
+Rule of thumb: **abstract the prose, keep the specifications**.
+
+Preserve the following categories **verbatim** in `abstract`, `statement`, and
+`trigger_condition` — even if preserving them means copying a long contiguous
+span from `user_text`. The ≥10-char copy ban in ORIGINALITY RULES below
+applies to **descriptive prose only** and explicitly does NOT apply to these
+specification tokens:
+
+- Commands and CLI invocations (e.g. `git push origin HEAD:refs/for/main`,
+  `pnpm run build:linux`, `source .env.local`).
+- URLs, URIs, repository paths, filesystem paths, glob patterns.
+- Flags, option names, subcommands (`--no-verify`, `-R`, `--allow-empty`).
+- Config keys, environment variable names (`OPENCODE_DB`, `CI_REGISTRY_URL`).
+- Identifier-style nouns: branch names, service names, container image tags,
+  database names, queue names, API endpoints, feature-flag slugs.
+- Numeric thresholds that carry units (`8GB`, `30s`, `HTTP 429`, `port 29418`).
+- Quoted names of tools/products when used as a required invocation
+  (`gerrit`, `jenkins`, `pnpm`, `bun`, `eslint`).
+
+Rewrite what is **around** the specifications so the item reads as a reusable
+rule, not as a reply to this specific request. The goal is:
+
+> Bad  — "推送到指定的 gerrit 地址" (specification lost)
+> Bad  — "用户要求把当前分支 push 到 ssh://gerrit.example.com:29418/acme/core" (narrative leaks)
+> Good — "推送代码时使用 `git review -R`，远端为 `ssh://gerrit.example.com:29418/acme/core`"
+
+Same shape for commands:
+
+> Bad  — "需要使用特定命令来构建固件"
+> Good — "固件构建命令：`pnpm run build:firmware -- --target esp32`；在 CI 中由 `FIRMWARE_TARGET` 环境变量覆盖 `--target`"
+
+If the user only mentioned the specification once and you are unsure whether
+it is reusable (e.g. a one-off PR number, an ephemeral branch name), prefer
+`action: "noise"`. But when the specification is part of the rule itself —
+which is the common case for URLs/commands/flags — **keep it**.
+
+==============================================================================
 ORIGINALITY RULES (hard requirements)
 ==============================================================================
 
-Your `abstract` must be an abstraction, not a copy.
+Your `abstract` must be an abstraction of the surrounding prose, not a copy
+of the user's sentence structure. Specification tokens are exempt (see above).
 
-- Never include a contiguous span of ≥ 10 Chinese characters (or ≥ 8 English words) copied from any `observation.user_text`. Paraphrase.
-- `abstract` must describe the reusable condition + rule / practice / fact, not the specific one-off request.
-- If the only way you can describe the observation is to restate the user's sentence, the item is not abstract enough — prefer `action: "noise"` in route, or pick a more generic phrasing in refine.
-- `title` must be a noun phrase, not a sentence ending with a verb-object from the user text.
-- Do not wrap output in Markdown code fences. Do not emit JSON strings with the user's raw message verbatim.
+- In **descriptive prose** — the words that wrap the specifications — never
+  include a contiguous span of ≥ 10 Chinese characters (or ≥ 8 English words)
+  copied from any `observation.user_text`. Paraphrase.
+- In **specification tokens** — URLs, commands, flags, config keys, path
+  globs, identifier nouns, numeric thresholds — copy verbatim if they are
+  load-bearing for the rule. The copy ban does not apply to them.
+- `abstract` must describe the reusable condition + rule / practice / fact
+  (with its specifications preserved), not a restatement of the user's one-off
+  request. "某次" / "当前" / "这次" are signs the item is too narrative.
+- If the only way you can describe the observation is to restate the user's
+  sentence in its original structure, the item is not abstract enough —
+  prefer `action: "noise"` in route, or pick a more generic phrasing in refine.
+- `title` must be a noun phrase, not a sentence ending with a verb-object
+  from the user text. Titles rarely need specification tokens — those belong
+  in `abstract` and `statement`.
+- Do not wrap output in Markdown code fences. Do not emit JSON strings with
+  the user's raw message verbatim outside of the specification tokens rule.
 
 ==============================================================================
 LANGUAGE RULES
@@ -265,6 +324,11 @@ CONSERVATISM
 
 - When unsure whether an observation is reusable, prefer `action: "noise"`.
 - When unsure whether to create a new experience or flag as duplicate, prefer `noise` only if meaning clearly overlaps an existing id; otherwise `new`.
-- Do not create experiences that merely re-describe credentials, temporary file paths, specific PR numbers, or one-off parameters.
+- Do not create experiences that merely re-describe credentials, temporary
+  session-scoped file paths, specific PR numbers, or one-off parameters. A
+  specification token is "reusable" only when the same user would plausibly
+  want it applied again (commands, stable URLs, env var names, config keys).
+  An ephemeral identifier (PR #12345, branch `fix/yxt-20260422`, incident
+  `INC-8821`) is not reusable even if it looks specification-shaped.
 - Do not call `get_experience_detail` unless the summary list is genuinely ambiguous.
 - Prefer fewer, stronger edges over many weak ones. An empty `edges` array is fine.

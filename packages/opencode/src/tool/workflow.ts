@@ -1,8 +1,10 @@
-import { Tool } from "./tool"
+import { Effect } from "effect"
 import z from "zod"
+import * as Tool from "./tool"
 import { Workflow } from "@/workflow"
 import { Session } from "@/session"
 import { SessionPrompt } from "@/session/prompt"
+import { AppRuntime } from "@/effect/app-runtime"
 import { SessionID } from "@/session/schema"
 import { ModelID, ProviderID } from "@/provider/schema"
 
@@ -49,24 +51,6 @@ const format = (value: unknown) => JSON.stringify(value, null, 2)
 
 const confirm = /(^|\b)(confirm|confirmed|approve|approved|go ahead|proceed|start now|execute now|run it|ship it)(\b|$)|确认执行|确认开始|开始执行|可以执行|开始吧|执行吧|继续执行|请开始/iu
 
-const last = async (sessionID: string) => {
-  const msgs = await Session.messages({ sessionID: SessionID.make(sessionID), limit: 40 })
-  return msgs
-    .toReversed()
-    .find((msg) => msg.info.role === "user" && msg.parts.some((part) => !("synthetic" in part) || !part.synthetic))
-}
-
-const text = async (sessionID: string) =>
-  (await last(sessionID))?.parts
-    .flatMap((part) => (part.type === "text" && (!("synthetic" in part) || !part.synthetic) ? [part.text] : []))
-    .join("\n")
-    .trim() ?? ""
-
-const assertConfirmed = async (sessionID: string) => {
-  if (confirm.test(await text(sessionID))) return
-  throw new Error("workflow_create is blocked until the user explicitly confirms execution in the root orchestrator session.")
-}
-
 const assertNodeSession = (node: Awaited<ReturnType<typeof Workflow.getNode>>, sessionID: string) => {
   if (!node.session_id) throw new Error(`Workflow node ${node.id} has no active subagent session.`)
   if (node.session_id === sessionID) return
@@ -79,537 +63,781 @@ const configured = (value?: {
   variant?: string
 } | null) => !!value?.providerID && !!value?.modelID
 
-const prompt = (input: {
-  workflowID: string
-  nodeID: string
-  agent: string
-  sessionID: string
-  model?: {
-    providerID?: string
-    modelID?: string
-    variant?: string
-  }
-  text: string
-}) =>
-  SessionPrompt.prompt({
-    sessionID: SessionID.make(input.sessionID),
-    agent: input.agent,
-    model: input.model?.providerID && input.model.modelID
-      ? {
-          providerID: ProviderID.make(input.model.providerID),
-          modelID: ModelID.make(input.model.modelID),
-        }
-      : undefined,
-    variant: input.model?.variant,
-    parts: [
-      {
-        type: "text",
-        text: [
-          `You are executing workflow node ${input.nodeID} in workflow ${input.workflowID}.`,
-          "Do the work in this subagent session, not in the root orchestrator session.",
-          "Call workflow_pull immediately, follow runtime commands, report progress with workflow_update, and continue until you complete or block.",
-          "",
-          input.text,
-        ].join("\n"),
-      },
-    ],
-  })
+// ── schemas ────────────────────────────────────────────────────────────────
 
-export const WorkflowCreateTool = Tool.define("workflow_create", {
-  description: "Create a workflow runtime with nodes, edges, checkpoints, and a root orchestrator session.",
-  parameters: z.object({
-    title: z.string(),
-    session_id: z.string().optional(),
-    config: z.record(z.string(), z.any()).optional(),
-    summary: Workflow.Summary.optional(),
-    nodes: Workflow.create.schema.shape.nodes,
-    edges: Workflow.create.schema.shape.edges,
-    checkpoints: Workflow.create.schema.shape.checkpoints,
-  }),
-  async execute(input, ctx) {
-    await assertConfirmed(input.session_id ?? ctx.sessionID)
-    const info = await Workflow.create({
-      session_id: input.session_id ?? ctx.sessionID,
-      title: input.title,
-      config: input.config,
-      summary: input.summary,
-      nodes: input.nodes,
-      edges: input.edges,
-      checkpoints: input.checkpoints,
-    })
-    ctx.metadata({
-      title: input.title,
-      metadata: {
-        workflowID: info.id,
-      },
-    })
-    return {
-      title: input.title,
-      metadata: {
-        workflowID: info.id,
-      },
-      output: format(info),
-    }
-  },
+const WorkflowCreateParameters = z.object({
+  title: z.string(),
+  session_id: z.string().optional(),
+  config: z.record(z.string(), z.any()).optional(),
+  summary: Workflow.Summary.optional(),
+  nodes: Workflow.create.schema.shape.nodes,
+  edges: Workflow.create.schema.shape.edges,
+  checkpoints: Workflow.create.schema.shape.checkpoints,
 })
 
-export const WorkflowNodeCreateTool = Tool.define("workflow_node_create", {
-  description: "Create a workflow node. Prefer creating the session only when the node actually starts running.",
-  parameters: z.object({
-    workflow_id: z.string(),
-    title: z.string(),
-    agent: z.string(),
-    model,
-    config: z.record(z.string(), z.any()).optional(),
-    max_attempts: z.number().int().positive().optional(),
-    max_actions: z.number().int().positive().optional(),
-    position: z.number().int().nonnegative().optional(),
-    create_session: z.boolean().optional().default(false),
-    initial_prompt: z.string().optional(),
-  }),
-  async execute(input, ctx) {
-    const session = input.create_session
-      ? await Session.create({
-          parentID: ctx.sessionID,
-          title: `${input.title} (@${input.agent} node)`,
-        })
-      : undefined
-    const node = await Workflow.createNode({
-      workflowID: input.workflow_id,
-      session_id: session?.id,
-      title: input.title,
-      agent: input.agent,
-      model: input.model,
-      config: input.config,
-      max_attempts: input.max_attempts,
-      max_actions: input.max_actions,
-      position: input.position,
-    })
-
-    return {
-      title: input.title,
-      metadata: {
-        workflowID: input.workflow_id,
-        nodeID: node.id,
-        sessionID: session?.id,
-      },
-      output: format({
-        node,
-        session_id: session?.id,
-      }),
-    }
-  },
+const WorkflowNodeCreateParameters = z.object({
+  workflow_id: z.string(),
+  title: z.string(),
+  agent: z.string(),
+  model,
+  config: z.record(z.string(), z.any()).optional(),
+  max_attempts: z.number().int().positive().optional(),
+  max_actions: z.number().int().positive().optional(),
+  position: z.number().int().nonnegative().optional(),
+  create_session: z.boolean().optional().default(false),
+  initial_prompt: z.string().optional(),
 })
 
-export const WorkflowNodeStartTool = Tool.define("workflow_node_start", {
-  description: "Start an existing workflow node by creating and attaching its child session, then optionally send the initial prompt. Idempotent — calling on an already-running node returns the current state without re-prompting.",
-  parameters: z.object({
-    node_id: z.string(),
-    title: z.string().optional(),
-    model,
-    status: z.enum(["ready", "running", "waiting"]).optional(),
-    initial_prompt: z.string(),
-  }),
-  async execute(input, ctx) {
-    const current = await Workflow.getNode(input.node_id)
-    if (current.status === "cancelled") {
-      throw new Error(`Workflow node ${current.id} is cancelled and cannot be started again.`)
-    }
-    if (current.status === "completed") {
-      throw new Error(`Workflow node ${current.id} is already completed; use workflow_control with retry to re-run.`)
-    }
+const WorkflowNodeStartParameters = z.object({
+  node_id: z.string(),
+  title: z.string().optional(),
+  model,
+  status: z.enum(["ready", "running", "waiting"]).optional(),
+  initial_prompt: z.string(),
+})
 
-    // P0.3 idempotent start: if the node is already running / waiting with an
-    // attached session, skip session creation and re-prompting. This keeps
-    // accidental double-calls from spawning another LLM round mid-execution.
-    if (
-      current.session_id &&
-      (current.status === "running" || current.status === "waiting")
-    ) {
-      return {
-        title: current.title,
-        metadata: {
-          workflowID: current.workflow_id,
-          nodeID: current.id,
-          sessionID: current.session_id,
-        },
-        output: format({
-          node: current,
-          session_id: current.session_id,
-          idempotent: true,
-          reason: `node already ${current.status}; skipped re-prompt`,
-        }),
-      }
-    }
+const WorkflowNodePauseParameters = z.object({
+  node_id: z.string(),
+  reason: z.string().optional(),
+})
 
-    const picked = input.model ?? current.model
-    if (!configured(picked)) {
-      throw new Error(
-        `Workflow node ${current.id} cannot start until a providerID and modelID are configured.`,
-      )
-    }
-    const session = current.session_id
-      ? await Session.get(SessionID.make(current.session_id))
-      : await Session.create({
-          parentID: ctx.sessionID,
-          title: input.title ?? `${current.title} (@${current.agent} node)`,
-        })
+const WorkflowNodeAbortParameters = z.object({
+  node_id: z.string(),
+  reason: z.string().optional(),
+})
 
-    const node = current.session_id
-      ? current
-      : await Workflow.patchNode({
-          nodeID: current.id,
-          source: "orchestrator",
-          patch: {
-            session_id: session.id,
-            status: input.status ?? "running",
-            model: picked,
-          },
-          event: {
-            kind: "node.started",
-            payload: {
-              session_id: session.id,
+const WorkflowEdgeCreateParameters = z.object({
+  workflow_id: z.string(),
+  from_node_id: z.string(),
+  to_node_id: z.string(),
+  label: z.string().optional(),
+  config: z.record(z.string(), z.any()).optional(),
+})
+
+const WorkflowCheckpointCreateParameters = z.object({
+  workflow_id: z.string(),
+  node_id: z.string(),
+  label: z.string(),
+  status: z.enum(["pending", "passed", "failed", "skipped"]).optional(),
+  config: z.record(z.string(), z.any()).optional(),
+  result_json: z.record(z.string(), z.any()).optional(),
+})
+
+const WorkflowReadParameters = z.object({
+  workflow_id: z.string(),
+  cursor: z.number().int().nonnegative().optional(),
+})
+
+const WorkflowControlParameters = z.object({
+  workflow_id: z.string(),
+  node_id: z.string(),
+  command: z.enum(["continue", "resume", "retry", "inject_context"]),
+  payload: z.record(z.string(), z.any()).optional(),
+})
+
+const WorkflowUpdateParameters = z.object({
+  node_id: z.string().optional(),
+  patch: nodePatch,
+  event_kind: z.string().optional(),
+  event_payload: z.record(z.string(), z.any()).optional(),
+  /** List of runtime command_ids this update acknowledges. Removes them
+   *  from pending_commands and emits node.command_acked. */
+  ack: z.array(z.string()).optional(),
+  ack_note: z.string().optional(),
+  /** Optional structured need. When set, the node auto-transitions to
+   *  waiting (unless already terminal) and pushes an entry into
+   *  state_json.open_needs for the orchestrator to fulfill. */
+  open_need: z
+    .object({
+      title: z.string(),
+      prompt: z.string().optional(),
+      kind: z.enum(["context", "approval", "tool", "other"]).optional(),
+      required_by: z.string().optional(),
+    })
+    .optional(),
+})
+
+const WorkflowNeedFulfillParameters = z.object({
+  node_id: z.string(),
+  need_id: z.string(),
+  context: z.string(),
+  resolution_note: z.string().optional(),
+})
+
+const WorkflowPullParameters = z.object({
+  node_id: z.string().optional(),
+  cursor: z.number().int().nonnegative().optional(),
+})
+
+// ── tools ──────────────────────────────────────────────────────────────────
+
+export const WorkflowCreateTool = Tool.define(
+  "workflow_create",
+  Effect.gen(function* () {
+    const session = yield* Session.Service
+
+    const last = (sessionID: string) =>
+      Effect.gen(function* () {
+        const msgs = yield* session.messages({ sessionID: SessionID.make(sessionID), limit: 40 })
+        return msgs
+          .toReversed()
+          .find((msg) => msg.info.role === "user" && msg.parts.some((part) => !("synthetic" in part) || !part.synthetic))
+      })
+
+    const text = (sessionID: string) =>
+      Effect.gen(function* () {
+        const msg = yield* last(sessionID)
+        return (
+          msg?.parts
+            .flatMap((part) =>
+              part.type === "text" && (!("synthetic" in part) || !part.synthetic) ? [part.text] : [],
+            )
+            .join("\n")
+            .trim() ?? ""
+        )
+      })
+
+    const assertConfirmed = (sessionID: string) =>
+      Effect.gen(function* () {
+        const msg = yield* text(sessionID)
+        if (confirm.test(msg)) return
+        throw new Error(
+          "workflow_create is blocked until the user explicitly confirms execution in the root orchestrator session.",
+        )
+      })
+
+    return {
+      description:
+        "Create a workflow runtime with nodes, edges, checkpoints, and a root orchestrator session.",
+      parameters: WorkflowCreateParameters,
+      execute: (input: z.infer<typeof WorkflowCreateParameters>, ctx: Tool.Context) =>
+        Effect.gen(function* () {
+          yield* assertConfirmed(input.session_id ?? ctx.sessionID)
+          const info = yield* Effect.promise(() =>
+            Workflow.create({
+              session_id: input.session_id ?? ctx.sessionID,
+              title: input.title,
+              config: input.config,
+              summary: input.summary,
+              nodes: input.nodes,
+              edges: input.edges,
+              checkpoints: input.checkpoints,
+            }),
+          )
+          yield* ctx.metadata({
+            title: input.title,
+            metadata: {
+              workflowID: info.id,
             },
-          },
-        })
-
-    await Workflow.control({
-      workflowID: node.workflow_id,
-      nodeID: node.id,
-      source: "orchestrator",
-      command: "continue",
-      payload: {
-        reason: "node_started",
-      },
-    })
-
-    void prompt({
-      workflowID: node.workflow_id,
-      nodeID: node.id,
-      agent: node.agent,
-      sessionID: session.id,
-      model: picked,
-      text: input.initial_prompt,
-    }).catch(() => undefined)
-
-    return {
-      title: node.title,
-      metadata: {
-        workflowID: node.workflow_id,
-        nodeID: node.id,
-        sessionID: session.id,
-      },
-      output: format({
-        node,
-        session_id: session.id,
-      }),
-    }
-  },
-})
-
-export const WorkflowNodePauseTool = Tool.define("workflow_node_pause", {
-  description: "Pause a workflow node immediately by stopping its current subagent loop and marking the node as paused.",
-  parameters: z.object({
-    node_id: z.string(),
-    reason: z.string().optional(),
-  }),
-  async execute(input) {
-    const node = await Workflow.pauseNode({
-      nodeID: input.node_id,
-      source: "orchestrator",
-      reason: input.reason,
-    })
-    return {
-      title: node.title,
-      metadata: {
-        workflowID: node.workflow_id,
-        nodeID: node.id,
-      },
-      output: format(node),
-    }
-  },
-})
-
-export const WorkflowNodeAbortTool = Tool.define("workflow_node_abort", {
-  description: "Abort a workflow node immediately by stopping its current subagent loop and marking the node as cancelled.",
-  parameters: z.object({
-    node_id: z.string(),
-    reason: z.string().optional(),
-  }),
-  async execute(input) {
-    const node = await Workflow.abortNode({
-      nodeID: input.node_id,
-      source: "orchestrator",
-      reason: input.reason,
-    })
-    return {
-      title: node.title,
-      metadata: {
-        workflowID: node.workflow_id,
-        nodeID: node.id,
-      },
-      output: format(node),
-    }
-  },
-})
-
-export const WorkflowEdgeCreateTool = Tool.define("workflow_edge_create", {
-  description: "Create a dependency edge between two workflow nodes.",
-  parameters: z.object({
-    workflow_id: z.string(),
-    from_node_id: z.string(),
-    to_node_id: z.string(),
-    label: z.string().optional(),
-    config: z.record(z.string(), z.any()).optional(),
-  }),
-  async execute(input) {
-    const edge = await Workflow.createEdge({
-      workflowID: input.workflow_id,
-      from_node_id: input.from_node_id,
-      to_node_id: input.to_node_id,
-      label: input.label,
-      config: input.config,
-    })
-    return {
-      title: input.label ?? "workflow edge",
-      metadata: {
-        workflowID: input.workflow_id,
-        edgeID: edge.id,
-      },
-      output: format(edge),
-    }
-  },
-})
-
-export const WorkflowCheckpointCreateTool = Tool.define("workflow_checkpoint_create", {
-  description: "Create a checkpoint attached to a workflow node.",
-  parameters: z.object({
-    workflow_id: z.string(),
-    node_id: z.string(),
-    label: z.string(),
-    status: z.enum(["pending", "passed", "failed", "skipped"]).optional(),
-    config: z.record(z.string(), z.any()).optional(),
-    result_json: z.record(z.string(), z.any()).optional(),
-  }),
-  async execute(input) {
-    const checkpoint = await Workflow.createCheckpoint({
-      workflowID: input.workflow_id,
-      node_id: input.node_id,
-      label: input.label,
-      status: input.status,
-      config: input.config,
-      result_json: input.result_json,
-    })
-    return {
-      title: input.label,
-      metadata: {
-        workflowID: input.workflow_id,
-        checkpointID: checkpoint.id,
-      },
-      output: format(checkpoint),
-    }
-  },
-})
-
-export const WorkflowReadTool = Tool.define("workflow_read", {
-  description: "Read workflow runtime state. Prefer passing cursor to fetch only incremental changes.",
-  parameters: z.object({
-    workflow_id: z.string(),
-    cursor: z.number().int().nonnegative().optional(),
-  }),
-  async execute(input) {
-    const result = await Workflow.read({
-      workflowID: input.workflow_id,
-      cursor: input.cursor,
-    })
-    return {
-      title: "workflow read",
-      metadata: {
-        workflowID: input.workflow_id,
-        cursor: result.cursor,
-      },
-      output: format(result),
-    }
-  },
-})
-
-export const WorkflowControlTool = Tool.define("workflow_control", {
-  description: "Send a soft control command to a workflow node, such as continue, resume, retry, or context injection. Duplicates within a 5s window are silently absorbed.",
-  parameters: z.object({
-    workflow_id: z.string(),
-    node_id: z.string(),
-    command: z.enum(["continue", "resume", "retry", "inject_context"]),
-    payload: z.record(z.string(), z.any()).optional(),
-  }),
-  async execute(input) {
-    const result = await Workflow.control({
-      workflowID: input.workflow_id,
-      nodeID: input.node_id,
-      source: "orchestrator",
-      command: input.command,
-      payload: input.payload,
-    })
-    const node = await Workflow.getNode(input.node_id)
-    // Only re-prompt the slave if we actually enqueued a new command.
-    // Deduped commands already have an in-flight slave round.
-    if (!result.deduped && node.session_id) {
-      void prompt({
-        workflowID: input.workflow_id,
-        nodeID: input.node_id,
-        agent: node.agent,
-        sessionID: node.session_id,
-        model: node.model,
-        text: [
-          `Runtime command: ${input.command} (command_id: ${result.command_id})`,
-          input.payload ? JSON.stringify(input.payload, null, 2) : "",
-          "Call workflow_pull now, apply the command, ack it via workflow_update.patch.ack, and continue execution.",
-        ]
-          .filter(Boolean)
-          .join("\n\n"),
-      }).catch(() => undefined)
-    }
-    return {
-      title: "workflow control",
-      metadata: {
-        workflowID: input.workflow_id,
-        nodeID: input.node_id,
-        commandID: result.command_id,
-        deduped: result.deduped,
-      },
-      output: format({
-        ok: true,
-        command: input.command,
-        command_id: result.command_id,
-        deduped: result.deduped,
-      }),
-    }
-  },
-})
-
-export const WorkflowUpdateTool = Tool.define("workflow_update", {
-  description: "Update the current workflow node state from inside a subagent session. Only changed fields need to be sent. Pass `ack` to acknowledge runtime command_ids surfaced by workflow_pull. Pass `open_need` to structurally raise a blocker that the orchestrator must fulfill.",
-  parameters: z.object({
-    node_id: z.string().optional(),
-    patch: nodePatch,
-    event_kind: z.string().optional(),
-    event_payload: z.record(z.string(), z.any()).optional(),
-    /** List of runtime command_ids this update acknowledges. Removes them
-     *  from pending_commands and emits node.command_acked. */
-    ack: z.array(z.string()).optional(),
-    ack_note: z.string().optional(),
-    /** Optional structured need. When set, the node auto-transitions to
-     *  waiting (unless already terminal) and pushes an entry into
-     *  state_json.open_needs for the orchestrator to fulfill. */
-    open_need: z
-      .object({
-        title: z.string(),
-        prompt: z.string().optional(),
-        kind: z.enum(["context", "approval", "tool", "other"]).optional(),
-        required_by: z.string().optional(),
-      })
-      .optional(),
-  }),
-  async execute(input, ctx) {
-    const node = input.node_id ? await Workflow.getNode(input.node_id) : await Workflow.nodeBySession(ctx.sessionID)
-    assertNodeSession(node, ctx.sessionID)
-    const updated = await Workflow.patchNode({
-      nodeID: node.id,
-      source: "node",
-      patch: input.patch,
-      event: input.event_kind
-        ? {
-            kind: input.event_kind,
-            payload: input.event_payload,
+          })
+          return {
+            title: input.title,
+            metadata: {
+              workflowID: info.id,
+            },
+            output: format(info),
           }
-        : undefined,
-    })
-    let acked: string[] = []
-    if (input.ack && input.ack.length > 0) {
-      const result = await Workflow.ackCommand({
-        nodeID: node.id,
-        source: "node",
-        command_ids: input.ack as [string, ...string[]],
-        note: input.ack_note,
-      })
-      acked = result.acked
+        }).pipe(Effect.orDie),
     }
-    let opened_need_id: string | undefined
-    if (input.open_need) {
-      const result = await Workflow.openNeed({
-        nodeID: node.id,
-        source: "node",
-        title: input.open_need.title,
-        prompt: input.open_need.prompt,
-        kind: input.open_need.kind,
-        required_by: input.open_need.required_by,
-      })
-      opened_need_id = result.need_id
-    }
-    return {
-      title: updated.title,
-      metadata: {
-        workflowID: updated.workflow_id,
-        nodeID: updated.id,
-        acked,
-        opened_need_id,
-      },
-      output: format({ ...updated, acked, opened_need_id }),
-    }
-  },
-})
-
-export const WorkflowNeedFulfillTool = Tool.define("workflow_need_fulfill", {
-  description: "Orchestrator fulfills a structured need raised by a slave. Moves the need from open to resolved, injects the supplied context, and wakes the slave.",
-  parameters: z.object({
-    node_id: z.string(),
-    need_id: z.string(),
-    context: z.string(),
-    resolution_note: z.string().optional(),
   }),
-  async execute(input) {
-    const node = await Workflow.getNode(input.node_id)
-    const result = await Workflow.fulfillNeed({
-      nodeID: node.id,
-      source: "orchestrator",
-      need_id: input.need_id,
-      context: input.context,
-      resolution_note: input.resolution_note,
-    })
-    return {
-      title: `need ${input.need_id} fulfilled`,
-      metadata: {
-        workflowID: node.workflow_id,
-        nodeID: node.id,
-        needID: input.need_id,
-        commandID: result.command_id,
-        remainingOpen: result.remaining_open,
-      },
-      output: format(result),
-    }
-  },
-})
+)
 
-export const WorkflowPullTool = Tool.define("workflow_pull", {
-  description: "Pull pending runtime commands and context updates for the current workflow node session.",
-  parameters: z.object({
-    node_id: z.string().optional(),
-    cursor: z.number().int().nonnegative().optional(),
-  }),
-  async execute(input, ctx) {
-    const node = input.node_id ? await Workflow.getNode(input.node_id) : await Workflow.nodeBySession(ctx.sessionID)
-    assertNodeSession(node, ctx.sessionID)
-    const result = await Workflow.pull({
-      nodeID: node.id,
-      cursor: input.cursor,
-    })
+export const WorkflowNodeCreateTool = Tool.define(
+  "workflow_node_create",
+  Effect.gen(function* () {
+    const session = yield* Session.Service
     return {
-      title: node.title,
-      metadata: {
-        workflowID: node.workflow_id,
-        nodeID: node.id,
-        cursor: result.cursor,
-      },
-      output: format(result),
+      description:
+        "Create a workflow node. Prefer creating the session only when the node actually starts running.",
+      parameters: WorkflowNodeCreateParameters,
+      execute: (input: z.infer<typeof WorkflowNodeCreateParameters>, ctx: Tool.Context) =>
+        Effect.gen(function* () {
+          const created = input.create_session
+            ? yield* session.create({
+                parentID: ctx.sessionID,
+                title: `${input.title} (@${input.agent} node)`,
+              })
+            : undefined
+          const node = yield* Effect.promise(() =>
+            Workflow.createNode({
+              workflowID: input.workflow_id,
+              session_id: created?.id,
+              title: input.title,
+              agent: input.agent,
+              model: input.model,
+              config: input.config,
+              max_attempts: input.max_attempts,
+              max_actions: input.max_actions,
+              position: input.position,
+            }),
+          )
+
+          return {
+            title: input.title,
+            metadata: {
+              workflowID: input.workflow_id,
+              nodeID: node.id,
+              sessionID: created?.id,
+            },
+            output: format({
+              node,
+              session_id: created?.id,
+            }),
+          }
+        }).pipe(Effect.orDie),
     }
-  },
-})
+  }),
+)
+
+export const WorkflowNodeStartTool = Tool.define(
+  "workflow_node_start",
+  Effect.gen(function* () {
+    const session = yield* Session.Service
+
+    // SessionPrompt.Service is intentionally NOT pulled at init time to avoid
+    // a hard Layer cycle (ToolRegistry ⇄ SessionPrompt). We bridge to it at
+    // use time via AppRuntime instead.
+    const prompt = (input: {
+      workflowID: string
+      nodeID: string
+      agent: string
+      sessionID: string
+      model?: {
+        providerID?: string
+        modelID?: string
+        variant?: string
+      }
+      text: string
+    }) =>
+      Effect.promise(() =>
+        AppRuntime.runPromise(
+          Effect.gen(function* () {
+            const sp = yield* SessionPrompt.Service
+            return yield* sp.prompt({
+              sessionID: SessionID.make(input.sessionID),
+              agent: input.agent,
+              model:
+                input.model?.providerID && input.model.modelID
+                  ? {
+                      providerID: ProviderID.make(input.model.providerID),
+                      modelID: ModelID.make(input.model.modelID),
+                    }
+                  : undefined,
+              variant: input.model?.variant,
+              parts: [
+                {
+                  type: "text",
+                  text: [
+                    `You are executing workflow node ${input.nodeID} in workflow ${input.workflowID}.`,
+                    "Do the work in this subagent session, not in the root orchestrator session.",
+                    "Call workflow_pull immediately, follow runtime commands, report progress with workflow_update, and continue until you complete or block.",
+                    "",
+                    input.text,
+                  ].join("\n"),
+                },
+              ],
+            })
+          }),
+        ),
+      )
+
+    return {
+      description:
+        "Start an existing workflow node by creating and attaching its child session, then optionally send the initial prompt. Idempotent — calling on an already-running node returns the current state without re-prompting.",
+      parameters: WorkflowNodeStartParameters,
+      execute: (input: z.infer<typeof WorkflowNodeStartParameters>, ctx: Tool.Context) =>
+        Effect.gen(function* () {
+          const current = yield* Effect.promise(() => Workflow.getNode(input.node_id))
+          if (current.status === "cancelled") {
+            throw new Error(`Workflow node ${current.id} is cancelled and cannot be started again.`)
+          }
+          if (current.status === "completed") {
+            throw new Error(
+              `Workflow node ${current.id} is already completed; use workflow_control with retry to re-run.`,
+            )
+          }
+
+          // P0.3 idempotent start: if the node is already running / waiting with an
+          // attached session, skip session creation and re-prompting. This keeps
+          // accidental double-calls from spawning another LLM round mid-execution.
+          if (
+            current.session_id &&
+            (current.status === "running" || current.status === "waiting")
+          ) {
+            return {
+              title: current.title,
+              metadata: {
+                workflowID: current.workflow_id,
+                nodeID: current.id,
+                sessionID: current.session_id,
+              },
+              output: format({
+                node: current,
+                session_id: current.session_id,
+                idempotent: true,
+                reason: `node already ${current.status}; skipped re-prompt`,
+              }),
+            }
+          }
+
+          const picked = input.model ?? current.model
+          if (!configured(picked)) {
+            throw new Error(
+              `Workflow node ${current.id} cannot start until a providerID and modelID are configured.`,
+            )
+          }
+          const childSession = current.session_id
+            ? yield* session.get(SessionID.make(current.session_id))
+            : yield* session.create({
+                parentID: ctx.sessionID,
+                title: input.title ?? `${current.title} (@${current.agent} node)`,
+              })
+
+          const node = current.session_id
+            ? current
+            : yield* Effect.promise(() =>
+                Workflow.patchNode({
+                  nodeID: current.id,
+                  source: "orchestrator",
+                  patch: {
+                    session_id: childSession.id,
+                    status: input.status ?? "running",
+                    model: picked,
+                  },
+                  event: {
+                    kind: "node.started",
+                    payload: {
+                      session_id: childSession.id,
+                    },
+                  },
+                }),
+              )
+
+          yield* Effect.promise(() =>
+            Workflow.control({
+              workflowID: node.workflow_id,
+              nodeID: node.id,
+              source: "orchestrator",
+              command: "continue",
+              payload: {
+                reason: "node_started",
+              },
+            }),
+          )
+
+          // Fire-and-forget prompt — matches legacy `void prompt(...).catch(...)`.
+          yield* Effect.forkDetach(
+            prompt({
+              workflowID: node.workflow_id,
+              nodeID: node.id,
+              agent: node.agent,
+              sessionID: childSession.id,
+              model: picked,
+              text: input.initial_prompt,
+            }).pipe(Effect.ignore),
+          )
+
+          return {
+            title: node.title,
+            metadata: {
+              workflowID: node.workflow_id,
+              nodeID: node.id,
+              sessionID: childSession.id,
+            },
+            output: format({
+              node,
+              session_id: childSession.id,
+            }),
+          }
+        }).pipe(Effect.orDie),
+    }
+  }),
+)
+
+export const WorkflowNodePauseTool = Tool.define(
+  "workflow_node_pause",
+  Effect.gen(function* () {
+    return {
+      description:
+        "Pause a workflow node immediately by stopping its current subagent loop and marking the node as paused.",
+      parameters: WorkflowNodePauseParameters,
+      execute: (input: z.infer<typeof WorkflowNodePauseParameters>, _ctx: Tool.Context) =>
+        Effect.gen(function* () {
+          const node = yield* Effect.promise(() =>
+            Workflow.pauseNode({
+              nodeID: input.node_id,
+              source: "orchestrator",
+              reason: input.reason,
+            }),
+          )
+          return {
+            title: node.title,
+            metadata: {
+              workflowID: node.workflow_id,
+              nodeID: node.id,
+            },
+            output: format(node),
+          }
+        }).pipe(Effect.orDie),
+    }
+  }),
+)
+
+export const WorkflowNodeAbortTool = Tool.define(
+  "workflow_node_abort",
+  Effect.gen(function* () {
+    return {
+      description:
+        "Abort a workflow node immediately by stopping its current subagent loop and marking the node as cancelled.",
+      parameters: WorkflowNodeAbortParameters,
+      execute: (input: z.infer<typeof WorkflowNodeAbortParameters>, _ctx: Tool.Context) =>
+        Effect.gen(function* () {
+          const node = yield* Effect.promise(() =>
+            Workflow.abortNode({
+              nodeID: input.node_id,
+              source: "orchestrator",
+              reason: input.reason,
+            }),
+          )
+          return {
+            title: node.title,
+            metadata: {
+              workflowID: node.workflow_id,
+              nodeID: node.id,
+            },
+            output: format(node),
+          }
+        }).pipe(Effect.orDie),
+    }
+  }),
+)
+
+export const WorkflowEdgeCreateTool = Tool.define(
+  "workflow_edge_create",
+  Effect.gen(function* () {
+    return {
+      description: "Create a dependency edge between two workflow nodes.",
+      parameters: WorkflowEdgeCreateParameters,
+      execute: (input: z.infer<typeof WorkflowEdgeCreateParameters>, _ctx: Tool.Context) =>
+        Effect.gen(function* () {
+          const edge = yield* Effect.promise(() =>
+            Workflow.createEdge({
+              workflowID: input.workflow_id,
+              from_node_id: input.from_node_id,
+              to_node_id: input.to_node_id,
+              label: input.label,
+              config: input.config,
+            }),
+          )
+          return {
+            title: input.label ?? "workflow edge",
+            metadata: {
+              workflowID: input.workflow_id,
+              edgeID: edge.id,
+            },
+            output: format(edge),
+          }
+        }).pipe(Effect.orDie),
+    }
+  }),
+)
+
+export const WorkflowCheckpointCreateTool = Tool.define(
+  "workflow_checkpoint_create",
+  Effect.gen(function* () {
+    return {
+      description: "Create a checkpoint attached to a workflow node.",
+      parameters: WorkflowCheckpointCreateParameters,
+      execute: (input: z.infer<typeof WorkflowCheckpointCreateParameters>, _ctx: Tool.Context) =>
+        Effect.gen(function* () {
+          const checkpoint = yield* Effect.promise(() =>
+            Workflow.createCheckpoint({
+              workflowID: input.workflow_id,
+              node_id: input.node_id,
+              label: input.label,
+              status: input.status,
+              config: input.config,
+              result_json: input.result_json,
+            }),
+          )
+          return {
+            title: input.label,
+            metadata: {
+              workflowID: input.workflow_id,
+              checkpointID: checkpoint.id,
+            },
+            output: format(checkpoint),
+          }
+        }).pipe(Effect.orDie),
+    }
+  }),
+)
+
+export const WorkflowReadTool = Tool.define(
+  "workflow_read",
+  Effect.gen(function* () {
+    return {
+      description:
+        "Read workflow runtime state. Prefer passing cursor to fetch only incremental changes.",
+      parameters: WorkflowReadParameters,
+      execute: (input: z.infer<typeof WorkflowReadParameters>, _ctx: Tool.Context) =>
+        Effect.gen(function* () {
+          const result = yield* Effect.promise(() =>
+            Workflow.read({
+              workflowID: input.workflow_id,
+              cursor: input.cursor,
+            }),
+          )
+          return {
+            title: "workflow read",
+            metadata: {
+              workflowID: input.workflow_id,
+              cursor: result.cursor,
+            },
+            output: format(result),
+          }
+        }).pipe(Effect.orDie),
+    }
+  }),
+)
+
+export const WorkflowControlTool = Tool.define(
+  "workflow_control",
+  Effect.gen(function* () {
+    // SessionPrompt.Service is intentionally NOT pulled at init time to avoid
+    // a hard Layer cycle (ToolRegistry ⇄ SessionPrompt). We bridge to it at
+    // use time via AppRuntime instead.
+    const prompt = (input: {
+      workflowID: string
+      nodeID: string
+      agent: string
+      sessionID: string
+      model?: {
+        providerID?: string
+        modelID?: string
+        variant?: string
+      }
+      text: string
+    }) =>
+      Effect.promise(() =>
+        AppRuntime.runPromise(
+          Effect.gen(function* () {
+            const sp = yield* SessionPrompt.Service
+            return yield* sp.prompt({
+              sessionID: SessionID.make(input.sessionID),
+              agent: input.agent,
+              model:
+                input.model?.providerID && input.model.modelID
+                  ? {
+                      providerID: ProviderID.make(input.model.providerID),
+                      modelID: ModelID.make(input.model.modelID),
+                    }
+                  : undefined,
+              variant: input.model?.variant,
+              parts: [
+                {
+                  type: "text",
+                  text: [
+                    `You are executing workflow node ${input.nodeID} in workflow ${input.workflowID}.`,
+                    "Do the work in this subagent session, not in the root orchestrator session.",
+                    "Call workflow_pull immediately, follow runtime commands, report progress with workflow_update, and continue until you complete or block.",
+                    "",
+                    input.text,
+                  ].join("\n"),
+                },
+              ],
+            })
+          }),
+        ),
+      )
+
+    return {
+      description:
+        "Send a soft control command to a workflow node, such as continue, resume, retry, or context injection. Duplicates within a 5s window are silently absorbed.",
+      parameters: WorkflowControlParameters,
+      execute: (input: z.infer<typeof WorkflowControlParameters>, _ctx: Tool.Context) =>
+        Effect.gen(function* () {
+          const result = yield* Effect.promise(() =>
+            Workflow.control({
+              workflowID: input.workflow_id,
+              nodeID: input.node_id,
+              source: "orchestrator",
+              command: input.command,
+              payload: input.payload,
+            }),
+          )
+          const node = yield* Effect.promise(() => Workflow.getNode(input.node_id))
+          // Only re-prompt the slave if we actually enqueued a new command.
+          // Deduped commands already have an in-flight slave round.
+          if (!result.deduped && node.session_id) {
+            yield* Effect.forkDetach(
+              prompt({
+                workflowID: input.workflow_id,
+                nodeID: input.node_id,
+                agent: node.agent,
+                sessionID: node.session_id,
+                model: node.model,
+                text: [
+                  `Runtime command: ${input.command} (command_id: ${result.command_id})`,
+                  input.payload ? JSON.stringify(input.payload, null, 2) : "",
+                  "Call workflow_pull now, apply the command, ack it via workflow_update.patch.ack, and continue execution.",
+                ]
+                  .filter(Boolean)
+                  .join("\n\n"),
+              }).pipe(Effect.ignore),
+            )
+          }
+          return {
+            title: "workflow control",
+            metadata: {
+              workflowID: input.workflow_id,
+              nodeID: input.node_id,
+              commandID: result.command_id,
+              deduped: result.deduped,
+            },
+            output: format({
+              ok: true,
+              command: input.command,
+              command_id: result.command_id,
+              deduped: result.deduped,
+            }),
+          }
+        }).pipe(Effect.orDie),
+    }
+  }),
+)
+
+export const WorkflowUpdateTool = Tool.define(
+  "workflow_update",
+  Effect.gen(function* () {
+    return {
+      description:
+        "Update the current workflow node state from inside a subagent session. Only changed fields need to be sent. Pass `ack` to acknowledge runtime command_ids surfaced by workflow_pull. Pass `open_need` to structurally raise a blocker that the orchestrator must fulfill.",
+      parameters: WorkflowUpdateParameters,
+      execute: (input: z.infer<typeof WorkflowUpdateParameters>, ctx: Tool.Context) =>
+        Effect.gen(function* () {
+          const node = input.node_id
+            ? yield* Effect.promise(() => Workflow.getNode(input.node_id!))
+            : yield* Effect.promise(() => Workflow.nodeBySession(ctx.sessionID))
+          assertNodeSession(node, ctx.sessionID)
+          const updated = yield* Effect.promise(() =>
+            Workflow.patchNode({
+              nodeID: node.id,
+              source: "node",
+              patch: input.patch,
+              event: input.event_kind
+                ? {
+                    kind: input.event_kind,
+                    payload: input.event_payload,
+                  }
+                : undefined,
+            }),
+          )
+          let acked: string[] = []
+          if (input.ack && input.ack.length > 0) {
+            const result = yield* Effect.promise(() =>
+              Workflow.ackCommand({
+                nodeID: node.id,
+                source: "node",
+                command_ids: input.ack as [string, ...string[]],
+                note: input.ack_note,
+              }),
+            )
+            acked = result.acked
+          }
+          let opened_need_id: string | undefined
+          if (input.open_need) {
+            const result = yield* Effect.promise(() =>
+              Workflow.openNeed({
+                nodeID: node.id,
+                source: "node",
+                title: input.open_need!.title,
+                prompt: input.open_need!.prompt,
+                kind: input.open_need!.kind,
+                required_by: input.open_need!.required_by,
+              }),
+            )
+            opened_need_id = result.need_id
+          }
+          return {
+            title: updated.title,
+            metadata: {
+              workflowID: updated.workflow_id,
+              nodeID: updated.id,
+              acked,
+              opened_need_id,
+            },
+            output: format({ ...updated, acked, opened_need_id }),
+          }
+        }).pipe(Effect.orDie),
+    }
+  }),
+)
+
+export const WorkflowNeedFulfillTool = Tool.define(
+  "workflow_need_fulfill",
+  Effect.gen(function* () {
+    return {
+      description:
+        "Orchestrator fulfills a structured need raised by a slave. Moves the need from open to resolved, injects the supplied context, and wakes the slave.",
+      parameters: WorkflowNeedFulfillParameters,
+      execute: (input: z.infer<typeof WorkflowNeedFulfillParameters>, _ctx: Tool.Context) =>
+        Effect.gen(function* () {
+          const node = yield* Effect.promise(() => Workflow.getNode(input.node_id))
+          const result = yield* Effect.promise(() =>
+            Workflow.fulfillNeed({
+              nodeID: node.id,
+              source: "orchestrator",
+              need_id: input.need_id,
+              context: input.context,
+              resolution_note: input.resolution_note,
+            }),
+          )
+          return {
+            title: `need ${input.need_id} fulfilled`,
+            metadata: {
+              workflowID: node.workflow_id,
+              nodeID: node.id,
+              needID: input.need_id,
+              commandID: result.command_id,
+              remainingOpen: result.remaining_open,
+            },
+            output: format(result),
+          }
+        }).pipe(Effect.orDie),
+    }
+  }),
+)
+
+export const WorkflowPullTool = Tool.define(
+  "workflow_pull",
+  Effect.gen(function* () {
+    return {
+      description:
+        "Pull pending runtime commands and context updates for the current workflow node session.",
+      parameters: WorkflowPullParameters,
+      execute: (input: z.infer<typeof WorkflowPullParameters>, ctx: Tool.Context) =>
+        Effect.gen(function* () {
+          const node = input.node_id
+            ? yield* Effect.promise(() => Workflow.getNode(input.node_id!))
+            : yield* Effect.promise(() => Workflow.nodeBySession(ctx.sessionID))
+          assertNodeSession(node, ctx.sessionID)
+          const result = yield* Effect.promise(() =>
+            Workflow.pull({
+              nodeID: node.id,
+              cursor: input.cursor,
+            }),
+          )
+          return {
+            title: node.title,
+            metadata: {
+              workflowID: node.workflow_id,
+              nodeID: node.id,
+              cursor: result.cursor,
+            },
+            output: format(result),
+          }
+        }).pipe(Effect.orDie),
+    }
+  }),
+)

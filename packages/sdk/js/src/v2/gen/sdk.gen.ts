@@ -14,7 +14,7 @@ import type {
   AuthSetErrors,
   AuthSetResponses,
   CommandListResponses,
-  Config as Config3,
+  Config as Config4,
   ConfigGetResponses,
   ConfigProvidersResponses,
   ConfigUpdateErrors,
@@ -27,6 +27,48 @@ import type {
   ExperimentalConsoleGetResponses,
   ExperimentalConsoleListOrgsResponses,
   ExperimentalConsoleSwitchOrgResponses,
+  ExperimentalRefinerCategoriesListResponses,
+  ExperimentalRefinerConfigGetResponses,
+  ExperimentalRefinerConfigUpdateErrors,
+  ExperimentalRefinerConfigUpdateResponses,
+  ExperimentalRefinerEdgeCreateErrors,
+  ExperimentalRefinerEdgeCreateResponses,
+  ExperimentalRefinerEdgeDeleteErrors,
+  ExperimentalRefinerEdgeDeleteResponses,
+  ExperimentalRefinerExperienceArchiveErrors,
+  ExperimentalRefinerExperienceArchiveResponses,
+  ExperimentalRefinerExperienceAugmentErrors,
+  ExperimentalRefinerExperienceAugmentResponses,
+  ExperimentalRefinerExperienceCreateErrors,
+  ExperimentalRefinerExperienceCreateResponses,
+  ExperimentalRefinerExperienceDeleteErrors,
+  ExperimentalRefinerExperienceDeleteResponses,
+  ExperimentalRefinerExperienceGetErrors,
+  ExperimentalRefinerExperienceGetResponses,
+  ExperimentalRefinerExperienceMergeErrors,
+  ExperimentalRefinerExperienceMergeResponses,
+  ExperimentalRefinerExperienceNeighborsErrors,
+  ExperimentalRefinerExperienceNeighborsResponses,
+  ExperimentalRefinerExperiencePatchErrors,
+  ExperimentalRefinerExperiencePatchResponses,
+  ExperimentalRefinerExperienceReRefineErrors,
+  ExperimentalRefinerExperienceReRefineResponses,
+  ExperimentalRefinerExperienceUndoRefinementErrors,
+  ExperimentalRefinerExperienceUndoRefinementResponses,
+  ExperimentalRefinerExportResponses,
+  ExperimentalRefinerGraphGetResponses,
+  ExperimentalRefinerImportErrors,
+  ExperimentalRefinerImportResponses,
+  ExperimentalRefinerIngestSessionErrors,
+  ExperimentalRefinerIngestSessionResponses,
+  ExperimentalRefinerListIngestedObservationsResponses,
+  ExperimentalRefinerObservationDeleteErrors,
+  ExperimentalRefinerObservationDeleteResponses,
+  ExperimentalRefinerObservationMoveErrors,
+  ExperimentalRefinerObservationMoveResponses,
+  ExperimentalRefinerOverviewGetResponses,
+  ExperimentalRefinerSearchResponses,
+  ExperimentalRefinerTaxonomyGetResponses,
   ExperimentalResourceListResponses,
   ExperimentalSessionListResponses,
   ExperimentalWorkspaceAdaptorListResponses,
@@ -113,6 +155,20 @@ import type {
   QuestionRejectResponses,
   QuestionReplyErrors,
   QuestionReplyResponses,
+  SerialConnectErrors,
+  SerialConnectResponses,
+  SerialCreateErrors,
+  SerialCreateResponses,
+  SerialGetErrors,
+  SerialGetResponses,
+  SerialListResponses,
+  SerialPortsResponses,
+  SerialRemoveErrors,
+  SerialRemoveResponses,
+  SerialUpdateErrors,
+  SerialUpdateResponses,
+  SerialWriteErrors,
+  SerialWriteResponses,
   SessionAbortErrors,
   SessionAbortResponses,
   SessionChildrenErrors,
@@ -188,6 +244,41 @@ import type {
   TuiSubmitPromptResponses,
   VcsDiffResponses,
   VcsGetResponses,
+  WorkflowCheckpointCreateErrors,
+  WorkflowCheckpointCreateResponses,
+  WorkflowControlErrors,
+  WorkflowControlResponses,
+  WorkflowCreateErrors,
+  WorkflowCreateResponses,
+  WorkflowDeleteSessionErrors,
+  WorkflowDeleteSessionResponses,
+  WorkflowDiffErrors,
+  WorkflowDiffResponses,
+  WorkflowEdgeCreateErrors,
+  WorkflowEdgeCreateResponses,
+  WorkflowGetErrors,
+  WorkflowGetResponses,
+  WorkflowNodeAbortErrors,
+  WorkflowNodeAbortResponses,
+  WorkflowNodeCodeChangesErrors,
+  WorkflowNodeCodeChangesResponses,
+  WorkflowNodeCreateErrors,
+  WorkflowNodeCreateResponses,
+  WorkflowNodePauseErrors,
+  WorkflowNodePauseResponses,
+  WorkflowNodePullErrors,
+  WorkflowNodePullResponses,
+  WorkflowNodeUpdateErrors,
+  WorkflowNodeUpdateResponses,
+  WorkflowReadErrors,
+  WorkflowReadResponses,
+  WorkflowSandTableGetErrors,
+  WorkflowSandTableGetResponses,
+  WorkflowSandTableMessageErrors,
+  WorkflowSandTableMessageResponses,
+  WorkflowSessionErrors,
+  WorkflowSessionResponses,
+  WorkflowSummary,
   WorktreeCreateErrors,
   WorktreeCreateInput,
   WorktreeCreateResponses,
@@ -263,7 +354,7 @@ export class Config extends HeyApiClient {
    */
   public update<ThrowOnError extends boolean = false>(
     parameters?: {
-      config?: Config3
+      config?: Config4
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -837,6 +928,1053 @@ export class Console extends HeyApiClient {
   }
 }
 
+export class Overview extends HeyApiClient {
+  /**
+   * Get refiner overview
+   *
+   * Get refiner status, model, distilled experiences, their attached observations, and graph relations for the current session or workflow.
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      session_id?: string
+      workflow_id?: string
+      limit?: number
+      include_archived?: boolean
+      scope?: "all" | "session" | "workflow"
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "session_id" },
+            { in: "query", key: "workflow_id" },
+            { in: "query", key: "limit" },
+            { in: "query", key: "include_archived" },
+            { in: "query", key: "scope" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<ExperimentalRefinerOverviewGetResponses, unknown, ThrowOnError>({
+      url: "/experimental/refiner/overview",
+      ...options,
+      ...params,
+    })
+  }
+}
+
+export class Experience extends HeyApiClient {
+  /**
+   * Delete experience
+   *
+   * Delete an experience (cascade-remove its attached observations by default) and append a deleted.ndjson audit entry.
+   */
+  public delete<ThrowOnError extends boolean = false>(
+    parameters: {
+      id: string
+      directory?: string
+      workspace?: string
+      cascade?: boolean
+      reason?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "id" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "cascade" },
+            { in: "query", key: "reason" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).delete<
+      ExperimentalRefinerExperienceDeleteResponses,
+      ExperimentalRefinerExperienceDeleteErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/refiner/experience/{id}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get refiner experience detail
+   *
+   * Fetch a single distilled experience with all attached observations and refinement history.
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters: {
+      id: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "id" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      ExperimentalRefinerExperienceGetResponses,
+      ExperimentalRefinerExperienceGetErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/refiner/experience/{id}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Manually edit experience (no LLM)
+   *
+   * Patch title/abstract/statement/scope/task_type/categories in place. Records a manual_edit refinement history entry with a snapshot for undo.
+   */
+  public patch<ThrowOnError extends boolean = false>(
+    parameters: {
+      id: string
+      directory?: string
+      workspace?: string
+      title?: string
+      abstract?: string
+      statement?: string | null
+      trigger_condition?: string | null
+      task_type?: string | null
+      scope?: "workspace" | "project" | "repo" | "user"
+      categories?: Array<string>
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "id" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "title" },
+            { in: "body", key: "abstract" },
+            { in: "body", key: "statement" },
+            { in: "body", key: "trigger_condition" },
+            { in: "body", key: "task_type" },
+            { in: "body", key: "scope" },
+            { in: "body", key: "categories" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).patch<
+      ExperimentalRefinerExperiencePatchResponses,
+      ExperimentalRefinerExperiencePatchErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/refiner/experience/{id}",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Archive experience
+   *
+   * Flag an experience as archived; overview hides archived experiences by default.
+   */
+  public archive<ThrowOnError extends boolean = false>(
+    parameters: {
+      id: string
+      directory?: string
+      workspace?: string
+      archived?: boolean
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "id" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "archived" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ExperimentalRefinerExperienceArchiveResponses,
+      ExperimentalRefinerExperienceArchiveErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/refiner/experience/{id}/archive",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Augment experience (add observation + re-refine)
+   *
+   * Attach a user-supplied observation to an existing experience and trigger a fresh refinement.
+   */
+  public augment<ThrowOnError extends boolean = false>(
+    parameters: {
+      id: string
+      directory?: string
+      workspace?: string
+      user_text?: string
+      note?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "id" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "user_text" },
+            { in: "body", key: "note" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ExperimentalRefinerExperienceAugmentResponses,
+      ExperimentalRefinerExperienceAugmentErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/refiner/experience/{id}/observation",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Create experience (agent-assisted)
+   *
+   * Create a new experience from a free-text prompt. The refiner LLM derives title/abstract/kind/categories.
+   */
+  public create<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      user_text?: string
+      kind_hint?: string
+      scope_hint?: "workspace" | "project" | "repo" | "user"
+      task_type_hint?: string
+      note?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "user_text" },
+            { in: "body", key: "kind_hint" },
+            { in: "body", key: "scope_hint" },
+            { in: "body", key: "task_type_hint" },
+            { in: "body", key: "note" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ExperimentalRefinerExperienceCreateResponses,
+      ExperimentalRefinerExperienceCreateErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/refiner/experience",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Re-refine experience
+   *
+   * Re-run the refiner LLM on an experience's existing observations without adding new ones.
+   */
+  public reRefine<ThrowOnError extends boolean = false>(
+    parameters: {
+      id: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "id" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ExperimentalRefinerExperienceReRefineResponses,
+      ExperimentalRefinerExperienceReRefineErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/refiner/experience/{id}/refine",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Undo last refinement
+   *
+   * Restore an experience to the snapshot recorded in its most recent refinement_history entry.
+   */
+  public undoRefinement<ThrowOnError extends boolean = false>(
+    parameters: {
+      id: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "id" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ExperimentalRefinerExperienceUndoRefinementResponses,
+      ExperimentalRefinerExperienceUndoRefinementErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/refiner/experience/{id}/undo-refinement",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Merge experiences
+   *
+   * Combine multiple experiences into a new one (LLM re-synthesizes title/abstract/statement); source experiences are archived and merge audit is recorded.
+   */
+  public merge<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      ids?: Array<string>
+      reason?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "ids" },
+            { in: "body", key: "reason" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ExperimentalRefinerExperienceMergeResponses,
+      ExperimentalRefinerExperienceMergeErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/refiner/experience/merge",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Get experience neighbors
+   *
+   * BFS traversal around a seed experience in the chain graph. Defaults to requires+refines edges, both directions, depth 2.
+   */
+  public neighbors<ThrowOnError extends boolean = false>(
+    parameters: {
+      id: string
+      directory?: string
+      workspace?: string
+      edge_kinds?: string
+      direction?: "in" | "out" | "both"
+      max_depth?: number
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "id" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "edge_kinds" },
+            { in: "query", key: "direction" },
+            { in: "query", key: "max_depth" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      ExperimentalRefinerExperienceNeighborsResponses,
+      ExperimentalRefinerExperienceNeighborsErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/refiner/experience/{id}/neighbors",
+      ...options,
+      ...params,
+    })
+  }
+}
+
+export class Taxonomy extends HeyApiClient {
+  /**
+   * Get refiner taxonomy
+   *
+   * List refiner experience kinds: the 7 core kinds plus any dynamically discovered custom kinds.
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<ExperimentalRefinerTaxonomyGetResponses, unknown, ThrowOnError>({
+      url: "/experimental/refiner/taxonomy",
+      ...options,
+      ...params,
+    })
+  }
+}
+
+export class Config2 extends HeyApiClient {
+  /**
+   * Get refiner config
+   *
+   * Get the refiner agent's currently resolved model plus its source (runtime override, agent config, or provider default) and any persisted override.
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<ExperimentalRefinerConfigGetResponses, unknown, ThrowOnError>({
+      url: "/experimental/refiner/config",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Update refiner config
+   *
+   * Persist a runtime override for the refiner agent's model (and optional temperature). Pass `model: null` to clear the override.
+   */
+  public update<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      model?: {
+        providerID: string
+        modelID: string
+      } | null
+      temperature?: number | null
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "model" },
+            { in: "body", key: "temperature" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).put<
+      ExperimentalRefinerConfigUpdateResponses,
+      ExperimentalRefinerConfigUpdateErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/refiner/config",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
+export class Categories extends HeyApiClient {
+  /**
+   * List refiner categories
+   *
+   * Return the auto-maintained category index (category slug → experience IDs + count).
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<ExperimentalRefinerCategoriesListResponses, unknown, ThrowOnError>({
+      url: "/experimental/refiner/categories",
+      ...options,
+      ...params,
+    })
+  }
+}
+
+export class Observation extends HeyApiClient {
+  /**
+   * Delete observation
+   *
+   * Remove a single observation from an experience; auto-archives the experience if it was the last one.
+   */
+  public delete<ThrowOnError extends boolean = false>(
+    parameters: {
+      experience_id: string
+      observation_id: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "experience_id" },
+            { in: "path", key: "observation_id" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).delete<
+      ExperimentalRefinerObservationDeleteResponses,
+      ExperimentalRefinerObservationDeleteErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/refiner/experience/{experience_id}/observation/{observation_id}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Move observation between experiences
+   *
+   * Detach an observation from one experience and re-attach it (with re-refine) to another.
+   */
+  public move<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      observation_id?: string
+      from_experience_id?: string
+      to_experience_id?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "observation_id" },
+            { in: "body", key: "from_experience_id" },
+            { in: "body", key: "to_experience_id" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ExperimentalRefinerObservationMoveResponses,
+      ExperimentalRefinerObservationMoveErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/refiner/observation/move",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
+export class Graph extends HeyApiClient {
+  /**
+   * Get refiner chain graph
+   *
+   * Return every experience (id, kind, title, abstract, archived) along with every edge in the chain graph. Drives the top-level Graph tab in the UI.
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      include_archived?: boolean
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "include_archived" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<ExperimentalRefinerGraphGetResponses, unknown, ThrowOnError>({
+      url: "/experimental/refiner/graph",
+      ...options,
+      ...params,
+    })
+  }
+}
+
+export class Edge extends HeyApiClient {
+  /**
+   * Create chain edge
+   *
+   * Manually insert a directed edge between two experiences. Applies the same dedup / self-loop / cycle-check pipeline as the LLM route batch; cycles on `requires`/`refines` are downgraded.
+   */
+  public create<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      from?: string
+      to?: string
+      kind?: "requires" | "refines" | "supports" | "contradicts" | "see_also"
+      reason?: string
+      confidence?: number
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "from" },
+            { in: "body", key: "to" },
+            { in: "body", key: "kind" },
+            { in: "body", key: "reason" },
+            { in: "body", key: "confidence" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ExperimentalRefinerEdgeCreateResponses,
+      ExperimentalRefinerEdgeCreateErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/refiner/edge",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Delete chain edge
+   *
+   * Remove a single edge by its id.
+   */
+  public delete<ThrowOnError extends boolean = false>(
+    parameters: {
+      edge_id: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "edge_id" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).delete<
+      ExperimentalRefinerEdgeDeleteResponses,
+      ExperimentalRefinerEdgeDeleteErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/refiner/edge/{edge_id}",
+      ...options,
+      ...params,
+    })
+  }
+}
+
+export class Refiner extends HeyApiClient {
+  /**
+   * Search refiner experiences
+   *
+   * Substring search across title, abstract, statement, task_type, categories, and observation text.
+   */
+  public search<ThrowOnError extends boolean = false>(
+    parameters: {
+      directory?: string
+      workspace?: string
+      q: string
+      limit?: number
+      include_archived?: boolean
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "q" },
+            { in: "query", key: "limit" },
+            { in: "query", key: "include_archived" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<ExperimentalRefinerSearchResponses, unknown, ThrowOnError>({
+      url: "/experimental/refiner/search",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Batch ingest session into refiner
+   *
+   * Replay user messages from an existing session through the refiner pipeline. Pass `message_ids` in the body to cherry-pick specific user messages; omit for full session ingest. Useful for sedimenting historical conversations.
+   */
+  public ingestSession<ThrowOnError extends boolean = false>(
+    parameters: {
+      session_id: string
+      directory?: string
+      workspace?: string
+      message_ids?: Array<string>
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "session_id" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "message_ids" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ExperimentalRefinerIngestSessionResponses,
+      ExperimentalRefinerIngestSessionErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/refiner/ingest-session/{session_id}",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * List ingested observations for a session
+   *
+   * Return the set of user message_ids that have already been observed for this session, so the UI can mark/disable already-imported rows in the cherry-pick drawer.
+   */
+  public listIngestedObservations<ThrowOnError extends boolean = false>(
+    parameters: {
+      session_id: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "session_id" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      ExperimentalRefinerListIngestedObservationsResponses,
+      unknown,
+      ThrowOnError
+    >({
+      url: "/experimental/refiner/ingested-observations/{session_id}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Export refiner memory
+   *
+   * Return the entire refiner memory (experiences, taxonomy, categories, config) as a JSON bundle.
+   */
+  public export<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<ExperimentalRefinerExportResponses, unknown, ThrowOnError>({
+      url: "/experimental/refiner/export",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Import refiner memory
+   *
+   * Accept a JSON bundle previously produced by /refiner/export and write experiences to disk.
+   */
+  public import<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      data?: unknown
+      mode?: "merge" | "replace"
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "data" },
+            { in: "body", key: "mode" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ExperimentalRefinerImportResponses,
+      ExperimentalRefinerImportErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/refiner/import",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  private _overview?: Overview
+  get overview(): Overview {
+    return (this._overview ??= new Overview({ client: this.client }))
+  }
+
+  private _experience?: Experience
+  get experience(): Experience {
+    return (this._experience ??= new Experience({ client: this.client }))
+  }
+
+  private _taxonomy?: Taxonomy
+  get taxonomy(): Taxonomy {
+    return (this._taxonomy ??= new Taxonomy({ client: this.client }))
+  }
+
+  private _config?: Config2
+  get config(): Config2 {
+    return (this._config ??= new Config2({ client: this.client }))
+  }
+
+  private _categories?: Categories
+  get categories(): Categories {
+    return (this._categories ??= new Categories({ client: this.client }))
+  }
+
+  private _observation?: Observation
+  get observation(): Observation {
+    return (this._observation ??= new Observation({ client: this.client }))
+  }
+
+  private _graph?: Graph
+  get graph(): Graph {
+    return (this._graph ??= new Graph({ client: this.client }))
+  }
+
+  private _edge?: Edge
+  get edge(): Edge {
+    return (this._edge ??= new Edge({ client: this.client }))
+  }
+}
+
 export class Session extends HeyApiClient {
   /**
    * List sessions
@@ -922,6 +2060,11 @@ export class Experimental extends HeyApiClient {
   private _console?: Console
   get console(): Console {
     return (this._console ??= new Console({ client: this.client }))
+  }
+
+  private _refiner?: Refiner
+  get refiner(): Refiner {
+    return (this._refiner ??= new Refiner({ client: this.client }))
   }
 
   private _session?: Session
@@ -1298,7 +2441,292 @@ export class Pty extends HeyApiClient {
   }
 }
 
-export class Config2 extends HeyApiClient {
+export class Serial extends HeyApiClient {
+  /**
+   * List serial sessions
+   *
+   * Get a list of all open serial sessions managed by OpenCode.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<SerialListResponses, unknown, ThrowOnError>({
+      url: "/serial",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Create serial session
+   *
+   * Open a new serial session on the given device path.
+   */
+  public create<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      path?: string
+      baudRate?: number
+      title?: string
+      dataBits?: number
+      stopBits?: number
+      parity?: "none" | "even" | "odd" | "mark" | "space"
+      flowControl?: boolean
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "path" },
+            { in: "body", key: "baudRate" },
+            { in: "body", key: "title" },
+            { in: "body", key: "dataBits" },
+            { in: "body", key: "stopBits" },
+            { in: "body", key: "parity" },
+            { in: "body", key: "flowControl" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SerialCreateResponses, SerialCreateErrors, ThrowOnError>({
+      url: "/serial",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * List host serial ports
+   *
+   * Enumerate physical serial devices attached to the host.
+   */
+  public ports<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<SerialPortsResponses, unknown, ThrowOnError>({
+      url: "/serial/ports",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Remove serial session
+   *
+   * Close and remove a specific serial session.
+   */
+  public remove<ThrowOnError extends boolean = false>(
+    parameters: {
+      serialID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "serialID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).delete<SerialRemoveResponses, SerialRemoveErrors, ThrowOnError>({
+      url: "/serial/{serialID}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get serial session
+   *
+   * Retrieve detailed information about a specific serial session.
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters: {
+      serialID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "serialID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<SerialGetResponses, SerialGetErrors, ThrowOnError>({
+      url: "/serial/{serialID}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Update serial session
+   *
+   * Update properties (e.g. title) of an existing serial session.
+   */
+  public update<ThrowOnError extends boolean = false>(
+    parameters: {
+      serialID: string
+      directory?: string
+      workspace?: string
+      title?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "serialID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "title" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).put<SerialUpdateResponses, SerialUpdateErrors, ThrowOnError>({
+      url: "/serial/{serialID}",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Write to a serial session
+   *
+   * Send a string payload down the serial session.
+   */
+  public write<ThrowOnError extends boolean = false>(
+    parameters: {
+      serialID: string
+      directory?: string
+      workspace?: string
+      data?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "serialID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "data" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SerialWriteResponses, SerialWriteErrors, ThrowOnError>({
+      url: "/serial/{serialID}/write",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Connect to serial session
+   *
+   * Establish a WebSocket connection to stream serial data in real-time. Supports cursor-based resume.
+   */
+  public connect<ThrowOnError extends boolean = false>(
+    parameters: {
+      serialID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "serialID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<SerialConnectResponses, SerialConnectErrors, ThrowOnError>({
+      url: "/serial/{serialID}/connect",
+      ...options,
+      ...params,
+    })
+  }
+}
+
+export class Config3 extends HeyApiClient {
   /**
    * Get configuration
    *
@@ -1338,7 +2766,7 @@ export class Config2 extends HeyApiClient {
     parameters?: {
       directory?: string
       workspace?: string
-      config?: Config3
+      config?: Config4
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -4098,6 +5526,821 @@ export class Tui extends HeyApiClient {
   }
 }
 
+export class SandTable extends HeyApiClient {
+  /**
+   * Get sand table discussion
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters: {
+      discussionID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "discussionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      WorkflowSandTableGetResponses,
+      WorkflowSandTableGetErrors,
+      ThrowOnError
+    >({
+      url: "/workflow/sand_table/{discussionID}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Write sand table discussion message
+   */
+  public message<ThrowOnError extends boolean = false>(
+    parameters: {
+      discussionID: string
+      directory?: string
+      workspace?: string
+      content?: string
+      role?: "planner" | "evaluator" | "orchestrator"
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "discussionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "content" },
+            { in: "body", key: "role" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      WorkflowSandTableMessageResponses,
+      WorkflowSandTableMessageErrors,
+      ThrowOnError
+    >({
+      url: "/workflow/sand_table/{discussionID}/message",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
+export class Node extends HeyApiClient {
+  /**
+   * Create workflow node
+   */
+  public create<ThrowOnError extends boolean = false>(
+    parameters: {
+      workflowID: string
+      directory?: string
+      workspace?: string
+      session_id?: string
+      title?: string
+      agent?: string
+      model?: {
+        providerID?: string
+        modelID?: string
+        variant?: string
+      }
+      config?: {
+        [key: string]: unknown
+      }
+      status?:
+        | "pending"
+        | "ready"
+        | "running"
+        | "waiting"
+        | "paused"
+        | "interrupted"
+        | "completed"
+        | "failed"
+        | "cancelled"
+      result_status?: "unknown" | "success" | "fail" | "partial"
+      max_attempts?: number
+      max_actions?: number
+      position?: number
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "workflowID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "session_id" },
+            { in: "body", key: "title" },
+            { in: "body", key: "agent" },
+            { in: "body", key: "model" },
+            { in: "body", key: "config" },
+            { in: "body", key: "status" },
+            { in: "body", key: "result_status" },
+            { in: "body", key: "max_attempts" },
+            { in: "body", key: "max_actions" },
+            { in: "body", key: "position" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<WorkflowNodeCreateResponses, WorkflowNodeCreateErrors, ThrowOnError>({
+      url: "/workflow/{workflowID}/node",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Update workflow node
+   */
+  public update<ThrowOnError extends boolean = false>(
+    parameters: {
+      nodeID: string
+      directory?: string
+      workspace?: string
+      source?: string
+      patch?: {
+        status?:
+          | "pending"
+          | "ready"
+          | "running"
+          | "waiting"
+          | "paused"
+          | "interrupted"
+          | "completed"
+          | "failed"
+          | "cancelled"
+        result_status?: "unknown" | "success" | "fail" | "partial"
+        fail_reason?: string | null
+        session_id?: string | null
+        model?: {
+          providerID?: string
+          modelID?: string
+          variant?: string
+        } | null
+        config?: {
+          mode?: "replace" | "merge"
+          value?: {
+            [key: string]: unknown
+          }
+        }
+        state_json?: {
+          mode?: "replace" | "merge"
+          value?: {
+            [key: string]: unknown
+          }
+        }
+        result_json?: {
+          mode?: "replace" | "merge"
+          value?: {
+            [key: string]: unknown
+          }
+        }
+        attempt_delta?: number
+        action_count?: number
+        max_attempts?: number
+        max_actions?: number
+        title?: string
+      }
+      action_delta?: number
+      event?: {
+        kind: string
+        target_node_id?: string
+        payload?: {
+          [key: string]: unknown
+        }
+      }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "nodeID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "source" },
+            { in: "body", key: "patch" },
+            { in: "body", key: "action_delta" },
+            { in: "body", key: "event" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).patch<WorkflowNodeUpdateResponses, WorkflowNodeUpdateErrors, ThrowOnError>({
+      url: "/workflow/node/{nodeID}",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Pause workflow node
+   */
+  public pause<ThrowOnError extends boolean = false>(
+    parameters: {
+      nodeID: string
+      directory?: string
+      workspace?: string
+      reason?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "nodeID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "reason" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<WorkflowNodePauseResponses, WorkflowNodePauseErrors, ThrowOnError>({
+      url: "/workflow/node/{nodeID}/pause",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Abort workflow node
+   */
+  public abort<ThrowOnError extends boolean = false>(
+    parameters: {
+      nodeID: string
+      directory?: string
+      workspace?: string
+      reason?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "nodeID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "reason" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<WorkflowNodeAbortResponses, WorkflowNodeAbortErrors, ThrowOnError>({
+      url: "/workflow/node/{nodeID}/abort",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Pull workflow node commands
+   */
+  public pull<ThrowOnError extends boolean = false>(
+    parameters: {
+      nodeID: string
+      directory?: string
+      workspace?: string
+      cursor?: number
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "nodeID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "cursor" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<WorkflowNodePullResponses, WorkflowNodePullErrors, ThrowOnError>({
+      url: "/workflow/node/{nodeID}/pull",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get workflow node code changes
+   */
+  public codeChanges<ThrowOnError extends boolean = false>(
+    parameters: {
+      nodeID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "nodeID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      WorkflowNodeCodeChangesResponses,
+      WorkflowNodeCodeChangesErrors,
+      ThrowOnError
+    >({
+      url: "/workflow/node/{nodeID}/code_changes",
+      ...options,
+      ...params,
+    })
+  }
+}
+
+export class Edge2 extends HeyApiClient {
+  /**
+   * Create workflow edge
+   */
+  public create<ThrowOnError extends boolean = false>(
+    parameters: {
+      workflowID: string
+      directory?: string
+      workspace?: string
+      from_node_id?: string
+      to_node_id?: string
+      label?: string
+      config?: {
+        [key: string]: unknown
+      }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "workflowID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "from_node_id" },
+            { in: "body", key: "to_node_id" },
+            { in: "body", key: "label" },
+            { in: "body", key: "config" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<WorkflowEdgeCreateResponses, WorkflowEdgeCreateErrors, ThrowOnError>({
+      url: "/workflow/{workflowID}/edge",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
+export class Checkpoint extends HeyApiClient {
+  /**
+   * Create workflow checkpoint
+   */
+  public create<ThrowOnError extends boolean = false>(
+    parameters: {
+      workflowID: string
+      directory?: string
+      workspace?: string
+      node_id?: string
+      label?: string
+      status?: "pending" | "passed" | "failed" | "skipped"
+      config?: {
+        [key: string]: unknown
+      }
+      result_json?: {
+        [key: string]: unknown
+      }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "workflowID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "node_id" },
+            { in: "body", key: "label" },
+            { in: "body", key: "status" },
+            { in: "body", key: "config" },
+            { in: "body", key: "result_json" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      WorkflowCheckpointCreateResponses,
+      WorkflowCheckpointCreateErrors,
+      ThrowOnError
+    >({
+      url: "/workflow/{workflowID}/checkpoint",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
+export class Workflow extends HeyApiClient {
+  /**
+   * Delete workflow task
+   */
+  public deleteSession<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).delete<
+      WorkflowDeleteSessionResponses,
+      WorkflowDeleteSessionErrors,
+      ThrowOnError
+    >({
+      url: "/workflow/session/{sessionID}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get workflow for session
+   */
+  public session<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<WorkflowSessionResponses, WorkflowSessionErrors, ThrowOnError>({
+      url: "/workflow/session/{sessionID}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get workflow
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters: {
+      workflowID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "workflowID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<WorkflowGetResponses, WorkflowGetErrors, ThrowOnError>({
+      url: "/workflow/{workflowID}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Read workflow delta
+   */
+  public read<ThrowOnError extends boolean = false>(
+    parameters: {
+      workflowID: string
+      directory?: string
+      workspace?: string
+      cursor?: number
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "workflowID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "cursor" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<WorkflowReadResponses, WorkflowReadErrors, ThrowOnError>({
+      url: "/workflow/{workflowID}/read",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get workflow diff
+   */
+  public diff<ThrowOnError extends boolean = false>(
+    parameters: {
+      workflowID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "workflowID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<WorkflowDiffResponses, WorkflowDiffErrors, ThrowOnError>({
+      url: "/workflow/{workflowID}/diff",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Create workflow
+   */
+  public create<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      session_id?: string
+      title?: string
+      config?: {
+        [key: string]: unknown
+      }
+      summary?: WorkflowSummary
+      nodes?: Array<{
+        id?: string
+        session_id?: string
+        title: string
+        agent: string
+        model?: {
+          providerID?: string
+          modelID?: string
+          variant?: string
+        }
+        config?: {
+          [key: string]: unknown
+        }
+        status?:
+          | "pending"
+          | "ready"
+          | "running"
+          | "waiting"
+          | "paused"
+          | "interrupted"
+          | "completed"
+          | "failed"
+          | "cancelled"
+        result_status?: "unknown" | "success" | "fail" | "partial"
+        fail_reason?: string
+        action_count?: number
+        attempt?: number
+        max_attempts?: number
+        max_actions?: number
+        state_json?: {
+          [key: string]: unknown
+        }
+        result_json?: {
+          [key: string]: unknown
+        }
+        position?: number
+      }>
+      edges?: Array<{
+        id?: string
+        from_node_id: string
+        to_node_id: string
+        label?: string
+        config?: {
+          [key: string]: unknown
+        }
+      }>
+      checkpoints?: Array<{
+        id?: string
+        node_id: string
+        label: string
+        status?: "pending" | "passed" | "failed" | "skipped"
+        config?: {
+          [key: string]: unknown
+        }
+        result_json?: {
+          [key: string]: unknown
+        }
+      }>
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "session_id" },
+            { in: "body", key: "title" },
+            { in: "body", key: "config" },
+            { in: "body", key: "summary" },
+            { in: "body", key: "nodes" },
+            { in: "body", key: "edges" },
+            { in: "body", key: "checkpoints" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<WorkflowCreateResponses, WorkflowCreateErrors, ThrowOnError>({
+      url: "/workflow",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Control workflow node
+   */
+  public control<ThrowOnError extends boolean = false>(
+    parameters: {
+      workflowID: string
+      directory?: string
+      workspace?: string
+      nodeID?: string
+      source?: string
+      command?: "continue" | "resume" | "retry" | "inject_context"
+      payload?: {
+        [key: string]: unknown
+      }
+      command_id?: string
+      force?: boolean
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "workflowID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "nodeID" },
+            { in: "body", key: "source" },
+            { in: "body", key: "command" },
+            { in: "body", key: "payload" },
+            { in: "body", key: "command_id" },
+            { in: "body", key: "force" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<WorkflowControlResponses, WorkflowControlErrors, ThrowOnError>({
+      url: "/workflow/{workflowID}/control",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  private _sandTable?: SandTable
+  get sandTable(): SandTable {
+    return (this._sandTable ??= new SandTable({ client: this.client }))
+  }
+
+  private _node?: Node
+  get node(): Node {
+    return (this._node ??= new Node({ client: this.client }))
+  }
+
+  private _edge?: Edge2
+  get edge(): Edge2 {
+    return (this._edge ??= new Edge2({ client: this.client }))
+  }
+
+  private _checkpoint?: Checkpoint
+  get checkpoint(): Checkpoint {
+    return (this._checkpoint ??= new Checkpoint({ client: this.client }))
+  }
+}
+
 export class Instance extends HeyApiClient {
   /**
    * Dispose instance
@@ -4360,9 +6603,14 @@ export class OpencodeClient extends HeyApiClient {
     return (this._pty ??= new Pty({ client: this.client }))
   }
 
-  private _config?: Config2
-  get config(): Config2 {
-    return (this._config ??= new Config2({ client: this.client }))
+  private _serial?: Serial
+  get serial(): Serial {
+    return (this._serial ??= new Serial({ client: this.client }))
+  }
+
+  private _config?: Config3
+  get config(): Config3 {
+    return (this._config ??= new Config3({ client: this.client }))
   }
 
   private _tool?: Tool
@@ -4428,6 +6676,11 @@ export class OpencodeClient extends HeyApiClient {
   private _tui?: Tui
   get tui(): Tui {
     return (this._tui ??= new Tui({ client: this.client }))
+  }
+
+  private _workflow?: Workflow
+  get workflow(): Workflow {
+    return (this._workflow ??= new Workflow({ client: this.client }))
   }
 
   private _instance?: Instance

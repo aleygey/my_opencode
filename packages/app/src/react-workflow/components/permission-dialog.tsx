@@ -77,7 +77,7 @@ export function PermissionDialog({ request, onReply }: Props) {
         )}
 
         {/* Show metadata if there's useful context */}
-        {request.metadata?.command && (
+        {Boolean(request.metadata?.command) && (
           <div className="wf-permission-meta">
             <Lock className="h-3 w-3 flex-shrink-0" strokeWidth={2} />
             <code className="wf-permission-command">{String(request.metadata.command)}</code>

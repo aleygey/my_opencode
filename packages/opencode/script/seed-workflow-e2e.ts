@@ -1,5 +1,6 @@
 import path from "path"
 import { $ } from "bun"
+import { Effect } from "effect"
 
 const dir = process.env.OPENCODE_E2E_PROJECT_DIR ?? path.resolve(import.meta.dir, "../../..")
 const title = process.env.OPENCODE_E2E_WORKFLOW_TITLE ?? "Workflow Demo"
@@ -38,44 +39,67 @@ async function result(data: Record<string, unknown>) {
   console.log(json)
 }
 
-async function prompt(sessionID: string, agent: string, text: string) {
-  const { Session } = await import("../src/session")
-  const { MessageID, PartID, SessionID } = await import("../src/session/schema")
-  const { ProviderID, ModelID } = await import("../src/provider/schema")
-  const now = Date.now()
-  const messageID = MessageID.ascending()
-  await Session.updateMessage({
-    id: messageID,
-    sessionID: SessionID.make(sessionID),
-    role: "user",
-    time: { created: now },
-    agent,
-    model: { providerID: ProviderID.make(providerID), modelID: ModelID.make(modelID) },
-  })
-  await Session.updatePart({
-    id: PartID.ascending(),
-    sessionID: SessionID.make(sessionID),
-    messageID,
-    type: "text",
-    text,
-    time: { start: now },
-  })
-}
-
 const seed = async () => {
   const { Instance } = await import("../src/project/instance")
   const { InstanceBootstrap } = await import("../src/project/bootstrap")
   const { Session } = await import("../src/session")
   const { Workflow } = await import("../src/workflow")
-  const { Storage } = await import("../src/storage/storage")
+  const { Storage } = await import("../src/storage")
+  const { AppRuntime } = await import("../src/effect/app-runtime")
+  const { MessageID, PartID, SessionID } = await import("../src/session/schema")
+  const { ProviderID, ModelID } = await import("../src/provider/schema")
+
+  const prompt = (sessionID: string, agent: string, text: string) =>
+    AppRuntime.runPromise(
+      Effect.gen(function* () {
+        const session = yield* Session.Service
+        const now = Date.now()
+        const messageID = MessageID.ascending()
+        yield* session.updateMessage({
+          id: messageID,
+          sessionID: SessionID.make(sessionID),
+          role: "user",
+          time: { created: now },
+          agent,
+          model: { providerID: ProviderID.make(providerID), modelID: ModelID.make(modelID) },
+        })
+        yield* session.updatePart({
+          id: PartID.ascending(),
+          sessionID: SessionID.make(sessionID),
+          messageID,
+          type: "text",
+          text,
+          time: { start: now },
+        })
+      }),
+    )
+
+  const createSession = (input: { title?: string; parentID?: string }) =>
+    AppRuntime.runPromise(
+      Effect.gen(function* () {
+        const session = yield* Session.Service
+        return yield* session.create({
+          title: input.title,
+          parentID: input.parentID ? SessionID.make(input.parentID) : undefined,
+        })
+      }),
+    )
+
+  const writeDiff = (sessionID: string, value: unknown) =>
+    AppRuntime.runPromise(
+      Effect.gen(function* () {
+        const storage = yield* Storage.Service
+        yield* storage.write(["session_diff", sessionID], value)
+      }),
+    )
 
   await Instance.provide({
     directory: dir,
-    init: InstanceBootstrap,
+    init: () => AppRuntime.runPromise(InstanceBootstrap),
     fn: async () => {
-      const root = await Session.create({ title })
-      const coding = await Session.create({ parentID: root.id, title: "Coding Node" })
-      const build = await Session.create({ parentID: root.id, title: "Build / Flash Node" })
+      const root = await createSession({ title })
+      const coding = await createSession({ parentID: root.id, title: "Coding Node" })
+      const build = await createSession({ parentID: root.id, title: "Build / Flash Node" })
 
       await Promise.all([
         prompt(root.id, "orchestrator", "Plan coding, build/flash, and debug for the embedded workflow."),
@@ -89,12 +113,12 @@ const seed = async () => {
       ])
 
       await Promise.all([
-        Storage.write(["session_diff", root.id], [await diff("multiagent.md")]),
-        Storage.write(["session_diff", coding.id], [
+        writeDiff(root.id, [await diff("multiagent.md")]),
+        writeDiff(coding.id, [
           await diff("packages/app/src/pages/session/workflow-panel.tsx"),
           await diff("packages/app/src/pages/session.tsx"),
         ]),
-        Storage.write(["session_diff", build.id], [await diff("packages/opencode/src/workflow/index.ts")]),
+        writeDiff(build.id, [await diff("packages/opencode/src/workflow/index.ts")]),
       ])
 
       const workflow = await Workflow.create({

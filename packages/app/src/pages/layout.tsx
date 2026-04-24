@@ -995,7 +995,7 @@ export default function Layout(props: ParentProps) {
 
     await globalSDK.client.session.update({
       sessionID: session.id,
-      body_directory: session.directory,
+      directory: session.directory,
       time: { archived: Date.now() },
     })
     setStore(
@@ -1591,7 +1591,7 @@ export default function Layout(props: ParentProps) {
           globalSDK.client.session
             .update({
               sessionID: session.id,
-              body_directory: session.directory,
+              directory: session.directory,
               time: { archived: archivedAt },
             })
             .catch(() => undefined),
