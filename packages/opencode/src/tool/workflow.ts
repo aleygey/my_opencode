@@ -65,15 +65,24 @@ const configured = (value?: {
 
 // ── schemas ────────────────────────────────────────────────────────────────
 
-const WorkflowCreateParameters = z.object({
-  title: z.string(),
-  session_id: z.string().optional(),
-  config: z.record(z.string(), z.any()).optional(),
-  summary: Workflow.Summary.optional(),
-  nodes: Workflow.create.schema.shape.nodes,
-  edges: Workflow.create.schema.shape.edges,
-  checkpoints: Workflow.create.schema.shape.checkpoints,
-})
+// The `@/workflow` module cycles back through `SessionPrompt → ToolRegistry →
+// tool/workflow.ts`, so `Workflow.*` is only partially initialized when this
+// file loads. Any reference that resolves to `Workflow.Summary` or
+// `Workflow.create.schema.*` at module-eval time hits `undefined` (see the
+// `wh.Summary` runtime crash in the packaged binary). Build the schema lazily
+// — both z.lazy and an accessor inside the Tool.define init run after the
+// workflow namespace has finished initializing.
+const WorkflowCreateParameters = z.lazy(() =>
+  z.object({
+    title: z.string(),
+    session_id: z.string().optional(),
+    config: z.record(z.string(), z.any()).optional(),
+    summary: Workflow.Summary.optional(),
+    nodes: Workflow.create.schema.shape.nodes,
+    edges: Workflow.create.schema.shape.edges,
+    checkpoints: Workflow.create.schema.shape.checkpoints,
+  }),
+)
 
 const WorkflowNodeCreateParameters = z.object({
   workflow_id: z.string(),
