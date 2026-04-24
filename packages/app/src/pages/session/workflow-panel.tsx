@@ -134,13 +134,25 @@ export type WorkflowEdge = {
 /** P1 — lifecycle status of a graph edit transaction. */
 export type WorkflowEditStatus = "pending" | "applied" | "rejected" | "superseded"
 
-/** P1 — a proposed-then-applied graph edit. `ops` is kept permissive here
- *  because the concrete discriminated union ships in P3. */
+/** P3 — discriminated union of edit ops the master can batch into a single
+ *  transaction. Mirrors `Workflow.EditOp` zod schema in
+ *  packages/opencode/src/workflow/index.ts. Kept structurally permissive on
+ *  the FE side (`Record<string, unknown>` for nested shapes) so a server-side
+ *  schema tweak doesn't immediately break the panel. */
+export type WorkflowEditOp =
+  | { kind: "INSERT_NODE"; node: Record<string, unknown> }
+  | { kind: "REPLACE_NODE"; node_id: string; node: Record<string, unknown> }
+  | { kind: "MODIFY_NODE"; node_id: string; patch: Record<string, unknown> }
+  | { kind: "DELETE_NODE"; node_id: string }
+  | { kind: "INSERT_EDGE"; edge: Record<string, unknown> }
+  | { kind: "DELETE_EDGE"; edge_id: string }
+
+/** P1/P3 — a proposed-then-applied graph edit. */
 export type WorkflowEdit = {
   id: string
   workflow_id: string
   proposer_session_id?: string
-  ops: Array<Record<string, unknown>>
+  ops: WorkflowEditOp[]
   status: WorkflowEditStatus
   reason?: string
   reject_reason?: string

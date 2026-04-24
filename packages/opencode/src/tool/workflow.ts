@@ -298,6 +298,128 @@ export const WorkflowNodeCreateTool = Tool.define(
   }),
 )
 
+/**
+ * P3 — propose a multi-op graph edit. Records the proposal in
+ * `workflow_edit` (status: pending) but does not mutate the graph; a
+ * follow-up `workflow_graph_apply` is required to commit. The master can
+ * batch as many ops as it likes — they all commit atomically.
+ *
+ * Op kinds (discriminated union):
+ *   - INSERT_NODE: { kind, node: { title, agent, model?, config?, ... } }
+ *   - REPLACE_NODE: { kind, node_id, node: <full node shape> }
+ *   - MODIFY_NODE: { kind, node_id, patch: <partial fields> }
+ *   - DELETE_NODE: { kind, node_id }            // cascades incident edges
+ *   - INSERT_EDGE: { kind, edge: { from_node_id, to_node_id, ... } }
+ *   - DELETE_EDGE: { kind, edge_id }
+ */
+const WorkflowGraphProposeParameters = z.lazy(() =>
+  z.object({
+    workflow_id: z.string(),
+    ops: Workflow.EditOp.array().min(1),
+    reason: z.string().optional(),
+  }),
+)
+
+export const WorkflowGraphProposeTool = Tool.define(
+  "workflow_graph_propose",
+  Effect.gen(function* () {
+    return {
+      description:
+        "Master-only. Propose a batched, multi-op graph edit (INSERT_NODE / REPLACE_NODE / MODIFY_NODE / DELETE_NODE / INSERT_EDGE / DELETE_EDGE). Returns an edit_id. Call workflow_graph_apply with the edit_id to commit, or workflow_graph_reject to discard.",
+      parameters: WorkflowGraphProposeParameters,
+      execute: (input: z.infer<typeof WorkflowGraphProposeParameters>, ctx: Tool.Context) =>
+        Effect.gen(function* () {
+          const edit = yield* Effect.promise(() =>
+            Workflow.proposeEdit({
+              workflowID: input.workflow_id,
+              proposer_session_id: ctx.sessionID,
+              ops: input.ops,
+              reason: input.reason,
+            }),
+          )
+          return {
+            title: `propose edit (${input.ops.length} op${input.ops.length === 1 ? "" : "s"})`,
+            metadata: {
+              workflowID: input.workflow_id,
+              editID: edit.id,
+              graphRevBefore: edit.graph_rev_before,
+            },
+            output: format(edit),
+          }
+        }).pipe(Effect.orDie),
+    }
+  }),
+)
+
+/**
+ * P3 — apply a previously proposed edit. Re-validates `graph_rev_before`
+ * inside the DB transaction; returns the updated edit row including
+ * `graph_rev_after`. On stale graph_rev or invariant violation the whole
+ * transaction rolls back and the edit stays `pending` so the master can
+ * reject and re-propose.
+ */
+const WorkflowGraphApplyParameters = z.object({
+  edit_id: z.string(),
+})
+
+export const WorkflowGraphApplyTool = Tool.define(
+  "workflow_graph_apply",
+  Effect.gen(function* () {
+    return {
+      description:
+        "Master-only. Atomically apply a pending edit (created via workflow_graph_propose). Bumps graph_rev exactly once. Marks downstream completed nodes as stale. Throws on stale graph_rev or invariant violation; the edit stays pending so the master can reject and re-propose.",
+      parameters: WorkflowGraphApplyParameters,
+      execute: (input: z.infer<typeof WorkflowGraphApplyParameters>, _ctx: Tool.Context) =>
+        Effect.gen(function* () {
+          const edit = yield* Effect.promise(() => Workflow.applyEdit({ editID: input.edit_id }))
+          return {
+            title: `applied edit ${edit.id}`,
+            metadata: {
+              workflowID: edit.workflow_id,
+              editID: edit.id,
+              graphRevBefore: edit.graph_rev_before,
+              graphRevAfter: edit.graph_rev_after,
+            },
+            output: format(edit),
+          }
+        }).pipe(Effect.orDie),
+    }
+  }),
+)
+
+/** P3 — reject a pending edit without applying. */
+const WorkflowGraphRejectParameters = z.object({
+  edit_id: z.string(),
+  reject_reason: z.string(),
+})
+
+export const WorkflowGraphRejectTool = Tool.define(
+  "workflow_graph_reject",
+  Effect.gen(function* () {
+    return {
+      description: "Master-only. Reject a pending edit by edit_id with a human-readable reason.",
+      parameters: WorkflowGraphRejectParameters,
+      execute: (input: z.infer<typeof WorkflowGraphRejectParameters>, _ctx: Tool.Context) =>
+        Effect.gen(function* () {
+          const edit = yield* Effect.promise(() =>
+            Workflow.rejectEdit({
+              editID: input.edit_id,
+              reject_reason: input.reject_reason,
+            }),
+          )
+          return {
+            title: `rejected edit ${edit.id}`,
+            metadata: {
+              workflowID: edit.workflow_id,
+              editID: edit.id,
+            },
+            output: format(edit),
+          }
+        }).pipe(Effect.orDie),
+    }
+  }),
+)
+
 export const WorkflowNodeStartTool = Tool.define(
   "workflow_node_start",
   Effect.gen(function* () {

@@ -39,6 +39,9 @@ import {
   WorkflowControlTool,
   WorkflowCreateTool,
   WorkflowEdgeCreateTool,
+  WorkflowGraphApplyTool,
+  WorkflowGraphProposeTool,
+  WorkflowGraphRejectTool,
   WorkflowNeedFulfillTool,
   WorkflowNodeAbortTool,
   WorkflowNodeCreateTool,
@@ -159,6 +162,9 @@ export const layer: Layer.Layer<
     const workflowUpdate = yield* WorkflowUpdateTool
     const workflowPull = yield* WorkflowPullTool
     const workflowNeedFulfill = yield* WorkflowNeedFulfillTool
+    const workflowGraphPropose = yield* WorkflowGraphProposeTool
+    const workflowGraphApply = yield* WorkflowGraphApplyTool
+    const workflowGraphReject = yield* WorkflowGraphRejectTool
     const agent = yield* Agent.Service
 
     const state = yield* InstanceState.make<State>(
@@ -261,6 +267,9 @@ export const layer: Layer.Layer<
           workflowUpdate: Tool.init(workflowUpdate),
           workflowPull: Tool.init(workflowPull),
           workflowNeedFulfill: Tool.init(workflowNeedFulfill),
+          workflowGraphPropose: Tool.init(workflowGraphPropose),
+          workflowGraphApply: Tool.init(workflowGraphApply),
+          workflowGraphReject: Tool.init(workflowGraphReject),
         })
 
         return {
@@ -302,6 +311,9 @@ export const layer: Layer.Layer<
             tool.workflowUpdate,
             tool.workflowPull,
             tool.workflowNeedFulfill,
+            tool.workflowGraphPropose,
+            tool.workflowGraphApply,
+            tool.workflowGraphReject,
             ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [tool.lsp] : []),
             ...(Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE && Flag.OPENCODE_CLIENT === "cli" ? [tool.plan] : []),
           ],

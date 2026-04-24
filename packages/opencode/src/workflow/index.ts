@@ -67,6 +67,7 @@ const workflowID = () => `wfl_${Identifier.create("workspace", "ascending").slic
 const nodeID = () => `wfn_${Identifier.create("workspace", "ascending").slice(4)}`
 const edgeID = () => `wfe_${Identifier.create("workspace", "ascending").slice(4)}`
 const checkpointID = () => `wfc_${Identifier.create("workspace", "ascending").slice(4)}`
+const editID = () => `wfd_${Identifier.create("workspace", "ascending").slice(4)}`
 
 const WorkflowStatus = z.enum(["pending", "running", "paused", "interrupted", "completed", "failed", "cancelled"])
 const WorkflowNodeStatus = z.enum([
@@ -168,6 +169,15 @@ const WorkflowEventKind = z.enum([
   // missing endpoint, or cycle). Master uses these to unwind a speculative
   // propose and surface the rejection reason back to the proposer.
   "edge.rejected",
+  // P3 — node mutation kinds emitted by the edit reconciler.
+  "node.replaced",
+  "node.modified",
+  "node.deleted",
+  "node.stale_marked",
+  // P3 — graph edit transaction lifecycle.
+  "graph.edit.proposed",
+  "graph.edit.applied",
+  "graph.edit.rejected",
   // Checkpoint
   "checkpoint.created",
   "checkpoint.passed",
@@ -980,15 +990,76 @@ export namespace Workflow {
     .meta({ ref: "WorkflowCheckpoint" })
   export type Checkpoint = z.infer<typeof Checkpoint>
 
-  /** P1 — round-trip shape for a proposed graph edit transaction.
-   *  The concrete `ops` union is defined in P3 along with the reconciler;
-   *  here we keep it permissive so rows round-trip even before P3 lands. */
+  /** P3 — discriminated-union of graph mutation ops.
+   *
+   *  All ops are atomic within a single edit transaction (`workflow_edit`):
+   *  the reconciler applies them in order in one DB transaction, and either
+   *  every op succeeds and `graph_rev` bumps once, or none of them stick.
+   *  Validation invariants enforced per-op:
+   *    - INSERT_NODE: id (when supplied) must be unique
+   *    - REPLACE_NODE / MODIFY_NODE / DELETE_NODE: node must exist + belong
+   *      to this workflow
+   *    - INSERT_EDGE: full DAG/scoping/acyclicity check (`assertEdgeInvariants`)
+   *    - DELETE_EDGE: edge must exist + belong to this workflow
+   *  All node-shaped ops accept the same field set as `createNode` plus the
+   *  P1 dynamic-graph extras (ports, priority, holds_resources). */
+  const NodeShape = z.object({
+    id: z.string().optional(),
+    session_id: z.string().optional(),
+    title: z.string(),
+    agent: z.string(),
+    model: Node.shape.model.optional(),
+    config: z.record(z.string(), z.any()).optional(),
+    input_ports: WorkflowInputPortSchema.array().optional(),
+    output_ports: WorkflowOutputPortSchema.array().optional(),
+    max_attempts: z.number().int().positive().optional(),
+    max_actions: z.number().int().positive().optional(),
+    position: z.number().int().nonnegative().optional(),
+    priority: z.number().int().optional(),
+    holds_resources: z.array(z.string()).optional(),
+  })
+  const NodePatchShape = z.object({
+    title: z.string().optional(),
+    agent: z.string().optional(),
+    model: Node.shape.model.optional(),
+    config: z.record(z.string(), z.any()).optional(),
+    input_ports: WorkflowInputPortSchema.array().optional(),
+    output_ports: WorkflowOutputPortSchema.array().optional(),
+    max_attempts: z.number().int().positive().optional(),
+    max_actions: z.number().int().positive().optional(),
+    position: z.number().int().nonnegative().optional(),
+    priority: z.number().int().optional(),
+    holds_resources: z.array(z.string()).optional(),
+  })
+  const EdgeShape = z.object({
+    id: z.string().optional(),
+    from_node_id: z.string(),
+    to_node_id: z.string(),
+    label: z.string().optional(),
+    config: z.record(z.string(), z.any()).optional(),
+    from_port: z.string().optional(),
+    to_port: z.string().optional(),
+    required: z.boolean().optional(),
+  })
+
+  export const EditOp = z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("INSERT_NODE"), node: NodeShape }),
+    z.object({ kind: z.literal("REPLACE_NODE"), node_id: z.string(), node: NodeShape }),
+    z.object({ kind: z.literal("MODIFY_NODE"), node_id: z.string(), patch: NodePatchShape }),
+    z.object({ kind: z.literal("DELETE_NODE"), node_id: z.string() }),
+    z.object({ kind: z.literal("INSERT_EDGE"), edge: EdgeShape }),
+    z.object({ kind: z.literal("DELETE_EDGE"), edge_id: z.string() }),
+  ])
+  export type EditOp = z.infer<typeof EditOp>
+
+  /** Round-trip shape for a proposed graph edit transaction (P3). The
+   *  reconciler enforces optimistic concurrency via `graph_rev_before`. */
   export const Edit = z
     .object({
       id: z.string(),
       workflow_id: z.string(),
       proposer_session_id: z.string().optional(),
-      ops: z.array(z.record(z.string(), z.any())),
+      ops: EditOp.array(),
       status: WorkflowEditStatus,
       reason: z.string().optional(),
       reject_reason: z.string().optional(),
@@ -2545,6 +2616,534 @@ export namespace Workflow {
     },
   )
 
+  /**
+   * P3 — propose a multi-op graph edit transaction. Records the ops + the
+   * proposer's view of `graph_rev` (`graph_rev_before`) but performs NO graph
+   * mutations: a separate `applyEdit` call is required, which re-validates
+   * `graph_rev_before` against current state for optimistic concurrency.
+   *
+   * Why two phases? It lets a master serialize "I plan to do X" before doing
+   * it (so a peer master observing the workflow sees the proposal), and it
+   * lets the runtime cleanly reject stale plans without partially mutating
+   * the graph.
+   */
+  export const proposeEdit = fn(
+    z.object({
+      workflowID: z.string(),
+      proposer_session_id: z.string().optional(),
+      ops: EditOp.array().min(1),
+      reason: z.string().optional(),
+    }),
+    async (input) => {
+      await state()
+      const wf = await workflowRow(input.workflowID)
+      if (!wf) throw new NotFoundError({ message: `Workflow not found: ${input.workflowID}` })
+      const row = Database.use((db) =>
+        db
+          .insert(WorkflowEditTable)
+          .values({
+            id: editID(),
+            workflow_id: input.workflowID,
+            proposer_session_id: input.proposer_session_id,
+            ops: input.ops as unknown[],
+            status: "pending",
+            reason: input.reason,
+            graph_rev_before: wf.graph_rev ?? 0,
+          })
+          .returning()
+          .get(),
+      )
+      if (!row) throw new Error("Failed to create workflow edit")
+      const info = fromEditRow(row)
+      Database.effect(async () => {
+        await writeEvent({
+          workflowID: info.workflow_id,
+          sessionID: info.proposer_session_id,
+          source: "orchestrator",
+          kind: "graph.edit.proposed",
+          payload: {
+            edit_id: info.id,
+            graph_rev_before: info.graph_rev_before,
+            op_count: info.ops.length,
+            op_kinds: info.ops.map((o) => (o as EditOp).kind),
+            reason: info.reason,
+          },
+        })
+      })
+      return info
+    },
+  )
+
+  /**
+   * P3 — reject a pending edit without applying it. Idempotent on already-
+   * rejected rows; throws if the edit is already applied or superseded.
+   */
+  export const rejectEdit = fn(
+    z.object({
+      editID: z.string(),
+      reject_reason: z.string(),
+    }),
+    async (input) => {
+      await state()
+      const existing = Database.use((db) =>
+        db.select().from(WorkflowEditTable).where(eq(WorkflowEditTable.id, input.editID)).get(),
+      )
+      if (!existing) throw new NotFoundError({ message: `Workflow edit not found: ${input.editID}` })
+      if (existing.status === "applied")
+        throw new Error(`Workflow edit ${input.editID} is already applied; cannot reject.`)
+      if (existing.status === "superseded")
+        throw new Error(`Workflow edit ${input.editID} is superseded; cannot reject.`)
+      // `rejected → rejected` is a no-op idempotent path.
+      const row = Database.use((db) =>
+        db
+          .update(WorkflowEditTable)
+          .set({ status: "rejected", reject_reason: input.reject_reason })
+          .where(eq(WorkflowEditTable.id, input.editID))
+          .returning()
+          .get(),
+      )
+      if (!row) throw new Error("Failed to reject workflow edit")
+      const info = fromEditRow(row)
+      Database.effect(async () => {
+        await writeEvent({
+          workflowID: info.workflow_id,
+          sessionID: info.proposer_session_id,
+          source: "orchestrator",
+          kind: "graph.edit.rejected",
+          payload: {
+            edit_id: info.id,
+            reject_reason: info.reject_reason,
+          },
+        })
+      })
+      return info
+    },
+  )
+
+  /**
+   * P3 — apply a previously proposed edit. Runs all ops in a single DB
+   * transaction; on op-validation failure the whole transaction rolls back
+   * and the edit row stays `pending` so the master can rewrite the ops and
+   * call apply again. Bumps `graph_rev` exactly once per applied edit (not
+   * once per op) so the optimistic-concurrency counter has clear semantics:
+   * "graph_rev N → graph_rev N+1 owned by edit X".
+   *
+   * Stale-marking: any node that sits at status `completed` and is reachable
+   * forward from an op-touched node gets `stale=1`. The runtime never reruns
+   * stale nodes on its own — the master decides.
+   */
+  export const applyEdit = fn(
+    z.object({
+      editID: z.string(),
+    }),
+    async (input) => {
+      await state()
+      const existing = Database.use((db) =>
+        db.select().from(WorkflowEditTable).where(eq(WorkflowEditTable.id, input.editID)).get(),
+      )
+      if (!existing) throw new NotFoundError({ message: `Workflow edit not found: ${input.editID}` })
+      if (existing.status !== "pending")
+        throw new Error(`Workflow edit ${input.editID} is ${existing.status}; only pending edits can be applied.`)
+
+      const ops = (existing.ops ?? []) as EditOp[]
+      // Re-validate ops shape — the row could have been written before P3
+      // schema tightening (very unlikely in practice but cheap to guard).
+      const parsed = EditOp.array().min(1).safeParse(ops)
+      if (!parsed.success) {
+        throw new Error(`Workflow edit ${input.editID} has malformed ops: ${parsed.error.message}`)
+      }
+
+      // Track which nodes' downstreams we need to mark stale at the end.
+      // We collect `node_id` references — the actual stale walk happens in
+      // a second pass after all ops apply, so cycle-shaped touches collapse.
+      const touchedForStaleness = new Set<string>()
+      const insertedNodeIDs: string[] = []
+      const replacedNodeIDs: string[] = []
+      const modifiedNodeIDs: string[] = []
+      const deletedNodeIDs: string[] = []
+      const insertedEdgeIDs: string[] = []
+      const deletedEdgeIDs: string[] = []
+
+      const result = Database.transaction((tx) => {
+        // Optimistic-concurrency check INSIDE the txn so concurrent edits
+        // can't race past us.
+        const wf = tx
+          .select({ graph_rev: WorkflowTable.graph_rev })
+          .from(WorkflowTable)
+          .where(eq(WorkflowTable.id, existing.workflow_id))
+          .get()
+        if (!wf) throw new NotFoundError({ message: `Workflow not found: ${existing.workflow_id}` })
+        if (wf.graph_rev !== existing.graph_rev_before) {
+          throw new Error(
+            `Workflow edit ${existing.id} was planned at graph_rev=${existing.graph_rev_before} but workflow is now at graph_rev=${wf.graph_rev}; reject and re-propose.`,
+          )
+        }
+
+        for (const op of parsed.data) {
+          if (op.kind === "INSERT_NODE") {
+            const id = op.node.id ?? nodeID()
+            tx.insert(WorkflowNodeTable)
+              .values({
+                id,
+                workflow_id: existing.workflow_id,
+                session_id: op.node.session_id,
+                title: op.node.title,
+                agent: op.node.agent,
+                model: op.node.model,
+                config: op.node.config,
+                input_ports: op.node.input_ports,
+                output_ports: op.node.output_ports,
+                status: "pending",
+                result_status: "unknown",
+                max_attempts: op.node.max_attempts ?? 1,
+                max_actions: op.node.max_actions ?? 20,
+                position: op.node.position ?? 0,
+                priority: op.node.priority ?? 0,
+                holds_resources: op.node.holds_resources,
+              })
+              .run()
+            insertedNodeIDs.push(id)
+            continue
+          }
+
+          if (op.kind === "REPLACE_NODE") {
+            const cur = tx
+              .select()
+              .from(WorkflowNodeTable)
+              .where(eq(WorkflowNodeTable.id, op.node_id))
+              .get()
+            if (!cur) {
+              throw new WorkflowGraphInvariantError(existing.workflow_id, "from_node_missing", {
+                node_id: op.node_id,
+                op: "REPLACE_NODE",
+              })
+            }
+            if (cur.workflow_id !== existing.workflow_id) {
+              throw new WorkflowGraphInvariantError(existing.workflow_id, "cross_workflow", {
+                node_id: op.node_id,
+                op: "REPLACE_NODE",
+              })
+            }
+            tx.update(WorkflowNodeTable)
+              .set({
+                // Wholesale replace of declarative fields; preserve runtime-
+                // owned counters (status, attempt, action_count, version,
+                // time_*) so we don't blow away in-flight work.
+                title: op.node.title,
+                agent: op.node.agent,
+                model: op.node.model ?? null,
+                config: op.node.config ?? null,
+                input_ports: op.node.input_ports ?? null,
+                output_ports: op.node.output_ports ?? null,
+                max_attempts: op.node.max_attempts ?? cur.max_attempts,
+                max_actions: op.node.max_actions ?? cur.max_actions,
+                position: op.node.position ?? cur.position,
+                priority: op.node.priority ?? 0,
+                holds_resources: op.node.holds_resources ?? null,
+                version: sql`${WorkflowNodeTable.version} + 1`,
+                time_updated: Date.now(),
+              })
+              .where(eq(WorkflowNodeTable.id, op.node_id))
+              .run()
+            replacedNodeIDs.push(op.node_id)
+            touchedForStaleness.add(op.node_id)
+            continue
+          }
+
+          if (op.kind === "MODIFY_NODE") {
+            const cur = tx
+              .select()
+              .from(WorkflowNodeTable)
+              .where(eq(WorkflowNodeTable.id, op.node_id))
+              .get()
+            if (!cur) {
+              throw new WorkflowGraphInvariantError(existing.workflow_id, "from_node_missing", {
+                node_id: op.node_id,
+                op: "MODIFY_NODE",
+              })
+            }
+            if (cur.workflow_id !== existing.workflow_id) {
+              throw new WorkflowGraphInvariantError(existing.workflow_id, "cross_workflow", {
+                node_id: op.node_id,
+                op: "MODIFY_NODE",
+              })
+            }
+            const p = op.patch
+            tx.update(WorkflowNodeTable)
+              .set({
+                ...(p.title !== undefined ? { title: p.title } : {}),
+                ...(p.agent !== undefined ? { agent: p.agent } : {}),
+                ...(p.model !== undefined ? { model: p.model } : {}),
+                ...(p.config !== undefined ? { config: p.config } : {}),
+                ...(p.input_ports !== undefined ? { input_ports: p.input_ports } : {}),
+                ...(p.output_ports !== undefined ? { output_ports: p.output_ports } : {}),
+                ...(p.max_attempts !== undefined ? { max_attempts: p.max_attempts } : {}),
+                ...(p.max_actions !== undefined ? { max_actions: p.max_actions } : {}),
+                ...(p.position !== undefined ? { position: p.position } : {}),
+                ...(p.priority !== undefined ? { priority: p.priority } : {}),
+                ...(p.holds_resources !== undefined ? { holds_resources: p.holds_resources } : {}),
+                version: sql`${WorkflowNodeTable.version} + 1`,
+                time_updated: Date.now(),
+              })
+              .where(eq(WorkflowNodeTable.id, op.node_id))
+              .run()
+            modifiedNodeIDs.push(op.node_id)
+            touchedForStaleness.add(op.node_id)
+            continue
+          }
+
+          if (op.kind === "DELETE_NODE") {
+            const cur = tx
+              .select({ id: WorkflowNodeTable.id, workflow_id: WorkflowNodeTable.workflow_id })
+              .from(WorkflowNodeTable)
+              .where(eq(WorkflowNodeTable.id, op.node_id))
+              .get()
+            if (!cur) {
+              throw new WorkflowGraphInvariantError(existing.workflow_id, "from_node_missing", {
+                node_id: op.node_id,
+                op: "DELETE_NODE",
+              })
+            }
+            if (cur.workflow_id !== existing.workflow_id) {
+              throw new WorkflowGraphInvariantError(existing.workflow_id, "cross_workflow", {
+                node_id: op.node_id,
+                op: "DELETE_NODE",
+              })
+            }
+            // Capture downstream targets BEFORE delete (cascading FK will
+            // remove edges) so we can mark them stale below.
+            const downstreams = tx
+              .select({ to_node_id: WorkflowEdgeTable.to_node_id })
+              .from(WorkflowEdgeTable)
+              .where(eq(WorkflowEdgeTable.from_node_id, op.node_id))
+              .all()
+            for (const d of downstreams) touchedForStaleness.add(d.to_node_id)
+            tx.delete(WorkflowNodeTable).where(eq(WorkflowNodeTable.id, op.node_id)).run()
+            deletedNodeIDs.push(op.node_id)
+            continue
+          }
+
+          if (op.kind === "INSERT_EDGE") {
+            // Reuse the P2 invariant helper — it queries via Database.use,
+            // not the txn handle, but since we're in the same connection it
+            // will observe the in-flight node inserts above (sqlite reads
+            // its own writes within a single connection).
+            assertEdgeInvariants({
+              workflowID: existing.workflow_id,
+              from_node_id: op.edge.from_node_id,
+              to_node_id: op.edge.to_node_id,
+            })
+            const id = op.edge.id ?? edgeID()
+            tx.insert(WorkflowEdgeTable)
+              .values({
+                id,
+                workflow_id: existing.workflow_id,
+                from_node_id: op.edge.from_node_id,
+                to_node_id: op.edge.to_node_id,
+                label: op.edge.label,
+                config: op.edge.config,
+                from_port: op.edge.from_port,
+                to_port: op.edge.to_port,
+                ...(op.edge.required !== undefined ? { required: op.edge.required ? 1 : 0 } : {}),
+              })
+              .run()
+            insertedEdgeIDs.push(id)
+            // Inserting an edge changes the to_node's input set.
+            touchedForStaleness.add(op.edge.to_node_id)
+            continue
+          }
+
+          if (op.kind === "DELETE_EDGE") {
+            const cur = tx
+              .select()
+              .from(WorkflowEdgeTable)
+              .where(eq(WorkflowEdgeTable.id, op.edge_id))
+              .get()
+            if (!cur) {
+              throw new Error(`Edge ${op.edge_id} not found for DELETE_EDGE.`)
+            }
+            if (cur.workflow_id !== existing.workflow_id) {
+              throw new WorkflowGraphInvariantError(existing.workflow_id, "cross_workflow", {
+                edge_id: op.edge_id,
+                op: "DELETE_EDGE",
+              })
+            }
+            tx.delete(WorkflowEdgeTable).where(eq(WorkflowEdgeTable.id, op.edge_id)).run()
+            deletedEdgeIDs.push(op.edge_id)
+            // Removing an edge changes the to_node's input set.
+            touchedForStaleness.add(cur.to_node_id)
+            continue
+          }
+        }
+
+        // Stale propagation: walk forward from each touched node and mark
+        // every reachable COMPLETED node as stale. Pending/ready/running
+        // nodes don't carry the stale flag because they haven't produced a
+        // result yet — there's nothing to invalidate.
+        const allEdges = tx
+          .select({ from_node_id: WorkflowEdgeTable.from_node_id, to_node_id: WorkflowEdgeTable.to_node_id })
+          .from(WorkflowEdgeTable)
+          .where(eq(WorkflowEdgeTable.workflow_id, existing.workflow_id))
+          .all()
+        const adj = new Map<string, string[]>()
+        for (const e of allEdges) {
+          const list = adj.get(e.from_node_id)
+          if (list) list.push(e.to_node_id)
+          else adj.set(e.from_node_id, [e.to_node_id])
+        }
+        const reachable = new Set<string>()
+        const stack = [...touchedForStaleness]
+        while (stack.length > 0) {
+          const cur = stack.pop()!
+          if (reachable.has(cur)) continue
+          reachable.add(cur)
+          const nexts = adj.get(cur)
+          if (nexts) for (const n of nexts) stack.push(n)
+        }
+        const toStaleIDs = [...reachable].filter((id) => !deletedNodeIDs.includes(id))
+        const newlyStale: string[] = []
+        if (toStaleIDs.length > 0) {
+          const completed = tx
+            .select({ id: WorkflowNodeTable.id })
+            .from(WorkflowNodeTable)
+            .where(and(inArray(WorkflowNodeTable.id, toStaleIDs), eq(WorkflowNodeTable.status, "completed")))
+            .all()
+          for (const c of completed) newlyStale.push(c.id)
+          if (newlyStale.length > 0) {
+            tx.update(WorkflowNodeTable)
+              .set({ stale: 1, version: sql`${WorkflowNodeTable.version} + 1`, time_updated: Date.now() })
+              .where(inArray(WorkflowNodeTable.id, newlyStale))
+              .run()
+          }
+        }
+
+        // Bump graph_rev once and mark the edit applied atomically.
+        const wfAfter = tx
+          .update(WorkflowTable)
+          .set({
+            graph_rev: sql`${WorkflowTable.graph_rev} + 1`,
+            version: sql`${WorkflowTable.version} + 1`,
+            time_updated: Date.now(),
+          })
+          .where(eq(WorkflowTable.id, existing.workflow_id))
+          .returning()
+          .get()
+        if (!wfAfter) throw new Error("Workflow disappeared during apply")
+
+        const editRow = tx
+          .update(WorkflowEditTable)
+          .set({
+            status: "applied",
+            graph_rev_after: wfAfter.graph_rev,
+            time_applied: Date.now(),
+          })
+          .where(eq(WorkflowEditTable.id, existing.id))
+          .returning()
+          .get()
+        if (!editRow) throw new Error("Edit row disappeared during apply")
+
+        return {
+          edit: fromEditRow(editRow),
+          workflow: fromWorkflowRow(wfAfter),
+          newlyStale,
+        }
+      })
+
+      Database.effect(async () => {
+        await Bus.publish(Event.Updated, { info: result.workflow })
+        // Per-op events so the UI can react incrementally; payloads stay
+        // minimal — full state is in the snapshot on the next read.
+        for (const id of insertedNodeIDs) {
+          const node = await getNode(id)
+          await Bus.publish(Event.NodeCreated, { info: node })
+          await writeEvent({
+            workflowID: existing.workflow_id,
+            nodeID: id,
+            source: "runtime",
+            kind: "node.created",
+            payload: { edit_id: result.edit.id, title: node.title, agent: node.agent },
+          })
+        }
+        for (const id of replacedNodeIDs) {
+          const node = await getNode(id)
+          await Bus.publish(Event.NodeUpdated, { info: node })
+          await writeEvent({
+            workflowID: existing.workflow_id,
+            nodeID: id,
+            source: "runtime",
+            kind: "node.replaced",
+            payload: { edit_id: result.edit.id },
+          })
+        }
+        for (const id of modifiedNodeIDs) {
+          const node = await getNode(id)
+          await Bus.publish(Event.NodeUpdated, { info: node })
+          await writeEvent({
+            workflowID: existing.workflow_id,
+            nodeID: id,
+            source: "runtime",
+            kind: "node.modified",
+            payload: { edit_id: result.edit.id },
+          })
+        }
+        for (const id of deletedNodeIDs) {
+          await writeEvent({
+            workflowID: existing.workflow_id,
+            nodeID: id,
+            source: "runtime",
+            kind: "node.deleted",
+            payload: { edit_id: result.edit.id },
+          })
+        }
+        for (const id of insertedEdgeIDs) {
+          await writeEvent({
+            workflowID: existing.workflow_id,
+            source: "runtime",
+            kind: "edge.created",
+            payload: { edit_id: result.edit.id, edge_id: id },
+          })
+        }
+        for (const id of deletedEdgeIDs) {
+          await writeEvent({
+            workflowID: existing.workflow_id,
+            source: "runtime",
+            kind: "edge.deleted",
+            payload: { edit_id: result.edit.id, edge_id: id },
+          })
+        }
+        for (const id of result.newlyStale) {
+          await writeEvent({
+            workflowID: existing.workflow_id,
+            nodeID: id,
+            source: "runtime",
+            kind: "node.stale_marked",
+            payload: { edit_id: result.edit.id },
+          })
+        }
+        await writeEvent({
+          workflowID: existing.workflow_id,
+          sessionID: result.edit.proposer_session_id,
+          source: "runtime",
+          kind: "graph.edit.applied",
+          payload: {
+            edit_id: result.edit.id,
+            graph_rev_before: result.edit.graph_rev_before,
+            graph_rev_after: result.edit.graph_rev_after,
+            inserted_node_ids: insertedNodeIDs,
+            replaced_node_ids: replacedNodeIDs,
+            modified_node_ids: modifiedNodeIDs,
+            deleted_node_ids: deletedNodeIDs,
+            inserted_edge_ids: insertedEdgeIDs,
+            deleted_edge_ids: deletedEdgeIDs,
+            newly_stale_node_ids: result.newlyStale,
+          },
+        })
+      })
+
+      return result.edit
+    },
+  )
+
   export const getNode = fn(z.string(), async (nodeID) => {
     await state()
     const row = Database.use((db) => db.select().from(WorkflowNodeTable).where(eq(WorkflowNodeTable.id, nodeID)).get())
@@ -2608,6 +3207,15 @@ export namespace Workflow {
         .orderBy(desc(WorkflowEventTable.id))
         .limit(100)
         .all(),
+      // P3 — recent edit transactions (most-recent-first, capped). UI surfaces
+      // pending/recently-applied edits so the master can see proposal history.
+      edits: db
+        .select()
+        .from(WorkflowEditTable)
+        .where(eq(WorkflowEditTable.workflow_id, workflowID))
+        .orderBy(desc(WorkflowEditTable.time_created))
+        .limit(50)
+        .all(),
     }))
     const events = rows.events.toReversed().map(fromEventRow)
     const nodes = rows.nodes.map(fromNodeRow)
@@ -2622,6 +3230,7 @@ export namespace Workflow {
       edges: rows.edges.map(fromEdgeRow),
       checkpoints: rows.checkpoints.map(fromCheckpointRow),
       events,
+      edits: rows.edits.map(fromEditRow),
       cursor: events.at(-1)?.id ?? 0,
     }
   })
@@ -2706,7 +3315,14 @@ export namespace Workflow {
         : []
       const changedEdge = events.some((row) => row.kind.startsWith("edge."))
       const changedCheckpoint = events.some((row) => row.kind.startsWith("checkpoint."))
-      const includeWorkflow = events.some((row) => row.kind.startsWith("workflow.") || row.kind.startsWith("node."))
+      // P3 — surface recent edit transactions whenever a graph.edit.* event
+      // crossed the cursor. The master uses these to learn whether its
+      // propose/apply pair landed and what graph_rev_after became.
+      const changedEdit = events.some((row) => row.kind.startsWith("graph.edit."))
+      const includeWorkflow = events.some(
+        (row) =>
+          row.kind.startsWith("workflow.") || row.kind.startsWith("node.") || row.kind.startsWith("graph.edit."),
+      )
       const info = fromWorkflowRow(workflowRow)
       const feed = events.map((row) => fromEventRow(row))
       return {
@@ -2741,6 +3357,17 @@ export namespace Workflow {
             ).map(fromCheckpointRow)
           : [],
         events: feed,
+        edits: changedEdit
+          ? Database.use((db) =>
+              db
+                .select()
+                .from(WorkflowEditTable)
+                .where(eq(WorkflowEditTable.workflow_id, input.workflowID))
+                .orderBy(desc(WorkflowEditTable.time_created))
+                .limit(50)
+                .all(),
+            ).map(fromEditRow)
+          : undefined,
         cursor: events.at(-1)?.id ?? input.cursor ?? 0,
       }
     },
