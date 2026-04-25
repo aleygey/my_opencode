@@ -1,26 +1,48 @@
+import { Schema } from "effect"
+import { AppRuntime } from "@/effect/app-runtime"
 import { Worktree } from "@/worktree"
-import type { Config } from "../config"
-import type { Adaptor } from "./types"
+import { type WorkspaceAdaptor, WorkspaceInfo } from "../types"
 
-type WorktreeConfig = Extract<Config, { type: "worktree" }>
+const WorktreeConfig = Schema.Struct({
+  name: WorkspaceInfo.fields.name,
+  branch: Schema.String,
+  directory: Schema.String,
+})
+const decodeWorktreeConfig = Schema.decodeUnknownSync(WorktreeConfig)
 
-export const WorktreeAdaptor: Adaptor<WorktreeConfig> = {
-  async create(_from: WorktreeConfig, _branch: string) {
-    const next = await Worktree.create(undefined)
+export const WorktreeAdaptor: WorkspaceAdaptor = {
+  name: "Worktree",
+  description: "Create a git worktree",
+  async configure(info) {
+    const worktree = await AppRuntime.runPromise(Worktree.Service.use((svc) => svc.makeWorktreeInfo()))
     return {
-      config: {
-        type: "worktree",
-        directory: next.directory,
-      },
-      // Hack for now: `Worktree.create` puts all its async code in a
-      // `setTimeout` so it doesn't use this, but we should change that
-      init: async () => {},
+      ...info,
+      name: worktree.name,
+      branch: worktree.branch,
+      directory: worktree.directory,
     }
   },
-  async remove(config: WorktreeConfig) {
-    await Worktree.remove({ directory: config.directory })
+  async create(info) {
+    const config = decodeWorktreeConfig(info)
+    await AppRuntime.runPromise(
+      Worktree.Service.use((svc) =>
+        svc.createFromInfo({
+          name: config.name,
+          directory: config.directory,
+          branch: config.branch,
+        }),
+      ),
+    )
   },
-  async request(_from: WorktreeConfig, _method: string, _url: string, _data?: BodyInit, _signal?: AbortSignal) {
-    throw new Error("worktree does not support request")
+  async remove(info) {
+    const config = decodeWorktreeConfig(info)
+    await AppRuntime.runPromise(Worktree.Service.use((svc) => svc.remove({ directory: config.directory })))
+  },
+  target(info) {
+    const config = decodeWorktreeConfig(info)
+    return {
+      type: "local",
+      directory: config.directory,
+    }
   },
 }
