@@ -1885,8 +1885,13 @@ export function WorkflowRuntimePanel(props: {
     onCleanup(() => clearInterval(timer))
   })
   const chainData = createMemo<WorkflowAppProps["chains"] | undefined>(() => {
+    type ChainNode = NonNullable<WorkflowAppProps["chains"]>[number]["nodes"][number]
     const wfRev = props.snapshot.workflow.graph_rev
-    const execution = nodes().map((node) => {
+    const allNodes = nodes()
+    const plan = sandPlan()
+    if (!plan && allNodes.length === 0) return undefined
+
+    const renderable = (node: WorkflowNode): ChainNode => {
       const startRev = node.graph_rev_at_start
       const stale =
         typeof startRev === "number" && typeof wfRev === "number" && startRev < wfRev
@@ -1898,37 +1903,163 @@ export function WorkflowRuntimePanel(props: {
         session: node.session_id ?? props.snapshot.workflow.session_id,
         stale,
       }
-    })
-    const plan = sandPlan()
-    if (!plan && execution.length === 0) return undefined
-    // Plan and execution belong to a single task — render them as ONE chain so
-    // the canvas shows a linear "plan → first node → …" flow instead of
-    // awkwardly splitting into two lanes. The plan node sits at position 0
-    // when present; it's visually distinct (color + icon already encode it).
-    const merged: NonNullable<WorkflowAppProps["chains"]>[number]["nodes"] = []
-    if (plan) {
-      merged.push({
-        id: `sand-table:${plan.id}`,
-        title: plan.title,
-        type: "plan",
-        status: plan.status,
-        session: rootID(),
-        summary: sandPlanBadges(plan),
-      })
     }
-    for (const node of execution) merged.push(node as NonNullable<WorkflowAppProps["chains"]>[number]["nodes"][number])
-    return [
-      {
-        id: "workflow",
-        // Chain label only shows when there are multiple chains — with the
-        // unified plan+execution layout the header is hidden. Still, prefer the
-        // workflow's own title over a hardcoded "Workflow" placeholder so that
-        // any future multi-chain view reflects the task subject.
-        label: props.snapshot.workflow.title || "Workflow",
-        color: "#7578c5",
-        nodes: merged,
-      },
-    ]
+    const planNode = (): ChainNode | undefined =>
+      plan
+        ? {
+            id: `sand-table:${plan.id}`,
+            title: plan.title,
+            type: "plan",
+            status: plan.status,
+            session: rootID(),
+            summary: sandPlanBadges(plan),
+          }
+        : undefined
+
+    // Plan-only (no execution nodes yet): single chain so the planning header
+    // doesn't get marooned inside the multi-lane layout.
+    if (allNodes.length === 0) {
+      return [
+        {
+          id: "workflow",
+          label: props.snapshot.workflow.title || "Workflow",
+          color: "#7578c5",
+          nodes: [planNode()!],
+        },
+      ]
+    }
+
+    const edges = props.snapshot.edges ?? []
+
+    // No edges → no DAG to decompose. Preserve historical single-chain
+    // behaviour for legacy workflows that just declare a flat node list.
+    if (edges.length === 0) {
+      const merged: ChainNode[] = []
+      const head = planNode()
+      if (head) merged.push(head)
+      for (const node of allNodes) merged.push(renderable(node))
+      return [
+        {
+          id: "workflow",
+          label: props.snapshot.workflow.title || "Workflow",
+          color: "#7578c5",
+          nodes: merged,
+        },
+      ]
+    }
+
+    // Topological lane decomposition (option B from the discussion).
+    //
+    // The canvas already supports multi-lane rendering (`isMulti` branch in
+    // workflow-canvas.tsx — flex `wf-lanes` row with junction diamond + measured
+    // crossbar). What was missing was producing > 1 chain when the underlying
+    // graph actually has parallel branches. The master agent has been creating
+    // proper DAGs (fan-out from a planning node into independent sub-tasks),
+    // but `chainData` was flattening them all into a single linear chain
+    // sorted by `position`, hiding the parallelism from the user.
+    //
+    // Algorithm:
+    //   1. Build adjacency from edges; compute in-degree per node.
+    //   2. Roots = nodes with in-degree 0 (sorted by position so left-to-right
+    //      lane order matches creation order).
+    //   3. Walk DFS from each root. At each step, pick the first unvisited
+    //      child to continue the current lane and queue any remaining
+    //      unvisited children as new lane heads. Each node is visited at most
+    //      once globally (fan-in nodes appear in the lane of their first
+    //      visiting parent only; this is the standard trade-off when
+    //      projecting a DAG onto linear lanes).
+    //   4. The plan (sand_table) header — when present — is prepended to the
+    //      first lane only. Putting it in its own dedicated lane wastes a
+    //      column; prepending matches the existing single-lane behaviour for
+    //      lane 0 and keeps lanes 1..N visually parallel.
+    const out = new Map<string, string[]>()
+    const inDegree = new Map<string, number>()
+    const positionOf = new Map<string, number>()
+    allNodes.forEach((node, i) => {
+      out.set(node.id, [])
+      inDegree.set(node.id, 0)
+      positionOf.set(node.id, i)
+    })
+    for (const edge of edges) {
+      const from = out.get(edge.from_node_id)
+      if (!from || !inDegree.has(edge.to_node_id)) continue
+      from.push(edge.to_node_id)
+      inDegree.set(edge.to_node_id, (inDegree.get(edge.to_node_id) ?? 0) + 1)
+    }
+    // Stable child ordering by position so lane spawn order matches the order
+    // the master agent created the children in.
+    for (const arr of out.values()) {
+      arr.sort((a, b) => (positionOf.get(a) ?? 0) - (positionOf.get(b) ?? 0))
+    }
+
+    const nodeMap = new Map(allNodes.map((n) => [n.id, n] as const))
+    const visited = new Set<string>()
+    const lanes: WorkflowNode[][] = []
+    const stack: string[] = allNodes
+      .filter((n) => (inDegree.get(n.id) ?? 0) === 0)
+      .map((n) => n.id)
+
+    while (stack.length) {
+      const startID = stack.shift()!
+      if (visited.has(startID)) continue
+      const lane: WorkflowNode[] = []
+      let cursor: string | undefined = startID
+      while (cursor && !visited.has(cursor)) {
+        visited.add(cursor)
+        const node = nodeMap.get(cursor)
+        if (!node) break
+        lane.push(node)
+        const children: string[] = (out.get(cursor) ?? []).filter(
+          (id) => !visited.has(id),
+        )
+        if (children.length === 0) {
+          cursor = undefined
+          break
+        }
+        const first: string = children[0]
+        const rest: string[] = children.slice(1)
+        // Push spawned lanes in reverse so popping (from front) preserves
+        // left-to-right order on the next outer iteration.
+        for (const id of rest.slice().reverse()) stack.unshift(id)
+        cursor = first
+      }
+      if (lane.length > 0) lanes.push(lane)
+    }
+
+    // Defensive fallback: if a cycle slipped past P2's invariants and left
+    // some nodes unvisited, append them as a single trailing lane so they
+    // don't silently disappear.
+    const orphans = allNodes.filter((n) => !visited.has(n.id))
+    if (orphans.length > 0) lanes.push(orphans)
+    // Empty result (shouldn't happen given the early guards) → single chain.
+    if (lanes.length === 0) {
+      return [
+        {
+          id: "workflow",
+          label: props.snapshot.workflow.title || "Workflow",
+          color: "#7578c5",
+          nodes: allNodes.map(renderable),
+        },
+      ]
+    }
+
+    const chains = lanes.map((lane, i) => ({
+      id: `lane-${i}-${lane[0].id}`,
+      // The chain label only shows in multi-lane layout; fall back to the
+      // workflow title if there's only one lane (single-lane keeps existing
+      // header-hidden behaviour).
+      label: lanes.length > 1 ? lane[0].title : props.snapshot.workflow.title || "Workflow",
+      // Let the canvas pick the lane color from its `laneColors` palette via
+      // `colorIdx={i}`; leaving `color` undefined avoids forcing one tint
+      // across all lanes.
+      color: lanes.length === 1 ? "#7578c5" : undefined,
+      nodes: lane.map(renderable),
+    }))
+
+    const head = planNode()
+    if (head && chains[0]) chains[0].nodes.unshift(head)
+
+    return chains
   })
   const detailsWithPlan = createMemo<WorkflowAppProps["details"]>(() => {
     const base = details()
