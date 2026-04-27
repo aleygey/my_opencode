@@ -688,8 +688,11 @@
 
 .workflow-make .wf-node {
   position: relative;
-  padding: 8px 12px;
-  border-radius: 9px;
+  /* Slightly more vertical padding so 1-line titles still feel anchored and
+   * 2-line titles (now allowed via line-clamp in workflow-node.tsx) don't
+   * crowd the type/status row beneath. */
+  padding: 10px 12px;
+  border-radius: 10px;
   overflow: hidden;
 }
 

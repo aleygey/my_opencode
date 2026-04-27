@@ -1842,7 +1842,26 @@ export function WorkflowRuntimePanel(props: {
       }),
     ),
   )
-  const sandPlan = createMemo(() => sandTableSummary(sync.data.message[rootID()] ?? [], sync.data.part))
+  // The plan is derived from the master session's `sand_table` tool call.
+  // During context compaction, history pagination, or transient sync windows
+  // (e.g. brief moments while messages are re-fetched), `sandTableSummary`
+  // can return `undefined` even though a plan still logically exists for
+  // this root — the user reported "plan节点莫名消失" (plan node mysteriously
+  // disappearing). To absorb those flickers, hold onto the last seen plan
+  // keyed by rootID and surface it again whenever the live derivation
+  // briefly drops to undefined. We invalidate the cache when the rootID
+  // changes (so it never leaks across task switches).
+  let sandPlanCache: { rootID: string; value: ReturnType<typeof sandTableSummary> } | undefined
+  const sandPlan = createMemo(() => {
+    const root = rootID()
+    const fresh = sandTableSummary(sync.data.message[root] ?? [], sync.data.part)
+    if (fresh) {
+      sandPlanCache = { rootID: root, value: fresh }
+      return fresh
+    }
+    if (sandPlanCache && sandPlanCache.rootID === root) return sandPlanCache.value
+    return undefined
+  })
 
   // Token stats for the root (master) session. We reuse the same helper
   // the per-session Context tab uses so numbers line up everywhere. The
@@ -2032,34 +2051,203 @@ export function WorkflowRuntimePanel(props: {
     const orphans = allNodes.filter((n) => !visited.has(n.id))
     if (orphans.length > 0) lanes.push(orphans)
     // Empty result (shouldn't happen given the early guards) → single chain.
+    // We include the plan head in this fallback too — without it, the
+    // user reported "plan节点莫名消失" (plan node mysteriously disappears)
+    // because hitting this branch (e.g. a malformed graph with all nodes
+    // self-cycling) would render the canvas with execution nodes but no
+    // planning header, even though `sandPlan()` was still populated.
     if (lanes.length === 0) {
+      const head = planNode()
+      const all: ChainNode[] = []
+      if (head) all.push(head)
+      for (const n of allNodes) all.push(renderable(n))
       return [
         {
           id: "workflow",
           label: props.snapshot.workflow.title || "Workflow",
           color: "#7578c5",
-          nodes: allNodes.map(renderable),
+          nodes: all,
         },
       ]
     }
 
-    const chains = lanes.map((lane, i) => ({
-      id: `lane-${i}-${lane[0].id}`,
-      // The chain label only shows in multi-lane layout; fall back to the
-      // workflow title if there's only one lane (single-lane keeps existing
-      // header-hidden behaviour).
-      label: lanes.length > 1 ? lane[0].title : props.snapshot.workflow.title || "Workflow",
-      // Let the canvas pick the lane color from its `laneColors` palette via
-      // `colorIdx={i}`; leaving `color` undefined avoids forcing one tint
-      // across all lanes.
-      color: lanes.length === 1 ? "#7578c5" : undefined,
-      nodes: lane.map(renderable),
-    }))
+    // Tail merge detection. The LLM frequently produces DAGs where multiple
+    // parallel branches converge into a single follow-up node (e.g. plan ->
+    // [build, test, lint] -> deploy). The topological lane-decomposition
+    // above places that fan-in node in the *first* visiting parent's lane
+    // only, leaving sibling lanes ending mid-air with no visual indication
+    // that they re-converge. The user reported this as "多节点是否会merge
+    // 到同一个头/尾节点上" — they expect to see the tail.
+    //
+    // Heuristic: find a node that
+    //   (a) has incoming edges from parents living in >= 2 different lanes
+    //       (so it really IS a multi-lane merge, not just a serial join),
+    //   (b) has no outgoing edge to any other node (so it's a true tail —
+    //       avoids accidentally yanking a mid-graph join out of place).
+    // If such a node exists, pull it out of its host lane and surface it as
+    // a separate tail card. The canvas renders a mirror of the top
+    // `BranchConnector` between the lanes and the tail card.
+    const laneOf = new Map<string, number>()
+    lanes.forEach((lane, i) => lane.forEach((n) => laneOf.set(n.id, i)))
+    const incomingByID = new Map<string, string[]>()
+    const hasOutgoing = new Set<string>()
+    for (const edge of edges) {
+      hasOutgoing.add(edge.from_node_id)
+      const list = incomingByID.get(edge.to_node_id)
+      if (list) list.push(edge.from_node_id)
+      else incomingByID.set(edge.to_node_id, [edge.from_node_id])
+    }
+
+    let tailNode: WorkflowNode | undefined
+    if (lanes.length > 1) {
+      for (const node of allNodes) {
+        if (hasOutgoing.has(node.id)) continue
+        const parents = incomingByID.get(node.id) ?? []
+        if (parents.length < 2) continue
+        const distinctLanes = new Set<number>()
+        for (const p of parents) {
+          const li = laneOf.get(p)
+          if (li !== undefined) distinctLanes.add(li)
+        }
+        if (distinctLanes.size >= 2) {
+          tailNode = node
+          break
+        }
+      }
+    }
+
+    // Strip the tail from whichever lane it currently lives in (it was put
+    // there by the topological walk under "first visiting parent" rules).
+    if (tailNode) {
+      const id = tailNode.id
+      for (let i = 0; i < lanes.length; i++) {
+        const idx = lanes[i].findIndex((n) => n.id === id)
+        if (idx !== -1) lanes[i].splice(idx, 1)
+      }
+    }
+
+    const chains = lanes
+      .filter((lane) => lane.length > 0)
+      .map((lane, i, kept) => ({
+        id: `lane-${i}-${lane[0].id}`,
+        // The chain label only shows in multi-lane layout; fall back to the
+        // workflow title if there's only one lane (single-lane keeps existing
+        // header-hidden behaviour).
+        label: kept.length > 1 ? lane[0].title : props.snapshot.workflow.title || "Workflow",
+        // Let the canvas pick the lane color from its `laneColors` palette via
+        // `colorIdx={i}`; leaving `color` undefined avoids forcing one tint
+        // across all lanes.
+        color: kept.length === 1 ? "#7578c5" : undefined,
+        nodes: lane.map(renderable),
+        // Tag the lane that fed the tail so consumers (canvas / debug) can
+        // optionally surface "merges into …" hinting later. Cheap to attach;
+        // ignored by the current canvas renderer.
+        ...(tailNode && lane.some((n) => (incomingByID.get(tailNode!.id) ?? []).includes(n.id))
+          ? { mergesInto: tailNode.id }
+          : {}),
+      }))
 
     const head = planNode()
     if (head && chains[0]) chains[0].nodes.unshift(head)
 
+    // Attach the merge tail as a sibling field on the array via a tagged
+    // property. We deliberately avoid changing `WorkflowAppProps["chains"]`
+    // shape because the canvas already consumes a plain `Chain[]`; instead
+    // the tail is plumbed through a separate `chainTail` prop on
+    // `WorkflowApp` (see `chainTail` memo below).
     return chains
+  })
+
+  // Sibling memo to chainData(). Re-runs the same topological walk just to
+  // emit the merge-tail node (or undefined). Cheap because the inputs are the
+  // same memoised reactive sources.
+  const chainTail = createMemo<WorkflowAppProps["chainTail"] | undefined>(() => {
+    const allNodes = nodes()
+    const edges = props.snapshot.edges ?? []
+    if (allNodes.length < 2 || edges.length === 0) return undefined
+
+    // Re-derive the lane assignment so we know which parents belong to
+    // which lane. Sharing memoised state across two memos is awkward in
+    // SolidJS so we just pay the linear-time cost twice.
+    const out = new Map<string, string[]>()
+    const inDegree = new Map<string, number>()
+    const positionOf = new Map<string, number>()
+    allNodes.forEach((node, i) => {
+      out.set(node.id, [])
+      inDegree.set(node.id, 0)
+      positionOf.set(node.id, i)
+    })
+    for (const edge of edges) {
+      const from = out.get(edge.from_node_id)
+      if (!from || !inDegree.has(edge.to_node_id)) continue
+      from.push(edge.to_node_id)
+      inDegree.set(edge.to_node_id, (inDegree.get(edge.to_node_id) ?? 0) + 1)
+    }
+    for (const arr of out.values()) {
+      arr.sort((a, b) => (positionOf.get(a) ?? 0) - (positionOf.get(b) ?? 0))
+    }
+
+    const visited = new Set<string>()
+    const lanes: WorkflowNode[][] = []
+    const stack: string[] = allNodes.filter((n) => (inDegree.get(n.id) ?? 0) === 0).map((n) => n.id)
+    while (stack.length) {
+      const startID = stack.shift()!
+      if (visited.has(startID)) continue
+      const lane: WorkflowNode[] = []
+      let cursor: string | undefined = startID
+      while (cursor && !visited.has(cursor)) {
+        visited.add(cursor)
+        const node = allNodes.find((n) => n.id === cursor)
+        if (!node) break
+        lane.push(node)
+        const children: string[] = (out.get(cursor) ?? []).filter((id) => !visited.has(id))
+        if (children.length === 0) {
+          cursor = undefined
+          break
+        }
+        const first: string = children[0]
+        const rest: string[] = children.slice(1)
+        for (const id of rest.slice().reverse()) stack.unshift(id)
+        cursor = first
+      }
+      if (lane.length > 0) lanes.push(lane)
+    }
+    if (lanes.length < 2) return undefined
+
+    const laneOf = new Map<string, number>()
+    lanes.forEach((lane, i) => lane.forEach((n) => laneOf.set(n.id, i)))
+    const incomingByID = new Map<string, string[]>()
+    const hasOutgoing = new Set<string>()
+    for (const edge of edges) {
+      hasOutgoing.add(edge.from_node_id)
+      const list = incomingByID.get(edge.to_node_id)
+      if (list) list.push(edge.from_node_id)
+      else incomingByID.set(edge.to_node_id, [edge.from_node_id])
+    }
+
+    const wfRev = props.snapshot.workflow.graph_rev
+    for (const node of allNodes) {
+      if (hasOutgoing.has(node.id)) continue
+      const parents = incomingByID.get(node.id) ?? []
+      if (parents.length < 2) continue
+      const distinctLanes = new Set<number>()
+      for (const p of parents) {
+        const li = laneOf.get(p)
+        if (li !== undefined) distinctLanes.add(li)
+      }
+      if (distinctLanes.size < 2) continue
+      const startRev = node.graph_rev_at_start
+      const stale = typeof startRev === "number" && typeof wfRev === "number" && startRev < wfRev
+      return {
+        id: node.id,
+        title: node.title,
+        type: nodeKind(node) === "build" ? "build-flash" : (nodeKind(node) as "coding" | "debug" | "deploy"),
+        status: tone(node.status),
+        session: node.session_id ?? props.snapshot.workflow.session_id,
+        stale,
+      }
+    }
+    return undefined
   })
   const detailsWithPlan = createMemo<WorkflowAppProps["details"]>(() => {
     const base = details()
@@ -2302,24 +2490,20 @@ export function WorkflowRuntimePanel(props: {
     const id = sessionID(node)
     const dir = sdk.directory ? base64Encode(sdk.directory) : params.dir
     if (!id || !dir) return
-    const href = `/${dir}/session/${id}/refiner`
-    if (typeof window === "object") {
-      window.location.assign(href)
-      return
-    }
-    navigate(href)
+    // SPA navigation preserves history so the user's "back" button returns to
+    // the workflow view. Previous code used `window.location.assign` which
+    // triggered a full page load and broke the SPA history stack — going back
+    // would surface the legacy opencode shell instead of the new workflow.
+    navigate(`/${dir}/session/${id}/refiner`)
   }
 
   const openRetrieve = (node?: string) => {
     const id = sessionID(node)
     const dir = sdk.directory ? base64Encode(sdk.directory) : params.dir
     if (!id || !dir) return
-    const href = `/${dir}/session/${id}/retrieve`
-    if (typeof window === "object") {
-      window.location.assign(href)
-      return
-    }
-    navigate(href)
+    // See `openRefiner` above — keep this on the SPA navigator for the same
+    // reason (back-button history preservation).
+    navigate(`/${dir}/session/${id}/retrieve`)
   }
 
   const send = (text: string, node?: string) => {
@@ -2342,6 +2526,38 @@ export function WorkflowRuntimePanel(props: {
         : undefined
     const variant = info?.model?.variant ?? rootVariant
     if (!body || !id || !agent) return
+
+    // Mirror the legacy chat composer (`packages/app/src/components/prompt-input/submit.ts`,
+    // slash-command branch around line 455): if the user typed a `/foo …` that
+    // matches a configured custom command (`sync.data.command`), dispatch via
+    // `client.session.command(...)` instead of `promptAsync(...)`. Without this
+    // the workflow panel's `send` would post the literal "/foo …" as plain
+    // user text and the server would never expand it as a command.
+    if (body.startsWith("/")) {
+      const [cmdName, ...args] = body.split(" ")
+      const commandName = cmdName.slice(1)
+      const customCommand = sync.data.command.find((c) => c.name === commandName)
+      if (customCommand) {
+        const modelString = model ? `${model.providerID}/${model.modelID}` : undefined
+        if (!modelString) return
+        void sdk.client.session
+          .command({
+            sessionID: id,
+            directory: sdk.directory,
+            command: commandName,
+            arguments: args.join(" "),
+            agent,
+            model: modelString,
+            variant,
+          })
+          .then(() => {
+            void sync.session.sync(id, { force: true })
+          })
+          .catch(() => undefined)
+        return
+      }
+    }
+
     const msg = Identifier.ascending("message")
     const part = Identifier.ascending("part")
     const run = async () => {
@@ -2624,6 +2840,22 @@ export function WorkflowRuntimePanel(props: {
   })
 
   // Inject pending questions/permissions into root chat as virtual messages
+  // Server-side custom slash commands surfaced into the chat-panel palette.
+  // The `sync.data.command` array is populated by `Config.command` from
+  // `{command,commands}/**/*.md` files (see `packages/opencode/src/config/command.ts`).
+  // Without this wiring users see only the built-ins (`/undo`, `/redo`, ...)
+  // and project-defined commands like `/tmp`, `/notrack` are invisible.
+  const chatExtraCommands = createMemo<WorkflowAppProps["chatExtraCommands"]>(() =>
+    (sync.data.command ?? []).map((cmd) => ({
+      id: `srv-${cmd.name}`,
+      trigger: cmd.name,
+      title: `/${cmd.name}`,
+      description: cmd.description ?? "",
+      category: "session" as const,
+      action: "send" as const,
+    })),
+  )
+
   const chatsWithDialogs = createMemo<WorkflowAppProps["chats"]>(() => {
     const base = chats()
     const rid = rootID()
@@ -2742,11 +2974,13 @@ export function WorkflowRuntimePanel(props: {
         pick: pick(),
         nodes: canvas(),
         chains: chainData(),
+        chainTail: chainTail(),
         details: detailsWithPlan(),
         flow: flow(),
         agents: agents(),
         tokenStats: tokenStats(),
         chats: chatsWithDialogs(),
+        chatExtraCommands: chatExtraCommands(),
         sandTables: sandTables(),
         onSession: openSession,
         onRefiner: openRefiner,

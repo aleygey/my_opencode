@@ -35,6 +35,12 @@ export interface RootAgent {
 interface WorkflowCanvasProps {
   root?: RootAgent
   chains: CanvasChain[]
+  /** Optional merge-tail node — rendered after the lanes with a converging
+   * connector. Surfaced when the underlying graph fans multiple lanes back
+   * into a single follow-up node (e.g. plan → [build, test, lint] → deploy).
+   * Without this, sibling lanes ended mid-air with no visual cue that they
+   * actually re-converge in the workflow logic. */
+  tail?: Node
   selectedNodeId: string | null
   onNodeSelect: (id: string) => void
   onNodeOpen?: (id: string) => void
@@ -388,6 +394,182 @@ function BranchConnector({ count, status }: { count: number; status: 'running' |
   )
 }
 
+/* ── Merge connector: multiple lanes → one tail node (mirror of BranchConnector) ── */
+function MergeConnector({ count, status }: { count: number; status: NodeStatus }) {
+  const active = status === 'completed' || status === 'running'
+  const flowing = status === 'running'
+  const upsRef = useRef<HTMLDivElement>(null)
+  const [barGeom, setBarGeom] = useState<{ left: number; width: number; centers: number[] } | null>(null)
+
+  useEffect(() => {
+    const el = upsRef.current
+    if (!el || count < 2) return
+    const measure = () => {
+      const items = Array.from(el.querySelectorAll<HTMLElement>('.wf-branch-drop'))
+      if (items.length < 2) return
+      const parentRect = el.getBoundingClientRect()
+      const centers = items.map((item) => item.getBoundingClientRect().left + item.getBoundingClientRect().width / 2 - parentRect.left)
+      setBarGeom({ left: centers[0], width: centers[centers.length - 1] - centers[0], centers })
+    }
+    measure()
+    const obs = new ResizeObserver(measure)
+    obs.observe(el)
+    return () => obs.disconnect()
+  }, [count])
+
+  if (count <= 1) {
+    return <EdgeLine active={active} flowing={flowing} height={40} glow={flowing} />
+  }
+
+  const upH = 24
+  const trunkH = 28
+  const stroke = active ? 'var(--wf-ok)' : 'var(--wf-line-strong)'
+  const sw = active ? 2 : 1
+  const dashStyle = active ? 'none' : '4 5'
+
+  return (
+    <div className="wf-branch-system">
+      {/* ① Per-lane vertical drops going UP from each lane tail (visually identical
+            to BranchConnector ③ but rendered first so the geometry funnels in). */}
+      <div ref={upsRef} className="wf-branch-drops" style={{ display: 'flex', gap: 16, position: 'relative' }}>
+        {barGeom && (
+          <>
+            {active && (
+              <div
+                style={{
+                  position: 'absolute',
+                  bottom: -1,
+                  zIndex: 1,
+                  left: barGeom.left - 1,
+                  width: barGeom.width + 2,
+                  height: 4,
+                  background: 'var(--wf-ok)',
+                  opacity: 0.06,
+                  borderRadius: 2,
+                }}
+              />
+            )}
+            <svg
+              style={{
+                position: 'absolute',
+                bottom: 0,
+                left: barGeom.left,
+                zIndex: 2,
+                width: barGeom.width,
+                height: 2,
+                overflow: 'visible',
+              }}
+              fill="none"
+            >
+              <line
+                x1="0"
+                y1="1"
+                x2={barGeom.width}
+                y2="1"
+                stroke={stroke}
+                strokeWidth={sw}
+                strokeDasharray={dashStyle}
+                strokeLinecap="round"
+              />
+              {flowing && (
+                <>
+                  <circle r="2.5" fill="var(--wf-ok)" opacity="0.85">
+                    <animateMotion dur="1s" repeatCount="indefinite" path={`M0,1 L${barGeom.width},1`} />
+                  </circle>
+                </>
+              )}
+            </svg>
+            {barGeom.centers.map((cx, i) => (
+              <div
+                key={`mdot-${i}`}
+                style={{
+                  position: 'absolute',
+                  bottom: -3,
+                  left: cx - 3.5,
+                  zIndex: 3,
+                  width: 7,
+                  height: 7,
+                  borderRadius: '50%',
+                  background: active ? 'var(--wf-ok)' : 'var(--wf-line-strong)',
+                  boxShadow: active ? '0 0 8px rgba(77,158,138,0.35)' : 'none',
+                  transition: 'box-shadow 0.3s ease',
+                }}
+              />
+            ))}
+          </>
+        )}
+        {Array.from({ length: count }).map((_, i) => (
+          <div key={i} className="wf-branch-drop" style={{ flex: 1, display: 'flex', justifyContent: 'center' }}>
+            <div className="wf-edge" style={{ height: upH }}>
+              <svg width="6" height={upH} fill="none">
+                {active && <line x1="3" y1="0" x2="3" y2={upH} stroke="var(--wf-ok)" strokeWidth="4" opacity="0.06" />}
+                <line
+                  x1="3"
+                  y1="0"
+                  x2="3"
+                  y2={upH}
+                  stroke={stroke}
+                  strokeWidth={sw}
+                  strokeDasharray={dashStyle}
+                  strokeLinecap="round"
+                />
+              </svg>
+              {flowing && (
+                <svg className="absolute inset-0 pointer-events-none" width="6" height={upH} fill="none">
+                  <circle r="2" fill="var(--wf-ok)" opacity="0.8">
+                    <animateMotion dur="0.5s" repeatCount="indefinite" path={`M3,${upH} L3,0`} />
+                  </circle>
+                </svg>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* ② Junction diamond at the merge point. */}
+      <div style={{ display: 'flex', justifyContent: 'center', height: 0, position: 'relative', zIndex: 3 }}>
+        <div
+          className={`wf-junction-diamond ${flowing ? 'wf-junction-diamond--active' : ''}`}
+          style={{
+            width: 10,
+            height: 10,
+            background: active ? 'var(--wf-ok)' : 'var(--wf-line-strong)',
+            transform: 'translateY(-5px) rotate(45deg)',
+            borderRadius: 2,
+            boxShadow: active ? '0 0 10px rgba(77,158,138,0.35), 0 0 20px rgba(77,158,138,0.12)' : 'none',
+          }}
+        />
+      </div>
+
+      {/* ③ Vertical trunk from junction down to the tail node. */}
+      <div style={{ display: 'flex', justifyContent: 'center' }}>
+        <div className="wf-edge" style={{ height: trunkH, position: 'relative' }}>
+          <svg width="6" height={trunkH} fill="none">
+            {active && <line x1="3" y1="0" x2="3" y2={trunkH} stroke="var(--wf-ok)" strokeWidth="4" opacity="0.06" />}
+            <line
+              x1="3"
+              y1="0"
+              x2="3"
+              y2={trunkH}
+              stroke={stroke}
+              strokeWidth={sw}
+              strokeDasharray={dashStyle}
+              strokeLinecap="round"
+            />
+          </svg>
+          {flowing && (
+            <svg className="absolute inset-0 pointer-events-none" width="6" height={trunkH} fill="none">
+              <circle r="2.5" fill="var(--wf-ok)" opacity="0.85">
+                <animateMotion dur="0.7s" repeatCount="indefinite" path={`M3,0 L3,${trunkH}`} />
+              </circle>
+            </svg>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /* ── Connector between sub-nodes ── */
 function Connector({ from, to }: { from: NodeStatus; to: NodeStatus }) {
   const done = from === 'completed'
@@ -494,7 +676,7 @@ function ChainLane({
   )
 }
 
-export function WorkflowCanvas({ root, chains, selectedNodeId, onNodeSelect, onNodeOpen, onRootClick }: WorkflowCanvasProps) {
+export function WorkflowCanvas({ root, chains, tail, selectedNodeId, onNodeSelect, onNodeOpen, onRootClick }: WorkflowCanvasProps) {
   const canvas = useCanvas()
   const containerRef = useRef<HTMLDivElement>(null)
   const isMulti = chains.length > 1
@@ -581,6 +763,25 @@ export function WorkflowCanvas({ root, chains, selectedNodeId, onNodeSelect, onN
                 isOnly={true}
               />
             )
+          )}
+
+          {/* Merge tail — single node downstream of all lanes (e.g. a "deploy"
+              that depends on every parallel "build/test/lint" branch). When
+              present, render a converging connector between the lanes and
+              this card so the user can see the fan-in. */}
+          {tail && isMulti && (
+            <>
+              <MergeConnector count={chains.length} status={tail.status} />
+              <div className="wf-canvas-row wf-slide-up">
+                <WorkflowNode
+                  {...tail}
+                  isSelected={selectedNodeId === tail.id}
+                  onClick={() => onNodeSelect(tail.id)}
+                  onDoubleClick={() => onNodeOpen?.(tail.id)}
+                  onArrowClick={() => onNodeOpen?.(tail.id)}
+                />
+              </div>
+            </>
           )}
         </div>
       </div>
