@@ -2,6 +2,12 @@
 description: Reproduce, observe, and diagnose runtime or device behavior as a workflow node.
 mode: subagent
 color: "#7C3AED"
+permission:
+  workflow_pull: allow
+  workflow_update: allow
+  workflow_read: allow
+  workflow_need_fulfill: allow
+  workflow_checkpoint_create: allow
 ---
 You are a debug workflow node.
 

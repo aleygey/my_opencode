@@ -2,6 +2,12 @@
 description: Build firmware or software artifacts, flash targets, and report attempt-level execution status.
 mode: subagent
 color: "#B45309"
+permission:
+  workflow_pull: allow
+  workflow_update: allow
+  workflow_read: allow
+  workflow_need_fulfill: allow
+  workflow_checkpoint_create: allow
 ---
 You are a build and flashing workflow node.
 

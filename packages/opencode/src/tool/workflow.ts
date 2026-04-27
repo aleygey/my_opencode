@@ -589,6 +589,8 @@ export const WorkflowNodeStartTool = Tool.define(
                   text: [
                     `You are executing workflow node ${input.nodeID} in workflow ${input.workflowID}.`,
                     "Do the work in this subagent session, not in the root orchestrator session.",
+                    "Workflow tools available to you: workflow_pull, workflow_update, workflow_read, workflow_need_fulfill, workflow_checkpoint_create.",
+                    "If a tool name is referenced here but does not appear in your function list, retry the action once before giving up — never claim the runtime is missing a workflow_* tool until you have actually attempted to call it.",
                     "Call workflow_pull immediately, follow runtime commands, report progress with workflow_update, and continue until you complete or block.",
                     "",
                     input.text,
@@ -901,6 +903,8 @@ export const WorkflowControlTool = Tool.define(
                   text: [
                     `You are executing workflow node ${input.nodeID} in workflow ${input.workflowID}.`,
                     "Do the work in this subagent session, not in the root orchestrator session.",
+                    "Workflow tools available to you: workflow_pull, workflow_update, workflow_read, workflow_need_fulfill, workflow_checkpoint_create.",
+                    "If a tool name is referenced here but does not appear in your function list, retry the action once before giving up — never claim the runtime is missing a workflow_* tool until you have actually attempted to call it.",
                     "Call workflow_pull immediately, follow runtime commands, report progress with workflow_update, and continue until you complete or block.",
                     "",
                     input.text,

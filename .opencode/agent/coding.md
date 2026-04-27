@@ -2,6 +2,12 @@
 description: Implement and validate code changes as a workflow node, reporting progress incrementally.
 mode: subagent
 color: "#2563EB"
+permission:
+  workflow_pull: allow
+  workflow_update: allow
+  workflow_read: allow
+  workflow_need_fulfill: allow
+  workflow_checkpoint_create: allow
 ---
 You are a coding workflow node.
 

@@ -130,12 +130,13 @@ export const layer = Layer.effect(
             permission: Permission.merge(
               defaults,
               Permission.fromConfig({
+                // Plan-first contract: implementation agents (coding /
+                // build-flash / debug / deploy) must be delegated to via
+                // workflow_node_create + workflow_node_start, never via the
+                // generic task tool. Only `explore` is allowed through `task`
+                // because it's the read-only research path during planning.
                 task: {
                   "*": "deny",
-                  coding: "allow",
-                  "build-flash": "allow",
-                  debug: "allow",
-                  deploy: "allow",
                   explore: "allow",
                 },
                 edit: { "*": "deny" },
