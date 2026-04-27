@@ -13,6 +13,12 @@ interface WorkflowNodeProps {
   session: string
   progress?: number
   summary?: string[]
+  /**
+   * True when the node was launched against an older graph revision than the
+   * current workflow.graph_rev — a downstream edit may have invalidated its
+   * inputs. Surfaced as a small "stale" badge.
+   */
+  stale?: boolean
   isSelected: boolean
   onClick: () => void
   onDoubleClick?: () => void
@@ -35,7 +41,7 @@ const statusAccent: Record<NodeStatus, string> = {
   paused:    'var(--wf-warn)',
 }
 
-export function WorkflowNode({ title, type, status, progress, summary, isSelected, onClick, onDoubleClick, onArrowClick }: WorkflowNodeProps) {
+export function WorkflowNode({ title, type, status, progress, summary, stale, isSelected, onClick, onDoubleClick, onArrowClick }: WorkflowNodeProps) {
   const run = status === 'running'
   const done = status === 'completed'
   const fail = status === 'failed'
@@ -74,6 +80,18 @@ export function WorkflowNode({ title, type, status, progress, summary, isSelecte
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <h3 className="truncate text-[12.5px] font-semibold leading-5 tracking-[-0.01em] text-[var(--wf-ink)]">{title}</h3>
+            {stale && (
+              <span
+                title="Graph was edited after this node started — its inputs may be out of date."
+                className="inline-flex flex-shrink-0 items-center rounded-full px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide"
+                style={{
+                  background: 'color-mix(in srgb, var(--wf-warn) 14%, transparent)',
+                  color: 'var(--wf-warn)',
+                }}
+              >
+                stale
+              </span>
+            )}
           </div>
           <div className="mt-0.5 flex items-center gap-2 text-[10.5px]">
             <span

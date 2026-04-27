@@ -256,8 +256,17 @@ import type {
   WorkflowDiffResponses,
   WorkflowEdgeCreateErrors,
   WorkflowEdgeCreateResponses,
+  WorkflowEditApplyErrors,
+  WorkflowEditApplyResponses,
+  WorkflowEditProposeErrors,
+  WorkflowEditProposeResponses,
+  WorkflowEditRejectErrors,
+  WorkflowEditRejectResponses,
+  WorkflowFinalizeErrors,
+  WorkflowFinalizeResponses,
   WorkflowGetErrors,
   WorkflowGetResponses,
+  WorkflowInputPort,
   WorkflowNodeAbortErrors,
   WorkflowNodeAbortResponses,
   WorkflowNodeCodeChangesErrors,
@@ -270,12 +279,17 @@ import type {
   WorkflowNodePullResponses,
   WorkflowNodeUpdateErrors,
   WorkflowNodeUpdateResponses,
+  WorkflowOutputPort,
   WorkflowReadErrors,
   WorkflowReadResponses,
+  WorkflowResourcesUpdateErrors,
+  WorkflowResourcesUpdateResponses,
   WorkflowSandTableGetErrors,
   WorkflowSandTableGetResponses,
   WorkflowSandTableMessageErrors,
   WorkflowSandTableMessageResponses,
+  WorkflowScanReadyErrors,
+  WorkflowScanReadyResponses,
   WorkflowSessionErrors,
   WorkflowSessionResponses,
   WorkflowSummary,
@@ -5923,6 +5937,9 @@ export class Edge2 extends HeyApiClient {
       config?: {
         [key: string]: unknown
       }
+      from_port?: string
+      to_port?: string
+      required?: boolean
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -5938,6 +5955,9 @@ export class Edge2 extends HeyApiClient {
             { in: "body", key: "to_node_id" },
             { in: "body", key: "label" },
             { in: "body", key: "config" },
+            { in: "body", key: "from_port" },
+            { in: "body", key: "to_port" },
+            { in: "body", key: "required" },
           ],
         },
       ],
@@ -5999,6 +6019,271 @@ export class Checkpoint extends HeyApiClient {
       ThrowOnError
     >({
       url: "/workflow/{workflowID}/checkpoint",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
+export class Edit extends HeyApiClient {
+  /**
+   * Propose workflow graph edit
+   *
+   * Stage a batched graph mutation as a `workflow_edit` row in `pending` status. Does NOT mutate the graph; a follow-up call to `/edits/:editID/apply` runs the reconciler under optimistic concurrency. Master-only in practice — slaves should never call this.
+   */
+  public propose<ThrowOnError extends boolean = false>(
+    parameters: {
+      workflowID: string
+      directory?: string
+      workspace?: string
+      proposer_session_id?: string
+      ops?: Array<
+        | {
+            kind: "INSERT_NODE"
+            node: {
+              id?: string
+              session_id?: string
+              title: string
+              agent: string
+              model?: {
+                providerID?: string
+                modelID?: string
+                variant?: string
+              }
+              config?: {
+                [key: string]: unknown
+              }
+              input_ports?: Array<WorkflowInputPort>
+              output_ports?: Array<WorkflowOutputPort>
+              max_attempts?: number
+              max_actions?: number
+              position?: number
+              priority?: number
+              holds_resources?: Array<string>
+            }
+          }
+        | {
+            kind: "REPLACE_NODE"
+            node_id: string
+            node: {
+              id?: string
+              session_id?: string
+              title: string
+              agent: string
+              model?: {
+                providerID?: string
+                modelID?: string
+                variant?: string
+              }
+              config?: {
+                [key: string]: unknown
+              }
+              input_ports?: Array<WorkflowInputPort>
+              output_ports?: Array<WorkflowOutputPort>
+              max_attempts?: number
+              max_actions?: number
+              position?: number
+              priority?: number
+              holds_resources?: Array<string>
+            }
+          }
+        | {
+            kind: "MODIFY_NODE"
+            node_id: string
+            patch: {
+              title?: string
+              agent?: string
+              model?: {
+                providerID?: string
+                modelID?: string
+                variant?: string
+              }
+              config?: {
+                [key: string]: unknown
+              }
+              input_ports?: Array<WorkflowInputPort>
+              output_ports?: Array<WorkflowOutputPort>
+              max_attempts?: number
+              max_actions?: number
+              position?: number
+              priority?: number
+              holds_resources?: Array<string>
+            }
+          }
+        | {
+            kind: "DELETE_NODE"
+            node_id: string
+          }
+        | {
+            kind: "INSERT_EDGE"
+            edge: {
+              id?: string
+              from_node_id: string
+              to_node_id: string
+              label?: string
+              config?: {
+                [key: string]: unknown
+              }
+              from_port?: string
+              to_port?: string
+              required?: boolean
+            }
+          }
+        | {
+            kind: "DELETE_EDGE"
+            edge_id: string
+          }
+      >
+      reason?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "workflowID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "proposer_session_id" },
+            { in: "body", key: "ops" },
+            { in: "body", key: "reason" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<WorkflowEditProposeResponses, WorkflowEditProposeErrors, ThrowOnError>(
+      {
+        url: "/workflow/{workflowID}/edits/propose",
+        ...options,
+        ...params,
+        headers: {
+          "Content-Type": "application/json",
+          ...options?.headers,
+          ...params.headers,
+        },
+      },
+    )
+  }
+
+  /**
+   * Apply workflow graph edit
+   *
+   * Run the reconciler for a `pending` edit: re-validate ops, re-check `graph_rev_before` against the live workflow, then atomically replay ops + bump `graph_rev`. Throws on stale base_rev (master must reject and re-propose).
+   */
+  public apply<ThrowOnError extends boolean = false>(
+    parameters: {
+      editID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "editID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<WorkflowEditApplyResponses, WorkflowEditApplyErrors, ThrowOnError>({
+      url: "/workflow/edits/{editID}/apply",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Reject workflow graph edit
+   *
+   * Mark a `pending` edit as `rejected` with an audit reason. Idempotent on already-rejected rows; refuses already-applied / superseded edits.
+   */
+  public reject<ThrowOnError extends boolean = false>(
+    parameters: {
+      editID: string
+      directory?: string
+      workspace?: string
+      reject_reason?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "editID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "reject_reason" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<WorkflowEditRejectResponses, WorkflowEditRejectErrors, ThrowOnError>({
+      url: "/workflow/edits/{editID}/reject",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
+export class Resources extends HeyApiClient {
+  /**
+   * Update workflow resource holds
+   *
+   * Acquire / release exclusive resource keys against the workflow's `resources_held` ledger. Bumps `version` but NOT `graph_rev` — resource churn isn't a topology change. Returns the conflict-free delta the runtime committed.
+   */
+  public update<ThrowOnError extends boolean = false>(
+    parameters: {
+      workflowID: string
+      directory?: string
+      workspace?: string
+      acquire?: {
+        [key: string]: string
+      }
+      release?: Array<string>
+      force?: boolean
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "workflowID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "acquire" },
+            { in: "body", key: "release" },
+            { in: "body", key: "force" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      WorkflowResourcesUpdateResponses,
+      WorkflowResourcesUpdateErrors,
+      ThrowOnError
+    >({
+      url: "/workflow/{workflowID}/resources",
       ...options,
       ...params,
       headers: {
@@ -6272,6 +6557,85 @@ export class Workflow extends HeyApiClient {
   }
 
   /**
+   * Scan ready workflow nodes
+   *
+   * Return the master's scheduling view: ranked ready candidates plus nodes blocked by dependency / resource. The runtime never starts nodes itself — the master reads this view and dispatches via `workflow_graph_propose(SET_NODE_STATUS=running, ...)`.
+   */
+  public scanReady<ThrowOnError extends boolean = false>(
+    parameters: {
+      workflowID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "workflowID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<WorkflowScanReadyResponses, WorkflowScanReadyErrors, ThrowOnError>({
+      url: "/workflow/{workflowID}/scan_ready",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Finalize workflow
+   *
+   * Flip the workflow to a terminal status (`completed` / `failed` / `cancelled`), record `result_json`, stamp `time_completed`. Refuses while child nodes are still active unless `force: true`.
+   */
+  public finalize<ThrowOnError extends boolean = false>(
+    parameters: {
+      workflowID: string
+      directory?: string
+      workspace?: string
+      status?: "completed" | "failed" | "cancelled"
+      result_json?: {
+        [key: string]: unknown
+      }
+      fail_reason?: string
+      force?: boolean
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "workflowID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "status" },
+            { in: "body", key: "result_json" },
+            { in: "body", key: "fail_reason" },
+            { in: "body", key: "force" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<WorkflowFinalizeResponses, WorkflowFinalizeErrors, ThrowOnError>({
+      url: "/workflow/{workflowID}/finalize",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
    * Control workflow node
    */
   public control<ThrowOnError extends boolean = false>(
@@ -6338,6 +6702,16 @@ export class Workflow extends HeyApiClient {
   private _checkpoint?: Checkpoint
   get checkpoint(): Checkpoint {
     return (this._checkpoint ??= new Checkpoint({ client: this.client }))
+  }
+
+  private _edit?: Edit
+  get edit(): Edit {
+    return (this._edit ??= new Edit({ client: this.client }))
+  }
+
+  private _resources?: Resources
+  get resources(): Resources {
+    return (this._resources ??= new Resources({ client: this.client }))
   }
 }
 

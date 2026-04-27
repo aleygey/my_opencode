@@ -326,7 +326,15 @@ export const WorkflowGraphProposeTool = Tool.define(
   Effect.gen(function* () {
     return {
       description:
-        "Master-only. Propose a batched, multi-op graph edit (INSERT_NODE / REPLACE_NODE / MODIFY_NODE / DELETE_NODE / INSERT_EDGE / DELETE_EDGE). Returns an edit_id. Call workflow_graph_apply with the edit_id to commit, or workflow_graph_reject to discard.",
+        "Master-only. Propose a batched, multi-op graph edit. Returns an edit_id; call workflow_graph_apply to commit (atomic) or workflow_graph_reject to discard. " +
+        "Ops are a discriminated union by `kind` — IMPORTANT: node/edge fields are NESTED inside `node` / `edge`, they are NOT flat siblings of `kind`. " +
+        'Example payload — ops=[' +
+        '{"kind":"INSERT_NODE","node":{"title":"build firmware","agent":"build-flash"}},' +
+        '{"kind":"INSERT_EDGE","edge":{"from_node_id":"<id1>","to_node_id":"<id2>","label":"depends_on"}},' +
+        '{"kind":"MODIFY_NODE","node_id":"<id3>","patch":{"max_attempts":2}},' +
+        '{"kind":"DELETE_EDGE","edge_id":"<id4>"}' +
+        "]. " +
+        "All op kinds: INSERT_NODE (node), REPLACE_NODE (node_id + node), MODIFY_NODE (node_id + patch), DELETE_NODE (node_id), INSERT_EDGE (edge), DELETE_EDGE (edge_id).",
       parameters: WorkflowGraphProposeParameters,
       execute: (input: z.infer<typeof WorkflowGraphProposeParameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {

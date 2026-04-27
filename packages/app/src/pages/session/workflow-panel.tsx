@@ -1349,7 +1349,8 @@ export function createWorkflowRuntime(props?: { session?: () => string | undefin
           data.nodes.length > 0 ||
           data.edges.length > 0 ||
           data.checkpoints.length > 0 ||
-          data.events.length > 0
+          data.events.length > 0 ||
+          (data.edits?.length ?? 0) > 0
         if (data.workflow) setStore("snapshot", "workflow", data.workflow)
         if (data.runtime) setStore("snapshot", "runtime", data.runtime)
         if (data.nodes.length > 0) setStore("snapshot", "nodes", (list) => mergeNodes(list ?? [], data.nodes))
@@ -1357,6 +1358,21 @@ export function createWorkflowRuntime(props?: { session?: () => string | undefin
         if (data.checkpoints.length > 0) setStore("snapshot", "checkpoints", data.checkpoints)
         if (data.events.length > 0) {
           setStore("snapshot", "events", (list) => [...(list ?? []), ...data.events].slice(-160))
+        }
+        // P3 — merge graph-edit deltas. Server returns the delta slice
+        // (newly proposed + recently applied/rejected); we fold by id so
+        // status transitions from `pending → applied` overwrite cleanly.
+        if (data.edits && data.edits.length > 0) {
+          setStore("snapshot", "edits", (list) => {
+            const map = new Map((list ?? []).map((edit) => [edit.id, edit] as const))
+            for (const edit of data.edits!) map.set(edit.id, edit)
+            // Cap retained edits to keep the queue bounded — applied/rejected
+            // entries older than the most recent 60 are dropped (they remain
+            // on the server for audit; the panel just doesn't need them).
+            return [...map.values()]
+              .sort((a, b) => b.time.created - a.time.created)
+              .slice(0, 60)
+          })
         }
         setStore("cursor", data.cursor)
         return changed
@@ -1504,15 +1520,50 @@ export function WorkflowContextBar(props: { snapshot: WorkflowSnapshot; currentS
     if (!params.dir || !sessionID) return undefined
     return `/${params.dir}/session/${sessionID}/refiner`
   })
+  // P3 — count pending graph edits so the master can see proposals queued by
+  // peers (or by itself before commit) without expanding the runtime panel.
+  const pendingEdits = createMemo(
+    () => (props.snapshot.edits ?? []).filter((edit) => edit.status === "pending").length,
+  )
+  // P1/P5 — show graph_rev and any terminal status when the workflow is no
+  // longer active. Both are silent when not applicable (graph_rev undefined
+  // on legacy data; status === "active" is the implicit norm).
+  const graphRev = createMemo(() => props.snapshot.workflow.graph_rev)
+  const wfStatus = createMemo(() => props.snapshot.workflow.status)
   return (
     <div class="px-4 pt-3">
       <div class="rounded-[22px] border border-white/70 bg-white/78 px-4 py-4 shadow-[0_16px_40px_rgba(15,23,42,0.05)]">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div class="flex min-w-0 flex-wrap items-center gap-2">
-            <Pill status={node()?.status ?? props.snapshot.workflow.status} />
+            <Pill status={node()?.status ?? wfStatus()} />
             <div class="text-[16px] font-semibold tracking-[-0.02em] text-slate-950">
               {node()?.title ?? props.snapshot.workflow.title}
             </div>
+            <Show when={typeof graphRev() === "number"}>
+              <span
+                title="Workflow graph revision (bumps on every applied topology change)"
+                class="inline-flex h-6 items-center rounded-full border border-slate-200 bg-slate-50 px-2 font-mono text-[11px] text-slate-600"
+              >
+                rev #{graphRev()}
+              </span>
+            </Show>
+            <Show when={pendingEdits() > 0}>
+              <span
+                title="Pending graph-edit proposals awaiting apply / reject"
+                class="inline-flex h-6 items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 text-[11px] font-medium text-amber-700"
+              >
+                <span class="size-1.5 rounded-full bg-amber-500" />
+                {pendingEdits()} pending edit{pendingEdits() === 1 ? "" : "s"}
+              </span>
+            </Show>
+            <Show when={["completed", "failed", "cancelled"].includes(wfStatus())}>
+              <span
+                title="Workflow finalized — further graph writes are rejected"
+                class="inline-flex h-6 items-center rounded-full border border-slate-300 bg-white px-2 text-[11px] font-medium text-slate-600"
+              >
+                finalized · {wfStatus()}
+              </span>
+            </Show>
           </div>
           <Show when={refinerHref()}>
             {(href) => (
@@ -1834,13 +1885,20 @@ export function WorkflowRuntimePanel(props: {
     onCleanup(() => clearInterval(timer))
   })
   const chainData = createMemo<WorkflowAppProps["chains"] | undefined>(() => {
-    const execution = nodes().map((node) => ({
-      id: node.id,
-      title: node.title,
-      type: nodeKind(node) === "build" ? "build-flash" : (nodeKind(node) as "coding" | "debug" | "deploy"),
-      status: tone(node.status),
-      session: node.session_id ?? props.snapshot.workflow.session_id,
-    }))
+    const wfRev = props.snapshot.workflow.graph_rev
+    const execution = nodes().map((node) => {
+      const startRev = node.graph_rev_at_start
+      const stale =
+        typeof startRev === "number" && typeof wfRev === "number" && startRev < wfRev
+      return {
+        id: node.id,
+        title: node.title,
+        type: nodeKind(node) === "build" ? "build-flash" : (nodeKind(node) as "coding" | "debug" | "deploy"),
+        status: tone(node.status),
+        session: node.session_id ?? props.snapshot.workflow.session_id,
+        stale,
+      }
+    })
     const plan = sandPlan()
     if (!plan && execution.length === 0) return undefined
     // Plan and execution belong to a single task — render them as ONE chain so
@@ -1969,16 +2027,26 @@ export function WorkflowRuntimePanel(props: {
       nodeIDs: (byAgent.get(node.agent) ?? [node]).map((n) => n.id),
     }))
   })
-  const canvas = createMemo<WorkflowAppProps["nodes"]>(() =>
-    nodes().map((node) => ({
-      id: node.id,
-      title: node.title,
-      type: nodeKind(node) === "build" ? "build-flash" : (nodeKind(node) as "coding" | "debug" | "deploy"),
-      status: tone(node.status),
-      session: node.session_id ?? props.snapshot.workflow.session_id,
-      summary: modelReady(node) ? [modelLabel(node)] : ["route model"],
-    })),
-  )
+  const canvas = createMemo<WorkflowAppProps["nodes"]>(() => {
+    const wfRev = props.snapshot.workflow.graph_rev
+    return nodes().map((node) => {
+      // P5 — a node is "stale" when it started against an older graph_rev than
+      // the workflow's current revision. A subsequent edit may have invalidated
+      // its inputs, so we surface a small badge in the canvas.
+      const startRev = node.graph_rev_at_start
+      const stale =
+        typeof startRev === "number" && typeof wfRev === "number" && startRev < wfRev
+      return {
+        id: node.id,
+        title: node.title,
+        type: nodeKind(node) === "build" ? "build-flash" : (nodeKind(node) as "coding" | "debug" | "deploy"),
+        status: tone(node.status),
+        session: node.session_id ?? props.snapshot.workflow.session_id,
+        summary: modelReady(node) ? [modelLabel(node)] : ["route model"],
+        stale,
+      }
+    })
+  })
 
   const unroutedNodes = createMemo(() => nodes().filter((node) => !modelReady(node)))
 
@@ -2565,6 +2633,40 @@ export function WorkflowRuntimePanel(props: {
         historyLoading: sync.session.history.loading(rootID()),
         onLoadMoreHistory: () => {
           void sync.session.history.loadMore(rootID()).catch(() => undefined)
+        },
+        // P1/P3/P5 — dynamic-graph wire-up. We forward the raw edits list
+        // (the React app will filter to `pending` for the chip count) plus
+        // the workflow-level rev / finalised status. Action callbacks hit
+        // the new HTTP routes added in P3-P5; they're best-effort and
+        // surface failures to the console — the panel's polling loop will
+        // re-sync the edit row's status on the next read() tick anyway.
+        graphRev: props.snapshot.workflow.graph_rev,
+        pendingEdits: props.snapshot.edits as WorkflowAppProps["pendingEdits"],
+        finalizedStatus: (["completed", "failed", "cancelled"] as const).includes(
+          props.snapshot.workflow.status as "completed",
+        )
+          ? (props.snapshot.workflow.status as "completed" | "failed" | "cancelled")
+          : undefined,
+        // The runtime's bus listener auto-fires `read()` on `workflow.*`
+        // events (which `proposeEdit / applyEdit / rejectEdit / finalize`
+        // all emit), so we don't need to manually re-poll here — the
+        // panel state catches up within a tick of the server commit.
+        onApplyEdit: (editID: string) => {
+          void request(`/workflow/edits/${editID}/apply`, { method: "POST" }).catch((err) =>
+            console.error("apply edit failed", err),
+          )
+        },
+        onRejectEdit: (editID: string, reason: string) => {
+          void request(`/workflow/edits/${editID}/reject`, {
+            method: "POST",
+            body: { reject_reason: reason },
+          }).catch((err) => console.error("reject edit failed", err))
+        },
+        onFinalize: (status, failReason) => {
+          void request(`/workflow/${props.snapshot.workflow.id}/finalize`, {
+            method: "POST",
+            body: { status, fail_reason: failReason },
+          }).catch((err) => console.error("finalize workflow failed", err))
         },
       }),
     )
