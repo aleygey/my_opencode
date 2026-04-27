@@ -893,17 +893,21 @@ export function WorkflowInterface(props: {
   return (
     <ServerProvider defaultServer={props.defaultServer} servers={props.servers}>
       <ConnectionGate disableHealthCheck={props.disableHealthCheck}>
-        <GlobalSDKProvider>
-          <GlobalSyncProvider>
-            <Router root={(routerProps) => <WorkflowShellProviders>{routerProps.children}</WorkflowShellProviders>}>
-              <Route path="/:dir" component={DirectoryLayout}>
-                <Route path="/session/:id/refiner" component={RefinerRoute} />
-                <Route path="/session/:id?" component={SessionRoute} />
-              </Route>
-              <Route path="/*all" component={WorkflowScreen} />
-            </Router>
-          </GlobalSyncProvider>
-        </GlobalSDKProvider>
+        <ServerKey>
+          <QueryProvider>
+            <GlobalSDKProvider>
+              <GlobalSyncProvider>
+                <Router root={(routerProps) => <WorkflowShellProviders>{routerProps.children}</WorkflowShellProviders>}>
+                  <Route path="/:dir" component={DirectoryLayout}>
+                    <Route path="/session/:id/refiner" component={RefinerRoute} />
+                    <Route path="/session/:id?" component={SessionRoute} />
+                  </Route>
+                  <Route path="/*all" component={WorkflowScreen} />
+                </Router>
+              </GlobalSyncProvider>
+            </GlobalSDKProvider>
+          </QueryProvider>
+        </ServerKey>
       </ConnectionGate>
     </ServerProvider>
   )
