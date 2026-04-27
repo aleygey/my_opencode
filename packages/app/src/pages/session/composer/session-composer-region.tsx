@@ -1,6 +1,7 @@
-import { Show, createEffect, createMemo, onCleanup } from "solid-js"
+import { Show, createEffect, createMemo, on, onCleanup } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useNavigate } from "@solidjs/router"
+import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { useSpring } from "@opencode-ai/ui/motion-spring"
 import { PromptInput } from "@/components/prompt-input"
 import { useLanguage } from "@/context/language"
@@ -8,7 +9,7 @@ import { usePrompt } from "@/context/prompt"
 import { useSync } from "@/context/sync"
 import { getSessionHandoff, setSessionHandoff } from "@/pages/session/handoff"
 import { useSessionKey } from "@/pages/session/session-layout"
-import { SessionPermissionDock } from "@/pages/session/composer/session-permission-dock"
+import { SessionPermissionDialog } from "@/pages/session/composer/session-permission-dialog"
 import { SessionQuestionDock } from "@/pages/session/composer/session-question-dock"
 import { SessionFollowupDock } from "@/pages/session/composer/session-followup-dock"
 import { SessionRevertDock } from "@/pages/session/composer/session-revert-dock"
@@ -50,6 +51,44 @@ export function SessionComposerRegion(props: {
   const language = useLanguage()
   const route = useSessionKey()
   const sync = useSync()
+  const dialog = useDialog()
+
+  // Permission requests are surfaced as a modal dialog (matching the rest of
+  // the app's dialogs) rather than as an in-line banner above the input. The
+  // effect re-opens the dialog on every distinct request.id and closes it
+  // when the request goes away. We key on `id` so that a new request that
+  // arrives while the dialog is already open replaces its contents cleanly.
+  let lastPermissionID: string | undefined
+  createEffect(
+    on(
+      () => props.state.permissionRequest()?.id,
+      (id) => {
+        if (!id) {
+          // The request resolved (accepted/denied/timed out): close the dialog
+          // if we own it. `useDialog` is shared, so we only close when the
+          // active dialog is one we opened for the previous request.
+          if (lastPermissionID && dialog.active) dialog.close()
+          lastPermissionID = undefined
+          return
+        }
+        if (id === lastPermissionID) return
+        lastPermissionID = id
+        dialog.show(() => (
+          <SessionPermissionDialog
+            request={props.state.permissionRequest()!}
+            responding={props.state.permissionResponding()}
+            onDecide={(response) => {
+              props.onResponseSubmit()
+              props.state.decide(response)
+              // The decide() promise resolves async; rely on the outer effect
+              // (request.id → undefined) to close the dialog so the user sees
+              // the disabled-button state until the server confirms.
+            }}
+          />
+        ))
+      },
+    ),
+  )
 
   const handoffPrompt = createMemo(() => getSessionHandoff(route.sessionKey())?.prompt)
   const info = createMemo(() => (route.params.id ? sync.session.get(route.params.id) : undefined))
@@ -151,21 +190,6 @@ export function SessionComposerRegion(props: {
           {(request) => (
             <div>
               <SessionQuestionDock request={request} onSubmit={props.onResponseSubmit} />
-            </div>
-          )}
-        </Show>
-
-        <Show when={props.state.permissionRequest()} keyed>
-          {(request) => (
-            <div>
-              <SessionPermissionDock
-                request={request}
-                responding={props.state.permissionResponding()}
-                onDecide={(response) => {
-                  props.onResponseSubmit()
-                  props.state.decide(response)
-                }}
-              />
             </div>
           )}
         </Show>
