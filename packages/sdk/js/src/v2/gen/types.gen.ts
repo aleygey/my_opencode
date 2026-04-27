@@ -535,10 +535,18 @@ export type Workflow = {
   current_node_id?: string
   selected_node_id?: string
   version: number
+  graph_rev?: number
+  max_concurrent_nodes?: number
   config?: {
     [key: string]: unknown
   }
   summary?: WorkflowSummary
+  resources_held?: {
+    [key: string]: string
+  }
+  result_json?: {
+    [key: string]: unknown
+  }
   time: {
     created: number
     updated: number
@@ -561,6 +569,19 @@ export type EventWorkflowUpdated = {
   }
 }
 
+export type WorkflowInputPort = {
+  name: string
+  reducer: "single" | "last_wins" | "array_concat" | "object_deep_merge" | "custom"
+  required?: boolean
+  default?: unknown
+  description?: string
+}
+
+export type WorkflowOutputPort = {
+  name: string
+  description?: string
+}
+
 export type WorkflowNode = {
   id: string
   workflow_id: string
@@ -575,6 +596,8 @@ export type WorkflowNode = {
   config?: {
     [key: string]: unknown
   }
+  input_ports?: Array<WorkflowInputPort>
+  output_ports?: Array<WorkflowOutputPort>
   status: "pending" | "ready" | "running" | "waiting" | "paused" | "interrupted" | "completed" | "failed" | "cancelled"
   result_status: "unknown" | "success" | "fail" | "partial"
   fail_reason?: string
@@ -589,6 +612,13 @@ export type WorkflowNode = {
   result_json?: {
     [key: string]: unknown
   }
+  consumed_inputs?: {
+    [key: string]: unknown
+  }
+  stale?: boolean
+  graph_rev_at_start?: number
+  priority?: number
+  holds_resources?: Array<string>
   position: number
   time: {
     created: number
@@ -621,6 +651,9 @@ export type WorkflowEdge = {
   config?: {
     [key: string]: unknown
   }
+  from_port?: string
+  to_port?: string
+  required?: boolean
   time_created: number
 }
 
@@ -2409,6 +2442,118 @@ export type WorkflowRuntime = {
   }
 }
 
+export type WorkflowEdit = {
+  id: string
+  workflow_id: string
+  proposer_session_id?: string
+  ops: Array<
+    | {
+        kind: "INSERT_NODE"
+        node: {
+          id?: string
+          session_id?: string
+          title: string
+          agent: string
+          model?: {
+            providerID?: string
+            modelID?: string
+            variant?: string
+          }
+          config?: {
+            [key: string]: unknown
+          }
+          input_ports?: Array<WorkflowInputPort>
+          output_ports?: Array<WorkflowOutputPort>
+          max_attempts?: number
+          max_actions?: number
+          position?: number
+          priority?: number
+          holds_resources?: Array<string>
+        }
+      }
+    | {
+        kind: "REPLACE_NODE"
+        node_id: string
+        node: {
+          id?: string
+          session_id?: string
+          title: string
+          agent: string
+          model?: {
+            providerID?: string
+            modelID?: string
+            variant?: string
+          }
+          config?: {
+            [key: string]: unknown
+          }
+          input_ports?: Array<WorkflowInputPort>
+          output_ports?: Array<WorkflowOutputPort>
+          max_attempts?: number
+          max_actions?: number
+          position?: number
+          priority?: number
+          holds_resources?: Array<string>
+        }
+      }
+    | {
+        kind: "MODIFY_NODE"
+        node_id: string
+        patch: {
+          title?: string
+          agent?: string
+          model?: {
+            providerID?: string
+            modelID?: string
+            variant?: string
+          }
+          config?: {
+            [key: string]: unknown
+          }
+          input_ports?: Array<WorkflowInputPort>
+          output_ports?: Array<WorkflowOutputPort>
+          max_attempts?: number
+          max_actions?: number
+          position?: number
+          priority?: number
+          holds_resources?: Array<string>
+        }
+      }
+    | {
+        kind: "DELETE_NODE"
+        node_id: string
+      }
+    | {
+        kind: "INSERT_EDGE"
+        edge: {
+          id?: string
+          from_node_id: string
+          to_node_id: string
+          label?: string
+          config?: {
+            [key: string]: unknown
+          }
+          from_port?: string
+          to_port?: string
+          required?: boolean
+        }
+      }
+    | {
+        kind: "DELETE_EDGE"
+        edge_id: string
+      }
+  >
+  status: "pending" | "applied" | "rejected" | "superseded"
+  reason?: string
+  reject_reason?: string
+  graph_rev_before: number
+  graph_rev_after?: number
+  time: {
+    created: number
+    applied?: number
+  }
+}
+
 export type WorkflowSnapshot = {
   workflow: Workflow
   runtime: WorkflowRuntime
@@ -2416,6 +2561,7 @@ export type WorkflowSnapshot = {
   edges: Array<WorkflowEdge>
   checkpoints: Array<WorkflowCheckpoint>
   events: Array<WorkflowEvent>
+  edits?: Array<WorkflowEdit>
   cursor: number
 }
 
@@ -2426,7 +2572,48 @@ export type WorkflowReadResult = {
   edges: Array<WorkflowEdge>
   checkpoints: Array<WorkflowCheckpoint>
   events: Array<WorkflowEvent>
+  edits?: Array<WorkflowEdit>
   cursor: number
+}
+
+export type WorkflowScanReadyResult = {
+  workflow_id: string
+  max_concurrent: number
+  running_count: number
+  saturated: boolean
+  ready: Array<{
+    node_id: string
+    title: string
+    agent: string
+    priority: number
+    position: number
+    status:
+      | "pending"
+      | "ready"
+      | "running"
+      | "waiting"
+      | "paused"
+      | "interrupted"
+      | "completed"
+      | "failed"
+      | "cancelled"
+    holds_resources?: Array<string>
+    stale?: boolean
+  }>
+  blocked_by_dependency: Array<{
+    node_id: string
+    title: string
+    missing_from_node_ids: Array<string>
+  }>
+  blocked_by_resource: Array<{
+    node_id: string
+    title: string
+    resource: string
+    held_by_node_id: string
+  }>
+  resources_held: {
+    [key: string]: string
+  }
 }
 
 export type Path = {
@@ -7091,6 +7278,9 @@ export type WorkflowEdgeCreateData = {
     config?: {
       [key: string]: unknown
     }
+    from_port?: string
+    to_port?: string
+    required?: boolean
   }
   path: {
     workflowID: string
@@ -7160,6 +7350,332 @@ export type WorkflowCheckpointCreateResponses = {
 
 export type WorkflowCheckpointCreateResponse =
   WorkflowCheckpointCreateResponses[keyof WorkflowCheckpointCreateResponses]
+
+export type WorkflowEditProposeData = {
+  body?: {
+    proposer_session_id?: string
+    ops: Array<
+      | {
+          kind: "INSERT_NODE"
+          node: {
+            id?: string
+            session_id?: string
+            title: string
+            agent: string
+            model?: {
+              providerID?: string
+              modelID?: string
+              variant?: string
+            }
+            config?: {
+              [key: string]: unknown
+            }
+            input_ports?: Array<WorkflowInputPort>
+            output_ports?: Array<WorkflowOutputPort>
+            max_attempts?: number
+            max_actions?: number
+            position?: number
+            priority?: number
+            holds_resources?: Array<string>
+          }
+        }
+      | {
+          kind: "REPLACE_NODE"
+          node_id: string
+          node: {
+            id?: string
+            session_id?: string
+            title: string
+            agent: string
+            model?: {
+              providerID?: string
+              modelID?: string
+              variant?: string
+            }
+            config?: {
+              [key: string]: unknown
+            }
+            input_ports?: Array<WorkflowInputPort>
+            output_ports?: Array<WorkflowOutputPort>
+            max_attempts?: number
+            max_actions?: number
+            position?: number
+            priority?: number
+            holds_resources?: Array<string>
+          }
+        }
+      | {
+          kind: "MODIFY_NODE"
+          node_id: string
+          patch: {
+            title?: string
+            agent?: string
+            model?: {
+              providerID?: string
+              modelID?: string
+              variant?: string
+            }
+            config?: {
+              [key: string]: unknown
+            }
+            input_ports?: Array<WorkflowInputPort>
+            output_ports?: Array<WorkflowOutputPort>
+            max_attempts?: number
+            max_actions?: number
+            position?: number
+            priority?: number
+            holds_resources?: Array<string>
+          }
+        }
+      | {
+          kind: "DELETE_NODE"
+          node_id: string
+        }
+      | {
+          kind: "INSERT_EDGE"
+          edge: {
+            id?: string
+            from_node_id: string
+            to_node_id: string
+            label?: string
+            config?: {
+              [key: string]: unknown
+            }
+            from_port?: string
+            to_port?: string
+            required?: boolean
+          }
+        }
+      | {
+          kind: "DELETE_EDGE"
+          edge_id: string
+        }
+    >
+    reason?: string
+  }
+  path: {
+    workflowID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow/{workflowID}/edits/propose"
+}
+
+export type WorkflowEditProposeErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type WorkflowEditProposeError = WorkflowEditProposeErrors[keyof WorkflowEditProposeErrors]
+
+export type WorkflowEditProposeResponses = {
+  /**
+   * Proposed workflow edit
+   */
+  200: WorkflowEdit
+}
+
+export type WorkflowEditProposeResponse = WorkflowEditProposeResponses[keyof WorkflowEditProposeResponses]
+
+export type WorkflowEditApplyData = {
+  body?: never
+  path: {
+    editID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow/edits/{editID}/apply"
+}
+
+export type WorkflowEditApplyErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type WorkflowEditApplyError = WorkflowEditApplyErrors[keyof WorkflowEditApplyErrors]
+
+export type WorkflowEditApplyResponses = {
+  /**
+   * Applied workflow edit
+   */
+  200: WorkflowEdit
+}
+
+export type WorkflowEditApplyResponse = WorkflowEditApplyResponses[keyof WorkflowEditApplyResponses]
+
+export type WorkflowEditRejectData = {
+  body?: {
+    reject_reason: string
+  }
+  path: {
+    editID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow/edits/{editID}/reject"
+}
+
+export type WorkflowEditRejectErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type WorkflowEditRejectError = WorkflowEditRejectErrors[keyof WorkflowEditRejectErrors]
+
+export type WorkflowEditRejectResponses = {
+  /**
+   * Rejected workflow edit
+   */
+  200: WorkflowEdit
+}
+
+export type WorkflowEditRejectResponse = WorkflowEditRejectResponses[keyof WorkflowEditRejectResponses]
+
+export type WorkflowScanReadyData = {
+  body?: never
+  path: {
+    workflowID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow/{workflowID}/scan_ready"
+}
+
+export type WorkflowScanReadyErrors = {
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type WorkflowScanReadyError = WorkflowScanReadyErrors[keyof WorkflowScanReadyErrors]
+
+export type WorkflowScanReadyResponses = {
+  /**
+   * Ready / blocked node breakdown
+   */
+  200: WorkflowScanReadyResult
+}
+
+export type WorkflowScanReadyResponse = WorkflowScanReadyResponses[keyof WorkflowScanReadyResponses]
+
+export type WorkflowResourcesUpdateData = {
+  body?: {
+    acquire?: {
+      [key: string]: string
+    }
+    release?: Array<string>
+    force?: boolean
+  }
+  path: {
+    workflowID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow/{workflowID}/resources"
+}
+
+export type WorkflowResourcesUpdateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type WorkflowResourcesUpdateError = WorkflowResourcesUpdateErrors[keyof WorkflowResourcesUpdateErrors]
+
+export type WorkflowResourcesUpdateResponses = {
+  /**
+   * Updated resource ledger
+   */
+  200: {
+    workflow: Workflow
+    acquired: Array<{
+      resource: string
+      node_id: string
+    }>
+    released: Array<string>
+  }
+}
+
+export type WorkflowResourcesUpdateResponse = WorkflowResourcesUpdateResponses[keyof WorkflowResourcesUpdateResponses]
+
+export type WorkflowFinalizeData = {
+  body?: {
+    status: "completed" | "failed" | "cancelled"
+    result_json?: {
+      [key: string]: unknown
+    }
+    fail_reason?: string
+    force?: boolean
+  }
+  path: {
+    workflowID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow/{workflowID}/finalize"
+}
+
+export type WorkflowFinalizeErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type WorkflowFinalizeError = WorkflowFinalizeErrors[keyof WorkflowFinalizeErrors]
+
+export type WorkflowFinalizeResponses = {
+  /**
+   * Finalized workflow
+   */
+  200: {
+    workflow: Workflow
+    finalized_status: "completed" | "failed" | "cancelled"
+    fail_reason?: string
+  }
+}
+
+export type WorkflowFinalizeResponse = WorkflowFinalizeResponses[keyof WorkflowFinalizeResponses]
 
 export type WorkflowControlData = {
   body?: {
