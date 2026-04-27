@@ -28,7 +28,7 @@ import { SplitBar, useSplit } from "./split"
 import { PluginSlot } from "./plugin-slot"
 import { Spin } from "./spin"
 
-type Kind = "coding" | "build-flash" | "debug" | "deploy" | "plan"
+type Kind = "coding" | "build-flash" | "debug" | "deploy" | "plan" | "explore"
 
 export interface NodeSessionViewProps {
   nodeId: string

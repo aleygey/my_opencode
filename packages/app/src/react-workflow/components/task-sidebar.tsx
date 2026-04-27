@@ -1,13 +1,13 @@
 /** @jsxImportSource react */
 import { useCallback, useEffect, useState } from 'react'
 import {
-  X, Plus, Check, ChevronDown, Code2, Cpu, FlaskConical, Rocket, BrainCircuit,
+  X, Plus, Check, ChevronDown, Code2, Compass, Cpu, FlaskConical, Rocket, BrainCircuit,
   Clock, Sparkles, Trash2, Bell, BellOff, Pin,
 } from 'lucide-react'
 import { Spin } from './spin'
 
 type NodeStatus = 'pending' | 'running' | 'completed' | 'failed' | 'paused'
-type NodeType = 'coding' | 'build-flash' | 'debug' | 'deploy' | 'plan'
+type NodeType = 'coding' | 'build-flash' | 'debug' | 'deploy' | 'plan' | 'explore'
 
 interface TaskNode {
   id: string
@@ -45,6 +45,7 @@ const typeIcons: Record<NodeType, React.ElementType> = {
   debug: FlaskConical,
   deploy: Rocket,
   plan: BrainCircuit,
+  explore: Compass,
 }
 
 const typeColors: Record<NodeType, string> = {
@@ -53,6 +54,7 @@ const typeColors: Record<NodeType, string> = {
   debug: '#6088c1',
   deploy: '#4d9e8a',
   plan: '#8b6ad9',
+  explore: '#a8b46d',
 }
 
 const statusAccent: Record<NodeStatus, string> = {

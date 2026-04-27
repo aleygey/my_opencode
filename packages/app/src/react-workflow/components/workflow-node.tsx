@@ -1,9 +1,9 @@
 /** @jsxImportSource react */
-import { BrainCircuit, Check, Code2, Cpu, FlaskConical, Pause, Rocket, X } from 'lucide-react'
+import { BrainCircuit, Check, Code2, Compass, Cpu, FlaskConical, Pause, Rocket, X } from 'lucide-react'
 import { Spin } from './spin'
 
 export type NodeStatus = 'pending' | 'running' | 'completed' | 'failed' | 'paused'
-export type NodeType = 'coding' | 'build-flash' | 'debug' | 'deploy' | 'plan'
+export type NodeType = 'coding' | 'build-flash' | 'debug' | 'deploy' | 'plan' | 'explore'
 
 interface WorkflowNodeProps {
   id: string
@@ -20,11 +20,12 @@ interface WorkflowNodeProps {
 }
 
 const typeConfig: Record<NodeType, { label: string; icon: typeof Code2; color: string }> = {
-  coding:        { label: 'Code',   icon: Code2,       color: '#7578c5' },
-  'build-flash': { label: 'Build',  icon: Cpu,         color: '#c9943e' },
-  debug:         { label: 'Test',   icon: FlaskConical, color: '#6088c1' },
-  deploy:        { label: 'Deploy', icon: Rocket,      color: '#4d9e8a' },
-  plan:          { label: 'Plan',   icon: BrainCircuit, color: '#8b6ad9' },
+  coding:        { label: 'Code',    icon: Code2,        color: '#7578c5' },
+  'build-flash': { label: 'Build',   icon: Cpu,          color: '#c9943e' },
+  debug:         { label: 'Test',    icon: FlaskConical,  color: '#6088c1' },
+  deploy:        { label: 'Deploy',  icon: Rocket,       color: '#4d9e8a' },
+  plan:          { label: 'Plan',    icon: BrainCircuit,  color: '#8b6ad9' },
+  explore:       { label: 'Explore', icon: Compass,      color: '#a8b46d' },
 }
 
 const statusAccent: Record<NodeStatus, string> = {

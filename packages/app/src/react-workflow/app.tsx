@@ -28,7 +28,7 @@ initPlugins()
 
 type State = "running" | "completed" | "failed" | "idle"
 type Role = "system" | "assistant" | "user" | "tool"
-type Kind = "coding" | "build-flash" | "debug" | "deploy" | "plan"
+type Kind = "coding" | "build-flash" | "debug" | "deploy" | "plan" | "explore"
 export type Status = "pending" | "running" | "completed" | "failed" | "paused"
 
 export type Node = {

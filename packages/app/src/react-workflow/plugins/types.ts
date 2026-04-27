@@ -2,7 +2,7 @@ import type { Status } from "../app"
 import type { LucideIcon } from "lucide-react"
 
 /** The kinds of workflow nodes a plugin may support. */
-export type NodeKind = "coding" | "build-flash" | "debug" | "deploy" | "plan"
+export type NodeKind = "coding" | "build-flash" | "debug" | "deploy" | "plan" | "explore"
 
 /** Context passed into every plugin component. Generic over the detail shape
  *  the plugin cares about, so implementations don't need `as Detail` casts. */
