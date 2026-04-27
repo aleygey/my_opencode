@@ -1986,8 +1986,23 @@ export function WorkflowRuntimePanel(props: {
   // Set when the user clicks a specific agent's model pill, consumed after local.model changes.
   let pendingRouteTargets: string[] | null = null
 
+  // Snapshot of the chat-session model captured before opening a NODE-SCOPED picker.
+  // Restored after `forceRouteNodes` so picking a model for a workflow node never
+  // hijacks the user's active session model. Tristate:
+  //   `null`     — no node-scoped pick in flight (don't restore on next effect tick)
+  //   `undefined`— save was made but the user had no model active before
+  //   {...}      — save was made; restore this ModelKey after routing
+  type ModelKeySave = { providerID: string; modelID: string } | undefined
+  let savedModelKey: ModelKeySave | null = null
+
   const pickModel = (targetNodeIDs?: string[]) => {
     pendingRouteTargets = targetNodeIDs && targetNodeIDs.length > 0 ? [...targetNodeIDs] : null
+    if (pendingRouteTargets) {
+      const m = local.model.current()
+      savedModelKey = m ? { providerID: m.provider.id, modelID: m.id } : undefined
+    } else {
+      savedModelKey = null
+    }
     // Clear pending targets AFTER the reactive effect for `local.model` has a chance to
     // consume them. Without this, a later non-node-scoped model change (e.g. chat panel
     // picker) would accidentally re-route stale targets.
@@ -1995,6 +2010,9 @@ export function WorkflowRuntimePanel(props: {
     const onClose = () => {
       setTimeout(() => {
         pendingRouteTargets = null
+        // If the user closed the dialog without picking a different model, the effect
+        // never fired — drop the saved snapshot to avoid restoring on a later pick.
+        savedModelKey = null
       }, 0)
     }
     if (providers.connected().length > 0) {
@@ -2039,6 +2057,8 @@ export function WorkflowRuntimePanel(props: {
   }
 
   // When the user picks a model from the native dialog, route the pending target nodes.
+  // For node-scoped picks we ALSO restore the pre-pick chat-session model afterwards so the
+  // user's active session model isn't hijacked by the node-routing flow.
   createEffect(
     on(
       () => {
@@ -2050,7 +2070,19 @@ export function WorkflowRuntimePanel(props: {
         const targets = pendingRouteTargets
         if (!targets) return
         pendingRouteTargets = null
-        void forceRouteNodes(targets).catch(() => undefined)
+        const restoreKey = savedModelKey
+        savedModelKey = null
+        void forceRouteNodes(targets)
+          .catch(() => undefined)
+          .finally(() => {
+            // Only restore if we actually captured a snapshot for this pick.
+            // `null` means non-node-scoped pick — leave the user's selection intact.
+            if (restoreKey === null) return
+            // `{ recent: false }` so we don't pollute the recent-models list with the
+            // restore. The createEffect WILL fire again, but pendingRouteTargets is
+            // already null at that point, so the early-exit guard prevents recursion.
+            local.model.set(restoreKey, { recent: false })
+          })
       },
     ),
   )
