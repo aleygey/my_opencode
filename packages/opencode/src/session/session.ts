@@ -489,19 +489,27 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service> =
           }),
         )
         if (part.type === "text" && !part.synthetic && !part.ignored) {
-          void Instance.bind(async () => {
-            const { Refiner } = await import("@/refiner")
-            await Refiner.observeUserMessage({
-              sessionID: part.sessionID,
-              messageID: part.messageID,
+          // /notrack — user can prefix any message with `/notrack` (case-insensitive)
+          // to opt this turn out of refiner observation. The text itself is still
+          // sent to the model; only the refiner pipeline is skipped.
+          const text = (part as MessageV2.TextPart).text ?? ""
+          const stripped = text.trimStart()
+          const skipRefiner = /^\/notrack\b/i.test(stripped)
+          if (!skipRefiner) {
+            void Instance.bind(async () => {
+              const { Refiner } = await import("@/refiner")
+              await Refiner.observeUserMessage({
+                sessionID: part.sessionID,
+                messageID: part.messageID,
+              })
+            })().catch((error) => {
+              log.warn("failed to observe session part with refiner", {
+                sessionID: part.sessionID,
+                messageID: part.messageID,
+                error,
+              })
             })
-          })().catch((error) => {
-            log.warn("failed to observe session part with refiner", {
-              sessionID: part.sessionID,
-              messageID: part.messageID,
-              error,
-            })
-          })
+          }
         }
         return part
       }).pipe(Effect.withSpan("Session.updatePart"))
