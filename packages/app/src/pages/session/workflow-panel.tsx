@@ -2079,6 +2079,18 @@ export function WorkflowRuntimePanel(props: {
     navigate(href)
   }
 
+  const openRetrieve = (node?: string) => {
+    const id = sessionID(node)
+    const dir = sdk.directory ? base64Encode(sdk.directory) : params.dir
+    if (!id || !dir) return
+    const href = `/${dir}/session/${id}/retrieve`
+    if (typeof window === "object") {
+      window.location.assign(href)
+      return
+    }
+    navigate(href)
+  }
+
   const send = (text: string, node?: string) => {
     const body = text.trim()
     const id = sessionID(node)
@@ -2507,6 +2519,7 @@ export function WorkflowRuntimePanel(props: {
         sandTables: sandTables(),
         onSession: openSession,
         onRefiner: openRefiner,
+        onRetrieve: openRetrieve,
         onTaskSelect: props.onTaskSelect,
         onModel: pickModel,
         onModelChange: changeModel,

@@ -17,6 +17,7 @@ import { lazy } from "@/util/lazy"
 import { Effect, Option } from "effect"
 import { Agent } from "@/agent/agent"
 import { Refiner } from "@/refiner"
+import { Retrieve } from "@/retrieve"
 import { jsonRequest, runRequest } from "./trace"
 
 const ConsoleOrgOption = z.object({
@@ -217,6 +218,78 @@ export const ExperimentalRoutes = lazy(() =>
       }),
       async (c) => {
         return c.json(await Refiner.taxonomy())
+      },
+    )
+    .get(
+      "/retrieve/log",
+      describeRoute({
+        summary: "Get retrieve injection log",
+        description:
+          "List retrieve agent audit log entries — what experiences were injected into agent system prompts, when, and why. Newest first.",
+        operationId: "experimental.retrieve.log.list",
+        responses: {
+          200: {
+            description: "Retrieve log entries",
+            content: {
+              "application/json": {
+                schema: resolver(z.record(z.string(), z.unknown())),
+              },
+            },
+          },
+        },
+      }),
+      validator(
+        "query",
+        z.object({
+          session_id: z.string().optional(),
+          limit: z.coerce.number().optional(),
+        }),
+      ),
+      async (c) => {
+        const query = c.req.valid("query")
+        const entries = await Retrieve.listLog({
+          sessionID: query.session_id,
+          limit: query.limit ?? 100,
+        })
+        return c.json({ entries })
+      },
+    )
+    .post(
+      "/retrieve/preview",
+      describeRoute({
+        summary: "Dry-run retrieve preview",
+        description:
+          "Run the retrieve pipeline without persisting state or advancing the turn index. Returns what WOULD be injected if a turn started now with the given user_text.",
+        operationId: "experimental.retrieve.preview",
+        responses: {
+          200: {
+            description: "Retrieve preview",
+            content: {
+              "application/json": {
+                schema: resolver(z.record(z.string(), z.unknown())),
+              },
+            },
+          },
+        },
+      }),
+      validator(
+        "json",
+        z.object({
+          session_id: z.string(),
+          agent_name: z.string().default("build"),
+          user_text: z.string().optional(),
+          workflow_id: z.string().optional(),
+        }),
+      ),
+      async (c) => {
+        const body = c.req.valid("json")
+        const preview = await Retrieve.preview({
+          sessionID: body.session_id,
+          agentName: body.agent_name,
+          userText: body.user_text,
+          workflowID: body.workflow_id,
+        })
+        return c.json(preview)
       },
     )
     .get(

@@ -236,6 +236,8 @@ export function SessionHeader() {
   )
   const refinerHref = createMemo(() => (params.id ? `/${params.dir}/session/${params.id}/refiner` : undefined))
   const onRefinerPage = createMemo(() => !!refinerHref() && location.pathname === refinerHref())
+  const retrieveHref = createMemo(() => (params.id ? `/${params.dir}/session/${params.id}/retrieve` : undefined))
+  const onRetrievePage = createMemo(() => !!retrieveHref() && location.pathname === retrieveHref())
 
   const selectApp = (app: OpenApp) => {
     if (!options().some((item) => item.id === app)) return
@@ -440,6 +442,19 @@ export function SessionHeader() {
                         onClick={() => navigate(href())}
                       >
                         Refiner
+                      </Button>
+                    </Tooltip>
+                  )}
+                </Show>
+                <Show when={retrieveHref()}>
+                  {(href) => (
+                    <Tooltip placement="bottom" value="Open retrieve injection log">
+                      <Button
+                        variant={onRetrievePage() ? "secondary" : "ghost"}
+                        class="titlebar-icon h-6 px-2 text-[11px] font-medium"
+                        onClick={() => navigate(href())}
+                      >
+                        Retrieve
                       </Button>
                     </Tooltip>
                   )}

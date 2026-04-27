@@ -127,6 +127,7 @@ export type WorkflowAppProps = {
   sandTables?: Record<string, SandTableDiscussion | undefined>
   onSession: (node?: string) => void
   onRefiner?: (node?: string) => void
+  onRetrieve?: (node?: string) => void
   onTaskSelect?: (task: string) => void
   onModel: (nodeIDs?: string[]) => void
   onModelChange?: (model: string) => void
@@ -444,6 +445,7 @@ export function WorkflowApp(props: WorkflowAppProps) {
           onTaskSidebarToggle={() => setSidebar((v) => !v)}
           onModelClick={props.onModel}
           onRefinerClick={() => props.onRefiner?.(node?.id)}
+          onRetrieveClick={() => props.onRetrieve?.(node?.id)}
           onRunClick={() => props.onRun(node?.id)}
           onRestartClick={() => props.onRestart(node?.id)}
           onStopClick={() => props.onStop(node?.id)}

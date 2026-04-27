@@ -107,6 +107,7 @@ interface TopBarProps {
   // and the Session button was a near-noop — see removal in commit history.
   onModelClick?: () => void
   onRefinerClick?: () => void
+  onRetrieveClick?: () => void
   onRunClick?: () => void
   onRestartClick?: () => void
   onStopClick?: () => void
@@ -122,6 +123,7 @@ export function TopBar({
   onTaskSidebarToggle,
   onModelClick,
   onRefinerClick,
+  onRetrieveClick,
   onRunClick,
   onRestartClick,
   onStopClick,
@@ -262,6 +264,13 @@ export function TopBar({
           <button onClick={onRefinerClick} className="wf-topbar-text-btn">
             <Layers3 className="h-3.5 w-3.5" strokeWidth={1.6} />
             <span>Refiner</span>
+          </button>
+        )}
+
+        {onRetrieveClick && (
+          <button onClick={onRetrieveClick} className="wf-topbar-text-btn">
+            <Zap className="h-3.5 w-3.5" strokeWidth={1.6} />
+            <span>Retrieve</span>
           </button>
         )}
 
