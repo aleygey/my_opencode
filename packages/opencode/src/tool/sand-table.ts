@@ -229,6 +229,8 @@ SELF-CHECK before you publish (apply all three):
 
 Use msg_write to publish the plan.
 
+CALL DISCIPLINE (strict): call \`msg_write\` EXACTLY ONCE per turn with the FINAL plan. Do NOT publish a draft and then a revision in the same turn — only the last msg_write is consumed by the evaluator, and extra calls just clutter the audit trail.
+
 IMPORTANT: Always write your plan content (descriptions, rationale, checkpoints) in Simplified Chinese (简体中文). Keep technical identifiers such as node IDs, titles, agent names, tool names, file paths, and code snippets in their original form.`
 
 // Evaluator rubric — 8 dimensions the evaluator MUST explicitly score
@@ -270,7 +272,9 @@ OUTPUT FORMAT:
 
 LANGUAGE: Write all narrative / feedback in Simplified Chinese (简体中文). Keep technical identifiers (node titles, agent names, tool names, file paths, code snippets, and the APPROVE / REVISE token itself) in their original form.
 
-Use \`msg_write\` with the provided discussion_id to publish your evaluation.`
+Use \`msg_write\` with the provided discussion_id to publish your evaluation.
+
+CALL DISCIPLINE (strict): call \`msg_write\` EXACTLY ONCE per turn with the FINAL verdict. Only your last msg_write is consumed; do not split a verdict across multiple calls.`
 
 function plannerPrompt(state: DiscussionState): string {
   const lines = [
@@ -341,29 +345,24 @@ function extractFeedback(state: DiscussionState): string | null {
 
 // ── Round execution ────────────────────────────────────────────────────────
 
-function waitForMessage(
-  state: DiscussionState,
-  role: DiscussionRole,
-  timeoutMs = 60_000,
-): Promise<DiscussionMessage | null> {
-  const startLen = state.messages.filter((m) => m.role === role && m.round === state.round).length
-  return new Promise<DiscussionMessage | null>((resolve) => {
-    const timer = setTimeout(() => {
-      unsub()
-      resolve(null)
-    }, timeoutMs)
-    const unsub = Bus.subscribe(SandTableMessageEvent, (event) => {
-      if (event.properties.discussionID !== state.id) return
-      if (event.properties.role !== role) return
-      if (event.properties.round !== state.round) return
-      const msgs = state.messages.filter((m) => m.role === role && m.round === state.round)
-      if (msgs.length > startLen) {
-        clearTimeout(timer)
-        unsub()
-        resolve(msgs[msgs.length - 1])
-      }
-    })
-  })
+/**
+ * Read the latest message for a role within the current round.
+ *
+ * IMPORTANT: this is called AFTER `runParticipant` has fully resolved
+ * (sp.prompt awaits the entire LLM turn including all tool calls), so any
+ * msg_write the participant performed has already pushed to state.messages.
+ * Earlier code subscribed to SandTableMessageEvent here and waited for a
+ * fresh publish — but by the time the subscription was created the events
+ * had already fired during sp.prompt, so it always timed out and the loop
+ * lost both planner and evaluator output. Direct read fixes that.
+ *
+ * Multiple msg_writes per round (qwen 3.x sometimes emits several) are
+ * deduped by taking the LAST message, which matches the LLM's intent of
+ * refining an earlier draft rather than appending parallel takes.
+ */
+function latestMessage(state: DiscussionState, role: DiscussionRole): DiscussionMessage | null {
+  const msgs = state.messages.filter((m) => m.role === role && m.round === state.round)
+  return msgs.length > 0 ? msgs[msgs.length - 1] : null
 }
 
 function runParticipant(
@@ -525,12 +524,14 @@ export const SandTableTool = Tool.define(
               const planner = state.participants.find((p) => p.role === "planner")!
               yield* runParticipant(planner, plannerPrompt(state), ctx.abort)
 
-              // Wait for planner's msg_write
-              const planMsg = yield* Effect.promise(() => waitForMessage(state, "planner", 60_000))
+              // sp.prompt awaits the planner's full LLM turn; any msg_write
+              // it called has already landed in state.messages. Take the
+              // last one for this round (qwen sometimes emits multiple).
+              const planMsg = latestMessage(state, "planner")
               if (planMsg) {
                 state.currentPlan = planMsg.content
               } else {
-                log.warn("planner timeout", { discussionID, round })
+                log.warn("planner produced no msg_write this round", { discussionID, round })
               }
 
               // Step 2: Evaluator reviews plan.
@@ -567,12 +568,13 @@ export const SandTableTool = Tool.define(
               ]
               yield* runParticipant(evaluator, evaluatorPrompt(state), ctx.abort)
 
-              // Wait for evaluator's msg_write
-              const evalMsg = yield* Effect.promise(() => waitForMessage(state, "evaluator", 60_000))
+              // Same as planner above: msg_write has already landed; take
+              // the last one for this round.
+              const evalMsg = latestMessage(state, "evaluator")
               if (evalMsg) {
                 state.evaluation = evalMsg.content
               } else {
-                log.warn("evaluator timeout", { discussionID, round })
+                log.warn("evaluator produced no msg_write this round", { discussionID, round })
               }
 
               // Check if evaluator approved
