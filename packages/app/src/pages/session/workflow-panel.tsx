@@ -2831,6 +2831,17 @@ export function WorkflowRuntimePanel(props: {
             body: { status, fail_reason: failReason },
           }).catch((err) => console.error("finalize workflow failed", err))
         },
+        // Plumb the live opencode HTTP server through React context so
+        // plugins (currently the serial monitor) can reach `/serial/*` and
+        // open the per-session websocket without re-discovering the URL.
+        runtime: (() => {
+          const current = server.current
+          if (!current) return null
+          const auth = current.http.password
+            ? `Basic ${btoa(`${current.http.username ?? "opencode"}:${current.http.password}`)}`
+            : undefined
+          return { apiBase: current.http.url, authHeader: auth }
+        })(),
       }),
     )
   })

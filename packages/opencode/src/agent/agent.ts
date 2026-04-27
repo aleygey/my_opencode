@@ -10,6 +10,7 @@ import { ProviderTransform } from "../provider"
 
 import PROMPT_GENERATE from "./generate.txt"
 import PROMPT_COMPACTION from "./prompt/compaction.txt"
+import PROMPT_DEBUG from "./prompt/debug.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
 import PROMPT_ORCHESTRATOR from "./prompt/orchestrator.txt"
 import PROMPT_REFINER from "./prompt/refiner.txt"
@@ -204,6 +205,41 @@ export const layer = Layer.effect(
             options: {},
             mode: "subagent",
             native: true,
+          },
+          debug: {
+            name: "debug",
+            description:
+              "Hardware-in-the-loop validation agent. Drives a device over the serial port, reads its responses, and reports pass/fail against the build-flash output. Read-only on host source; mutations only happen on the wire.",
+            permission: Permission.merge(
+              defaults,
+              Permission.fromConfig({
+                "*": "deny",
+                read: "allow",
+                grep: "allow",
+                glob: "allow",
+                list: "allow",
+                bash: "allow",
+                serial_list_ports: "allow",
+                serial_list: "allow",
+                serial_create: "allow",
+                serial_write: "allow",
+                serial_read_recent: "allow",
+                serial_close: "allow",
+                external_directory: {
+                  "*": "ask",
+                  ...Object.fromEntries(whitelistedDirs.map((dir) => [dir, "allow"])),
+                },
+              }),
+              user,
+            ),
+            prompt: PROMPT_DEBUG,
+            options: {},
+            // `subagent` so it surfaces in the workflow node agent picker but
+            // not the chat-level primary agent menu (debug only makes sense
+            // as a workflow node downstream of build-flash).
+            mode: "subagent",
+            native: true,
+            color: "#6088c1",
           },
           explore: {
             name: "explore",

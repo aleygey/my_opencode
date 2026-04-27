@@ -19,6 +19,7 @@ import { GraphEditsDrawer } from "./components/graph-edits-drawer"
 import type { SandTableResult } from "./components/sand-table-card"
 import { ChevronUp } from "lucide-react"
 import { initPlugins } from "./plugins"
+import { WorkflowRuntimeProvider, type WorkflowRuntime } from "./runtime-context"
 import "./styles/theme.css"
 
 // Register the built-in middle-column plugins once at module load. This is a
@@ -189,6 +190,11 @@ export type WorkflowAppProps = {
   onRejectEdit?: (editID: string, reason: string) => void
   /** P5 — finalise the workflow into a terminal state. */
   onFinalize?: (status: "completed" | "failed" | "cancelled", failReason?: string) => void
+  /** Backend connection info for plugin components. The serial monitor (and
+   *  any future plugin that talks to the running opencode HTTP server)
+   *  reads this off React context — see `runtime-context.tsx`. The SolidJS
+   *  workflow-panel passes the running server's URL + auth header here. */
+  runtime?: WorkflowRuntime | null
 }
 
 /** P3 — slim FE projection of `Workflow.Edit` as seen by react-workflow.
@@ -478,6 +484,7 @@ export function WorkflowApp(props: WorkflowAppProps) {
   }
 
   return (
+    <WorkflowRuntimeProvider value={props.runtime ?? null}>
     <div className="workflow-make h-full w-full overflow-hidden">
       <div className="relative flex h-full flex-col">
         <TopBar
@@ -712,5 +719,6 @@ export function WorkflowApp(props: WorkflowAppProps) {
         />
       )}
     </div>
+    </WorkflowRuntimeProvider>
   )
 }

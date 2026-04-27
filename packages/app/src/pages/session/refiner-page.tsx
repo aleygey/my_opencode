@@ -3954,24 +3954,43 @@ async function computeGraphLayoutElk(
   const out = new Map<string, GraphLayoutNode>()
   if (experiences.length === 0) return out
 
-  // Map experience IDs to ELK children. Node sizes are kept small — the SVG
-  // renderer draws a 7-10px circle anyway, but ELK uses width/height for
-  // collision avoidance, so giving it 60x40 (roughly label width + dot)
-  // produces nicer spacing than passing 1x1.
-  const NODE_W = 60
-  const NODE_H = 40
+  // Per-node bbox MUST reflect the actual rendered label width or ELK's
+  // collision avoidance breaks. The renderer draws a circle plus a label
+  // clipped to 18 chars; Chinese glyphs are ~12.5px wide, ASCII ~7px. Pad for
+  // the dot (14px) + label gap (12px) + tail breathing room (8px). Without
+  // this, ELK is told "60×40 boxes" but draws ~220px-wide labels next to each
+  // other → adjacent labels visibly collide.
+  const measureNodeWidth = (title: string) => {
+    const clipped = title.length > 18 ? title.slice(0, 18) : title
+    let w = 0
+    for (const ch of clipped) w += /[\u4e00-\u9fff]/.test(ch) ? 12.5 : 7
+    return Math.ceil(14 + 12 + w + 8)
+  }
+  const NODE_H = 22
+  const NODE_W_FALLBACK = 60
   const elkGraph = {
     id: "root",
     layoutOptions: {
       "elk.algorithm": "layered",
       "elk.direction": "RIGHT",
-      "elk.layered.spacing.nodeNodeBetweenLayers": "70",
-      "elk.spacing.nodeNode": "30",
+      "elk.layered.spacing.nodeNodeBetweenLayers": "80",
+      "elk.spacing.nodeNode": "18",
+      // The refiner graph is typically sparse — many isolated experiences
+      // with only a few chains between them. Without these two options ELK
+      // packs disconnected components on top of each other; with them, each
+      // component lays out independently and is grid-packed with breathing
+      // room.
+      "elk.separateConnectedComponents": "true",
+      "elk.spacing.componentComponent": "40",
       "elk.layered.crossingMinimization.semiInteractive": "true",
       "elk.edgeRouting": "POLYLINE",
       "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
     },
-    children: experiences.map((e) => ({ id: e.id, width: NODE_W, height: NODE_H })),
+    children: experiences.map((e) => ({
+      id: e.id,
+      width: measureNodeWidth(e.title),
+      height: NODE_H,
+    })),
     edges: edges
       .filter((e) => experiences.some((x) => x.id === e.from) && experiences.some((x) => x.id === e.to))
       .map((e) => ({ id: e.id, sources: [e.from], targets: [e.to] })),
@@ -3999,7 +4018,7 @@ async function computeGraphLayoutElk(
   for (const c of children) {
     if (typeof c.x !== "number" || typeof c.y !== "number") continue
     minX = Math.min(minX, c.x)
-    maxX = Math.max(maxX, c.x + (c.width ?? NODE_W))
+    maxX = Math.max(maxX, c.x + (c.width ?? NODE_W_FALLBACK))
     minY = Math.min(minY, c.y)
     maxY = Math.max(maxY, c.y + (c.height ?? NODE_H))
   }
@@ -4020,12 +4039,17 @@ async function computeGraphLayoutElk(
   for (const c of children) {
     const exp = expByID.get(c.id ?? "")
     if (!exp || typeof c.x !== "number" || typeof c.y !== "number") continue
+    // Anchor the dot at the LEFT edge of ELK's reported box, vertically
+    // centered. The label extends rightward from that anchor (x=12 inside
+    // the SVG group), so the bbox we passed to ELK already accounted for
+    // it. Centering on width/2 instead would shift labels back into their
+    // left-hand neighbour.
+    const h = c.height ?? NODE_H
     out.set(exp.id, {
       id: exp.id,
       exp,
-      // Center the dot inside ELK's reported NODE_W x NODE_H box.
-      x: (c.x + (c.width ?? NODE_W) / 2) * scale + offsetX,
-      y: (c.y + (c.height ?? NODE_H) / 2) * scale + offsetY,
+      x: (c.x + 8) * scale + offsetX,
+      y: (c.y + h / 2) * scale + offsetY,
     })
   }
   return out
