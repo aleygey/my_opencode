@@ -355,6 +355,33 @@ export const ExperimentalRoutes = lazy(() =>
       },
     )
     .post(
+      "/refiner/experience/:id/review",
+      describeRoute({
+        summary: "Set experience review status",
+        description:
+          "Move an experience between pending/approved/rejected. Auto-routed experiences land as 'pending' until the user approves them; 'rejected' is a soft delete preserved for audit.",
+        operationId: "experimental.refiner.experience.review",
+        responses: {
+          200: {
+            description: "Updated experience",
+            content: { "application/json": { schema: resolver(z.record(z.string(), z.unknown())) } },
+          },
+          ...errors(400),
+        },
+      }),
+      validator(
+        "json",
+        z.object({ status: z.enum(["pending", "approved", "rejected"]) }),
+      ),
+      async (c) => {
+        const id = c.req.param("id")
+        const { status } = c.req.valid("json")
+        const result = await Refiner.setReviewStatus(id, status)
+        if (!result.ok) return c.json({ error: result.error, id }, 404)
+        return c.json(result)
+      },
+    )
+    .post(
       "/refiner/experience/:id/observation",
       describeRoute({
         summary: "Augment experience (add observation + re-refine)",
@@ -622,6 +649,8 @@ export const ExperimentalRoutes = lazy(() =>
             scope: exp.scope,
             categories: exp.categories,
             archived: !!exp.archived,
+            review_status: exp.review_status,
+            reviewed_at: exp.reviewed_at,
             observation_count: exp.observations.length,
             last_refined_at: exp.last_refined_at,
           })),

@@ -196,6 +196,15 @@ const ExperienceSchema = z.object({
   refinement_history: z.array(RefinementEntry),
   archived: z.boolean().default(false),
   archived_at: z.number().optional(),
+  // Review queue. Newly auto-routed experiences land as "pending" — the user
+  // must approve them in the UI before they participate in retrieval/injection.
+  // Manually-created (UI form, augment, merge) defaults to "approved" since the
+  // user explicitly initiated those. "rejected" is a soft delete: the file
+  // stays for audit but it's hidden from default views.
+  // Default "approved" so existing on-disk experiences parse cleanly without a
+  // migration pass.
+  review_status: z.enum(["pending", "approved", "rejected"]).default("approved"),
+  reviewed_at: z.number().optional(),
   created_at: z.number(),
   last_refined_at: z.number(),
 })
@@ -1747,6 +1756,12 @@ async function attachAndRefine(input: {
 async function createExperience(input: {
   observation: Observation
   proposal: Extract<RouteDecision, { action: "new" }>
+  /**
+   * Default "pending" — experiences born from the auto-router go to the review
+   * queue. Manual creation paths (UI form, agent-assisted createExperienceFromText)
+   * pass "approved" because the user already vetted them by initiating creation.
+   */
+  reviewStatus?: "pending" | "approved" | "rejected"
 }): Promise<ExperienceWithPath | undefined> {
   // Originality + placeholder guard
   if (
@@ -1783,6 +1798,8 @@ async function createExperience(input: {
     conflicts_with: [],
     refinement_history: [],
     archived: false,
+    review_status: input.reviewStatus ?? "pending",
+    reviewed_at: input.reviewStatus && input.reviewStatus !== "pending" ? nowMs() : undefined,
     created_at: nowMs(),
     last_refined_at: nowMs(),
   }
@@ -2167,6 +2184,28 @@ export namespace Refiner {
     return { ok: true as const, experience: { ...next, path: rel(filepath) } }
   }
 
+  /**
+   * Approve / reject / re-queue an experience. Auto-routed experiences land as
+   * "pending" — they remain on disk but are filtered out of retrieval surfaces
+   * until the user approves them. "rejected" is a soft-delete that preserves
+   * the file for audit; the UI hides them by default but they're still
+   * recoverable by flipping review_status back.
+   */
+  export async function setReviewStatus(
+    id: string,
+    status: "pending" | "approved" | "rejected",
+  ) {
+    const target = await getExperienceByID(id)
+    if (!target) return { ok: false as const, error: "not_found" }
+    const next: Experience = {
+      ...target,
+      review_status: status,
+      reviewed_at: status === "pending" ? undefined : nowMs(),
+    }
+    const filepath = await writeExperience(next)
+    return { ok: true as const, experience: { ...next, path: rel(filepath) } }
+  }
+
   // ---------- Augment (user adds a manual observation) ----------
 
   export async function augmentExperience(input: {
@@ -2270,6 +2309,7 @@ export namespace Refiner {
         conflicts_with: [],
         refinement_history: [],
         archived: false,
+        review_status: "approved",
         created_at: observedAt,
         last_refined_at: observedAt,
       }
@@ -2290,7 +2330,8 @@ export namespace Refiner {
       }
     }
 
-    const exp = await createExperience({ observation, proposal })
+    // Manual creation is user-initiated, so skip the review queue.
+    const exp = await createExperience({ observation, proposal, reviewStatus: "approved" })
     if (!exp) return { ok: false as const, error: "create_failed_abstract_guard" }
     return { ok: true as const, experience: exp }
   }
@@ -2521,6 +2562,9 @@ export namespace Refiner {
       conflicts_with: [],
       refinement_history: [],
       archived: false,
+      // User-initiated merge — skip review queue.
+      review_status: "approved",
+      reviewed_at: nowMs(),
       created_at: nowMs(),
       last_refined_at: nowMs(),
     }

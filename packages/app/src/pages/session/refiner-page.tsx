@@ -10,12 +10,18 @@ import {
   Show,
 } from "solid-js"
 import { useNavigate, useParams } from "@solidjs/router"
+import ELK from "elkjs/lib/elk.bundled.js"
 import { SessionHeader } from "@/components/session"
 import { useModels } from "@/context/models"
 import { usePlatform } from "@/context/platform"
 import { useSDK } from "@/context/sdk"
 import { useServer } from "@/context/server"
 import "./refiner-page.css"
+
+// One ELK instance is enough — it's stateless across calls and reuses an
+// internal worker pool. Keeping it module-level avoids re-creating the worker
+// every time the user toggles into the graph view.
+const ELK_INSTANCE = new ELK()
 
 /* ──────────────────────────────────────────────────────
    Types — schema v2 (experiences + observations)
@@ -81,6 +87,8 @@ type RefinementEntry = {
   source_ids?: string[]
 }
 
+type ReviewStatus = "pending" | "approved" | "rejected"
+
 type Experience = {
   id: string
   kind: Kind
@@ -94,6 +102,8 @@ type Experience = {
   conflicts_with?: string[]
   archived?: boolean
   archived_at?: number
+  review_status?: ReviewStatus
+  reviewed_at?: number
   observations: Observation[]
   related_experience_ids: string[]
   refinement_history: RefinementEntry[]
@@ -173,6 +183,8 @@ type ChainGraphExperienceLite = {
   scope?: Scope
   categories?: string[]
   archived?: boolean
+  review_status?: ReviewStatus
+  reviewed_at?: number
   observation_count?: number
   last_refined_at?: number
 }
@@ -547,6 +559,12 @@ const apiArchiveExperience = (b: ApiBase, id: string, archived: boolean) =>
   apiRequest(b, `/experimental/refiner/experience/${encodeURIComponent(id)}/archive`, {
     method: "POST",
     json: { archived },
+  })
+
+const apiReviewExperience = (b: ApiBase, id: string, status: ReviewStatus) =>
+  apiRequest(b, `/experimental/refiner/experience/${encodeURIComponent(id)}/review`, {
+    method: "POST",
+    json: { status },
   })
 
 const apiAugmentExperience = (
@@ -2817,6 +2835,7 @@ type ExperiencePeekProps = {
   onReRefine: () => Promise<void> | void
   onUndo: () => Promise<void> | void
   onArchiveToggle: () => Promise<void> | void
+  onReview: (status: ReviewStatus) => Promise<void> | void
   onToggleMergeSelect: (id: string) => void
   mergeSelected: boolean
 }
@@ -2878,6 +2897,20 @@ function ExperiencePeek(props: ExperiencePeekProps) {
           </span>
           <Show when={exp().archived}>
             <span class="rf-peek-head-archived">Archived</span>
+          </Show>
+          <Show when={(exp().review_status ?? "approved") !== "approved"}>
+            <span
+              class="rf-peek-head-tag"
+              data-review-status={exp().review_status}
+              title={
+                exp().review_status === "pending"
+                  ? "待审核 — 自动捕获后未经人工确认，retrieval 不会注入"
+                  : "已拒绝 — 文件保留作审计"
+              }
+            >
+              <b>review</b>
+              {exp().review_status === "pending" ? "Pending" : "Rejected"}
+            </span>
           </Show>
           <Show when={exp().task_type}>
             <span class="rf-peek-head-tag">
@@ -3262,6 +3295,40 @@ function ExperiencePeek(props: ExperiencePeekProps) {
         >
           {exp().archived ? "⬒ Unarchive" : "⬓ Archive"}
         </button>
+        {/* Review-queue actions — only meaningful when review_status is set
+            non-default. Approve becomes the prominent positive action when an
+            experience is freshly auto-routed (status=pending). */}
+        <Show when={(exp().review_status ?? "approved") === "pending"}>
+          <button
+            type="button"
+            class="rf-actbtn rf-actbtn-primary"
+            disabled={!!acting()}
+            onClick={() => void run("approve", () => props.onReview("approved"))}
+            title="通过审核 — 此 experience 进入正式知识库"
+          >
+            {acting() === "approve" ? "⟳ Approving…" : "✓ Approve"}
+          </button>
+          <button
+            type="button"
+            class="rf-actbtn"
+            disabled={!!acting()}
+            onClick={() => void run("reject", () => props.onReview("rejected"))}
+            title="拒绝 — 软删除，文件保留作审计"
+          >
+            {acting() === "reject" ? "⟳ Rejecting…" : "⌀ Reject"}
+          </button>
+        </Show>
+        <Show when={(exp().review_status ?? "approved") === "rejected"}>
+          <button
+            type="button"
+            class="rf-actbtn"
+            disabled={!!acting()}
+            onClick={() => void run("requeue", () => props.onReview("pending"))}
+            title="重新加入待审核队列"
+          >
+            {acting() === "requeue" ? "⟳ Re-queueing…" : "↻ Re-queue"}
+          </button>
+        </Show>
         <span class="rf-actspacer" />
         <button
           type="button"
@@ -3296,6 +3363,7 @@ function ExperienceModal(props: {
   onReRefine: (id: string) => Promise<void> | void
   onUndo: (id: string) => Promise<void> | void
   onArchiveToggle: (id: string, archived: boolean) => Promise<void> | void
+  onReview: (id: string, status: ReviewStatus) => Promise<void> | void
   onToggleMergeSelect: (id: string) => void
   mergeSelected: (id: string) => boolean
 }) {
@@ -3343,6 +3411,7 @@ function ExperienceModal(props: {
               onArchiveToggle={() =>
                 props.onArchiveToggle(exp().id, !exp().archived)
               }
+              onReview={(status) => props.onReview(exp().id, status)}
               onToggleMergeSelect={props.onToggleMergeSelect}
               mergeSelected={props.mergeSelected(exp().id)}
             />
@@ -3531,6 +3600,29 @@ function ExperienceRow(props: {
           <Show when={props.item.archived}>
             <span class="rf-row-archived">archived</span>
           </Show>
+          {/* Review-status badge — surface pending items so the user can spot
+              what auto-routing has admitted but not yet vetted. Approved items
+              show no chip (default state), keeping the list clean. */}
+          <Show when={(props.item.review_status ?? "approved") === "pending"}>
+            <span
+              class="rf-row-archived"
+              data-review-status="pending"
+              title="待审核"
+              style={{ background: "var(--rf-warn, oklch(0.70 0.15 70))", color: "white" }}
+            >
+              pending
+            </span>
+          </Show>
+          <Show when={props.item.review_status === "rejected"}>
+            <span
+              class="rf-row-archived"
+              data-review-status="rejected"
+              title="已拒绝"
+              style={{ background: "var(--rf-bad, oklch(0.55 0.18 25))", color: "white" }}
+            >
+              rejected
+            </span>
+          </Show>
         </div>
         <div class="rf-row-sub">
           <For each={categories()}>
@@ -3581,9 +3673,22 @@ function Filterbar(props: {
   setActiveCategory: (slug: string | undefined) => void
   query: string
   setQuery: (q: string) => void
-  sort: "kind" | "recent"
-  setSort: (s: "kind" | "recent") => void
+  sort: "kind" | "recent" | "newest"
+  setSort: (s: "kind" | "recent" | "newest") => void
 }) {
+  // Tristate cycle: kind → recent → newest → kind. Each click advances by one
+  // step so the user can reach any mode in at most two clicks.
+  const SORT_CYCLE: Array<"kind" | "recent" | "newest"> = ["kind", "recent", "newest"]
+  const SORT_LABEL: Record<"kind" | "recent" | "newest", string> = {
+    kind: "按分类",
+    recent: "最近修改",
+    newest: "最新创建",
+  }
+  const SORT_TITLE: Record<"kind" | "recent" | "newest", string> = {
+    kind: "按 kind 分组（内部按最近修改时间排）",
+    recent: "按 last_refined_at 倒序",
+    newest: "按 created_at 倒序",
+  }
   const coreSlugs = createMemo<CoreKind[]>(() => {
     const src = props.taxonomy?.core ?? []
     const slugs: CoreKind[] = []
@@ -3712,13 +3817,17 @@ function Filterbar(props: {
       <button
         type="button"
         class="rf-chip rf-chip-sort"
-        onClick={() => props.setSort(props.sort === "kind" ? "recent" : "kind")}
-        title="切换排序"
+        onClick={() => {
+          const idx = SORT_CYCLE.indexOf(props.sort)
+          const next = SORT_CYCLE[(idx + 1) % SORT_CYCLE.length]
+          props.setSort(next)
+        }}
+        title={SORT_TITLE[props.sort]}
       >
         <svg viewBox="0 0 16 16" aria-hidden="true" width="13" height="13">
           <path d="M4 4h9M4 8h6M4 12h3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
         </svg>
-        {props.sort === "kind" ? "按分类" : "最近修改"}
+        {SORT_LABEL[props.sort]}
       </button>
     </div>
   )
@@ -3826,6 +3935,102 @@ type GraphLayoutNode = {
   y: number
 }
 
+/**
+ * ELK-driven layered layout. Replaces the radial/star fallback for the chain
+ * graph view: nodes flow left-to-right by topological depth, edges run mostly
+ * forward with backedge detection, layers are spaced cleanly. Async because
+ * ELK runs in a Web Worker; callers should fall back to `computeGraphLayout`
+ * during the first paint or when ELK rejects (e.g. no nodes).
+ *
+ * The result is fitted to the canvas: we measure ELK's reported bbox, scale
+ * uniformly to leave a margin, and center within `width x height` so the
+ * graph never clips off-screen for tall or sparse layouts.
+ */
+async function computeGraphLayoutElk(
+  experiences: ChainGraphExperienceLite[],
+  edges: ChainGraphEdge[],
+  opts: { width: number; height: number },
+): Promise<Map<string, GraphLayoutNode>> {
+  const out = new Map<string, GraphLayoutNode>()
+  if (experiences.length === 0) return out
+
+  // Map experience IDs to ELK children. Node sizes are kept small — the SVG
+  // renderer draws a 7-10px circle anyway, but ELK uses width/height for
+  // collision avoidance, so giving it 60x40 (roughly label width + dot)
+  // produces nicer spacing than passing 1x1.
+  const NODE_W = 60
+  const NODE_H = 40
+  const elkGraph = {
+    id: "root",
+    layoutOptions: {
+      "elk.algorithm": "layered",
+      "elk.direction": "RIGHT",
+      "elk.layered.spacing.nodeNodeBetweenLayers": "70",
+      "elk.spacing.nodeNode": "30",
+      "elk.layered.crossingMinimization.semiInteractive": "true",
+      "elk.edgeRouting": "POLYLINE",
+      "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
+    },
+    children: experiences.map((e) => ({ id: e.id, width: NODE_W, height: NODE_H })),
+    edges: edges
+      .filter((e) => experiences.some((x) => x.id === e.from) && experiences.some((x) => x.id === e.to))
+      .map((e) => ({ id: e.id, sources: [e.from], targets: [e.to] })),
+  }
+
+  let laid: Awaited<ReturnType<typeof ELK_INSTANCE.layout>>
+  try {
+    laid = await ELK_INSTANCE.layout(elkGraph)
+  } catch {
+    // ELK occasionally rejects on degenerate inputs (e.g. self-loops with no
+    // children). Fall back to the radial layout so the user still sees nodes.
+    return computeGraphLayout(experiences, opts)
+  }
+
+  // Fit-to-canvas: compute ELK's bbox from laid-out children, then translate
+  // and scale so the graph is centered with a 24px margin.
+  const margin = 24
+  const children = laid.children ?? []
+  if (children.length === 0) return out
+
+  let minX = Infinity
+  let maxX = -Infinity
+  let minY = Infinity
+  let maxY = -Infinity
+  for (const c of children) {
+    if (typeof c.x !== "number" || typeof c.y !== "number") continue
+    minX = Math.min(minX, c.x)
+    maxX = Math.max(maxX, c.x + (c.width ?? NODE_W))
+    minY = Math.min(minY, c.y)
+    maxY = Math.max(maxY, c.y + (c.height ?? NODE_H))
+  }
+  const rawW = Math.max(1, maxX - minX)
+  const rawH = Math.max(1, maxY - minY)
+  const targetW = Math.max(1, opts.width - margin * 2)
+  const targetH = Math.max(1, opts.height - margin * 2)
+  // Uniform scale; if the graph is small don't enlarge past 1.0 (keeps single
+  // chains from looking absurd at full canvas width).
+  const scale = Math.min(targetW / rawW, targetH / rawH, 1.0)
+  const fitW = rawW * scale
+  const fitH = rawH * scale
+  const offsetX = (opts.width - fitW) / 2 - minX * scale
+  const offsetY = (opts.height - fitH) / 2 - minY * scale
+
+  const expByID = new Map<string, ChainGraphExperienceLite>()
+  for (const e of experiences) expByID.set(e.id, e)
+  for (const c of children) {
+    const exp = expByID.get(c.id ?? "")
+    if (!exp || typeof c.x !== "number" || typeof c.y !== "number") continue
+    out.set(exp.id, {
+      id: exp.id,
+      exp,
+      // Center the dot inside ELK's reported NODE_W x NODE_H box.
+      x: (c.x + (c.width ?? NODE_W) / 2) * scale + offsetX,
+      y: (c.y + (c.height ?? NODE_H) / 2) * scale + offsetY,
+    })
+  }
+  return out
+}
+
 function computeGraphLayout(
   experiences: ChainGraphExperienceLite[],
   opts: { width: number; height: number },
@@ -3905,10 +4110,31 @@ function ExperienceGraphView(props: {
     })
   })
 
-  const layout = createMemo(() => {
+  // Synchronous radial layout — used as a fallback during ELK's first paint
+  // (Web Worker async) and when ELK rejects on degenerate input. Cheap to
+  // compute every render, so we always keep it warm.
+  const syncLayout = createMemo(() => {
     const s = size()
     return computeGraphLayout(filteredExps(), { width: s.w, height: s.h })
   })
+
+  // ELK-driven layered layout. Keyed off (nodes, edges, canvas size) so it
+  // re-runs when any of those change. The renderer reads from `layout()` which
+  // falls back to syncLayout until the first ELK pass lands, then switches
+  // atomically once the worker resolves.
+  const elkInputs = createMemo(() => ({
+    exps: filteredExps(),
+    edges: props.data?.edges ?? [],
+    size: size(),
+  }))
+  const [elkLayout] = createResource(elkInputs, (input) =>
+    computeGraphLayoutElk(input.exps, input.edges, {
+      width: input.size.w,
+      height: input.size.h,
+    }),
+  )
+
+  const layout = createMemo(() => elkLayout() ?? syncLayout())
 
   const visibleEdges = createMemo(() => {
     const nodes = layout()
@@ -4243,7 +4469,7 @@ export default function RefinerPage() {
   const [activeCategory, setActiveCategory] = createSignal<string | undefined>()
   const [activeKind, setActiveKind] = createSignal<Kind | undefined>()
   const [query, setQuery] = createSignal<string>("")
-  const [sortMode, setSortMode] = createSignal<"kind" | "recent">("kind")
+  const [sortMode, setSortMode] = createSignal<"kind" | "recent" | "newest">("kind")
   const [includeArchived, setIncludeArchived] = createSignal(false)
   const [scopeMode, setScopeMode] = createSignal<"all" | "session">("all")
   const [mergeIDs, setMergeIDs] = createSignal<Set<string>>(new Set())
@@ -4402,10 +4628,18 @@ export default function RefinerPage() {
     })
   })
 
-  // Flat list sorted by last_refined_at (used when sortMode === "recent")
+  // Flat list with sort key chosen by sortMode. "recent" sorts by the latest
+  // re-refinement timestamp (intuitively "what changed lately"); "newest"
+  // sorts by birth time (`created_at`) — useful when you want to see what the
+  // refiner has been admitting into the graph in the order it discovered it,
+  // independent of subsequent edits/re-refinements.
   const visibleExperiencesFlat = createMemo(() => {
     const arr = [...visibleExperiences()]
-    arr.sort((a, b) => b.last_refined_at - a.last_refined_at)
+    if (sortMode() === "newest") {
+      arr.sort((a, b) => b.created_at - a.created_at)
+    } else {
+      arr.sort((a, b) => b.last_refined_at - a.last_refined_at)
+    }
     return arr
   })
 
@@ -4501,6 +4735,18 @@ export default function RefinerPage() {
   const handleArchiveToggle = async (id: string, archived: boolean) => {
     await withBase((b) => apiArchiveExperience(b, id, archived))
     flash(archived ? "Archived" : "Unarchived")
+    refreshAll()
+  }
+
+  const handleReview = async (id: string, status: ReviewStatus) => {
+    await withBase((b) => apiReviewExperience(b, id, status))
+    flash(
+      status === "approved"
+        ? "Approved"
+        : status === "rejected"
+        ? "Rejected"
+        : "Re-queued for review",
+    )
     refreshAll()
   }
 
@@ -4969,6 +5215,7 @@ export default function RefinerPage() {
         onReRefine={(id) => handleReRefine(id)}
         onUndo={(id) => handleUndo(id)}
         onArchiveToggle={(id, archived) => handleArchiveToggle(id, archived)}
+        onReview={(id, status) => handleReview(id, status)}
         onToggleMergeSelect={toggleMergeSelect}
         mergeSelected={(id) => mergeIDs().has(id)}
       />
