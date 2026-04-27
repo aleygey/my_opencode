@@ -13,6 +13,7 @@ import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
 import PROMPT_ORCHESTRATOR from "./prompt/orchestrator.txt"
 import PROMPT_REFINER from "./prompt/refiner.txt"
+import PROMPT_RETRIEVE from "./prompt/retrieve.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
 import { Permission } from "@/permission"
@@ -291,6 +292,21 @@ export const layer = Layer.effect(
               user,
             ),
             prompt: PROMPT_REFINER,
+          },
+          retrieve: {
+            name: "retrieve",
+            mode: "primary",
+            options: {},
+            native: true,
+            hidden: true,
+            permission: Permission.merge(
+              defaults,
+              Permission.fromConfig({
+                "*": "deny",
+              }),
+              user,
+            ),
+            prompt: PROMPT_RETRIEVE,
           },
           sandtable: {
             name: "sandtable",

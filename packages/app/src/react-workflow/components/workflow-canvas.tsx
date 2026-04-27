@@ -12,6 +12,7 @@ interface Node {
   session: string
   progress?: number
   summary?: string[]
+  stale?: boolean
 }
 
 interface CanvasChain {

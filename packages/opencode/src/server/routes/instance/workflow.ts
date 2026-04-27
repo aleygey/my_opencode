@@ -283,6 +283,201 @@ export function WorkflowRoutes() {
       },
     )
     .post(
+      "/:workflowID/edits/propose",
+      describeRoute({
+        summary: "Propose workflow graph edit",
+        description:
+          "Stage a batched graph mutation as a `workflow_edit` row in `pending` " +
+          "status. Does NOT mutate the graph; a follow-up call to " +
+          "`/edits/:editID/apply` runs the reconciler under optimistic " +
+          "concurrency. Master-only in practice — slaves should never call this.",
+        operationId: "workflow.edit.propose",
+        responses: {
+          200: {
+            description: "Proposed workflow edit",
+            content: {
+              "application/json": {
+                schema: resolver(Workflow.Edit),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator("param", z.object({ workflowID: z.string() })),
+      validator("json", Workflow.proposeEdit.schema.omit({ workflowID: true })),
+      async (c) => {
+        return c.json(
+          await Workflow.proposeEdit({
+            workflowID: c.req.valid("param").workflowID,
+            ...c.req.valid("json"),
+          }),
+        )
+      },
+    )
+    .post(
+      "/edits/:editID/apply",
+      describeRoute({
+        summary: "Apply workflow graph edit",
+        description:
+          "Run the reconciler for a `pending` edit: re-validate ops, re-check " +
+          "`graph_rev_before` against the live workflow, then atomically replay " +
+          "ops + bump `graph_rev`. Throws on stale base_rev (master must reject " +
+          "and re-propose).",
+        operationId: "workflow.edit.apply",
+        responses: {
+          200: {
+            description: "Applied workflow edit",
+            content: {
+              "application/json": {
+                schema: resolver(Workflow.Edit),
+              },
+            },
+          },
+          ...errors(400, 404, 409),
+        },
+      }),
+      validator("param", z.object({ editID: z.string() })),
+      async (c) => {
+        return c.json(await Workflow.applyEdit({ editID: c.req.valid("param").editID }))
+      },
+    )
+    .post(
+      "/edits/:editID/reject",
+      describeRoute({
+        summary: "Reject workflow graph edit",
+        description:
+          "Mark a `pending` edit as `rejected` with an audit reason. Idempotent on " +
+          "already-rejected rows; refuses already-applied / superseded edits.",
+        operationId: "workflow.edit.reject",
+        responses: {
+          200: {
+            description: "Rejected workflow edit",
+            content: {
+              "application/json": {
+                schema: resolver(Workflow.Edit),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator("param", z.object({ editID: z.string() })),
+      validator("json", Workflow.rejectEdit.schema.omit({ editID: true })),
+      async (c) => {
+        return c.json(
+          await Workflow.rejectEdit({
+            editID: c.req.valid("param").editID,
+            ...c.req.valid("json"),
+          }),
+        )
+      },
+    )
+    .get(
+      "/:workflowID/scan_ready",
+      describeRoute({
+        summary: "Scan ready workflow nodes",
+        description:
+          "Return the master's scheduling view: ranked ready candidates plus " +
+          "nodes blocked by dependency / resource. The runtime never starts " +
+          "nodes itself — the master reads this view and dispatches via " +
+          "`workflow_graph_propose(SET_NODE_STATUS=running, ...)`.",
+        operationId: "workflow.scan_ready",
+        responses: {
+          200: {
+            description: "Ready / blocked node breakdown",
+            content: {
+              "application/json": {
+                schema: resolver(Workflow.ScanReadyResult),
+              },
+            },
+          },
+          ...errors(404),
+        },
+      }),
+      validator("param", z.object({ workflowID: z.string() })),
+      async (c) => {
+        return c.json(await Workflow.scanReady(c.req.valid("param").workflowID))
+      },
+    )
+    .post(
+      "/:workflowID/resources",
+      describeRoute({
+        summary: "Update workflow resource holds",
+        description:
+          "Acquire / release exclusive resource keys against the workflow's " +
+          "`resources_held` ledger. Bumps `version` but NOT `graph_rev` — " +
+          "resource churn isn't a topology change. Returns the conflict-free " +
+          "delta the runtime committed.",
+        operationId: "workflow.resources.update",
+        responses: {
+          200: {
+            description: "Updated resource ledger",
+            content: {
+              "application/json": {
+                schema: resolver(
+                  z.object({
+                    workflow: Workflow.Info,
+                    acquired: z.array(z.object({ resource: z.string(), node_id: z.string() })),
+                    released: z.array(z.string()),
+                  }),
+                ),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator("param", z.object({ workflowID: z.string() })),
+      validator("json", Workflow.updateResources.schema.omit({ workflowID: true })),
+      async (c) => {
+        return c.json(
+          await Workflow.updateResources({
+            workflowID: c.req.valid("param").workflowID,
+            ...c.req.valid("json"),
+          }),
+        )
+      },
+    )
+    .post(
+      "/:workflowID/finalize",
+      describeRoute({
+        summary: "Finalize workflow",
+        description:
+          "Flip the workflow to a terminal status (`completed` / `failed` / " +
+          "`cancelled`), record `result_json`, stamp `time_completed`. Refuses " +
+          "while child nodes are still active unless `force: true`.",
+        operationId: "workflow.finalize",
+        responses: {
+          200: {
+            description: "Finalized workflow",
+            content: {
+              "application/json": {
+                schema: resolver(
+                  z.object({
+                    workflow: Workflow.Info,
+                    finalized_status: z.enum(["completed", "failed", "cancelled"]),
+                    fail_reason: z.string().optional(),
+                  }),
+                ),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator("param", z.object({ workflowID: z.string() })),
+      validator("json", Workflow.finalize.schema.omit({ workflowID: true })),
+      async (c) => {
+        return c.json(
+          await Workflow.finalize({
+            workflowID: c.req.valid("param").workflowID,
+            ...c.req.valid("json"),
+          }),
+        )
+      },
+    )
+    .post(
       "/:workflowID/control",
       describeRoute({
         summary: "Control workflow node",

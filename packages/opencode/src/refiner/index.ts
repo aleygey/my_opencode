@@ -114,6 +114,13 @@ const CORE_KIND_DESCRIPTIONS: Record<CoreKind, string> = {
 const Scope = z.enum(["workspace", "project", "repo", "user"])
 type Scope = z.infer<typeof Scope>
 
+// target_layer: which agent layer this experience is intended to inform.
+//   - "master": orchestrator / planner agents (build, plan, sandtable)
+//   - "slave":  task-executor subagents (general, explore, etc.)
+//   - "both":   either layer can benefit (default for back-compat)
+const TargetLayer = z.enum(["master", "slave", "both"])
+type TargetLayer = z.infer<typeof TargetLayer>
+
 const HistoryEntry = z.object({
   role: z.enum(["user", "assistant"]),
   text: z.string(),
@@ -189,6 +196,10 @@ const ExperienceSchema = z.object({
   trigger_condition: z.string().optional(),
   task_type: z.string().optional(),
   scope: Scope,
+  // Phase 2b — read-side layering (default "both" for back-compat with all
+  // existing experiences). The refiner is free to leave this at the default;
+  // retrieve uses it as a soft filter when assembling system-prompt injects.
+  target_layer: TargetLayer.default("both"),
   categories: z.array(z.string()).default([]),
   observations: z.array(ObservationSchema),
   related_experience_ids: z.array(z.string()),
@@ -1792,6 +1803,7 @@ async function createExperience(input: {
     trigger_condition: blankToUndefined(input.proposal.trigger_condition),
     task_type: blankToUndefined(input.proposal.task_type),
     scope: input.proposal.scope,
+    target_layer: "both",
     categories: input.proposal.categories ?? [],
     observations: [input.observation],
     related_experience_ids: [],
@@ -2302,6 +2314,7 @@ export namespace Refiner {
         title: clipText(text, 40),
         abstract: clipText(text, 180),
         scope: input.scope_hint ?? "workspace",
+        target_layer: "both",
         task_type: input.task_type_hint,
         categories: [],
         observations: [observation],

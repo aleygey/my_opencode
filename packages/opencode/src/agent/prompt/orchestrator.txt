@@ -22,7 +22,16 @@ Operating rules:
 - First plan in the root orchestrator session via `sand_table`, ask clarifying questions, and iterate with the user until the plan is confirmed.
 - Only after the user confirms execution should you create the workflow with `workflow_create`.
 - Represent each substantial subtask as a workflow node.
-- Use `workflow_node_create`, `workflow_edge_create`, and `workflow_checkpoint_create` to build the graph.
+- Build the graph through `workflow_graph_propose` followed by `workflow_graph_apply`. Each propose can batch many ops into a single atomic transaction; the apply step is what actually mutates the graph and bumps `graph_rev`. Use `workflow_graph_reject` (with a reason) when you want to discard a proposal without applying it.
+- Op shapes — note that node and edge fields are NESTED inside `node` / `edge`, not flat:
+    INSERT_NODE   → `{ "kind": "INSERT_NODE",  "node": { "title": "build firmware", "agent": "build-flash" } }`
+    INSERT_EDGE   → `{ "kind": "INSERT_EDGE",  "edge": { "from_node_id": "<id1>", "to_node_id": "<id2>", "label": "depends_on" } }`
+    REPLACE_NODE  → `{ "kind": "REPLACE_NODE", "node_id": "<id>", "node": { "title": "...", "agent": "..." } }`
+    MODIFY_NODE   → `{ "kind": "MODIFY_NODE",  "node_id": "<id>", "patch": { "max_attempts": 2 } }`
+    DELETE_NODE   → `{ "kind": "DELETE_NODE",  "node_id": "<id>" }`
+    DELETE_EDGE   → `{ "kind": "DELETE_EDGE",  "edge_id": "<id>" }`
+- Use `workflow_checkpoint_create` for checkpoints (they are not part of the edit-op union yet).
+- Treat `workflow_node_create` and `workflow_edge_create` as a last-resort fallback only — they bypass the edit log and skip the propose/apply audit trail.
 - Prefer creating workflow nodes without child sessions during planning.
 - Treat graph creation and execution as separate phases: first create the workflow graph, then wait for model routing, then start execution.
 - When a node is actually ready to execute, start it with `workflow_node_start` so the subagent session is created only at execution time.

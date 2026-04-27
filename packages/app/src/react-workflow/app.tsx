@@ -15,6 +15,7 @@ import {
 import { SplitBar, useSplit } from "./components/split"
 import type { WorkflowPlan } from "./components/plan-card"
 import { PlanOverlay } from "./components/plan-overlay"
+import { GraphEditsDrawer } from "./components/graph-edits-drawer"
 import type { SandTableResult } from "./components/sand-table-card"
 import { ChevronUp } from "lucide-react"
 import { initPlugins } from "./plugins"
@@ -38,6 +39,12 @@ export type Node = {
   status: Status
   session: string
   summary?: string[]
+  /**
+   * True when this node started against an older graph_rev than the current
+   * workflow.graph_rev — surfaced as a "stale" badge so users notice that a
+   * downstream edit may have invalidated its inputs.
+   */
+  stale?: boolean
 }
 
 export type Chain = {
@@ -127,6 +134,7 @@ export type WorkflowAppProps = {
   sandTables?: Record<string, SandTableDiscussion | undefined>
   onSession: (node?: string) => void
   onRefiner?: (node?: string) => void
+  onRetrieve?: (node?: string) => void
   onTaskSelect?: (task: string) => void
   onModel: (nodeIDs?: string[]) => void
   onModelChange?: (model: string) => void
@@ -163,12 +171,49 @@ export type WorkflowAppProps = {
   historyHasMore?: boolean
   historyLoading?: boolean
   onLoadMoreHistory?: () => void
+  /** P1 — current dynamic-graph revision counter. Bumped server-side on
+   * every applied topology edit; surfaced in the TopBar as a small `rev #N`
+   * chip so the user can spot in-flight schema churn at a glance. */
+  graphRev?: number
+  /** P3 — pending graph-edit transactions (proposed but not yet applied).
+   * Rendered as an amber chip with the count + a click target the user can
+   * use to apply / reject the queue. */
+  pendingEdits?: WorkflowGraphEdit[]
+  /** P5 — terminal status when the workflow has been finalised. Drives the
+   * "finalized · status" chip in the TopBar; further graph writes are
+   * server-side rejected. */
+  finalizedStatus?: "completed" | "failed" | "cancelled"
+  /** P3 — apply a single pending edit (runs the server-side reconciler). */
+  onApplyEdit?: (editID: string) => void
+  /** P3 — reject a pending edit with an audit reason. */
+  onRejectEdit?: (editID: string, reason: string) => void
+  /** P5 — finalise the workflow into a terminal state. */
+  onFinalize?: (status: "completed" | "failed" | "cancelled", failReason?: string) => void
+}
+
+/** P3 — slim FE projection of `Workflow.Edit` as seen by react-workflow.
+ *  Mirrors the SolidJS `WorkflowEdit` shape but kept structurally lazy
+ *  so a server-side schema tweak doesn't immediately break the panel. */
+export type WorkflowGraphEdit = {
+  id: string
+  status: "pending" | "applied" | "rejected" | "superseded"
+  ops: Array<{ kind: string } & Record<string, unknown>>
+  reason?: string
+  reject_reason?: string
+  graph_rev_before: number
+  graph_rev_after?: number
+  proposer_session_id?: string
+  time: { created: number; applied?: number }
 }
 
 export function WorkflowApp(props: WorkflowAppProps) {
   const [pick, setPick] = useState<string | null>(props.pick ?? props.nodes[0]?.id ?? null)
   const [sidebar, setSidebar] = useState(false)
   const [sessionNode, setSessionNode] = useState<string | null>(null)
+  // P3 — graph-edit drawer visibility. Opens when the TopBar pending-edits
+  // chip is clicked; renders the pending queue with apply/reject controls
+  // and a finalise button when the workflow is still active.
+  const [editsOpen, setEditsOpen] = useState(false)
   // ── Plan modal state ──
   // Plans live on chat messages (msg.plan). Instead of rendering them
   // inline in the chat stream, we surface them as a fullscreen overlay
@@ -444,10 +489,15 @@ export function WorkflowApp(props: WorkflowAppProps) {
           onTaskSidebarToggle={() => setSidebar((v) => !v)}
           onModelClick={props.onModel}
           onRefinerClick={() => props.onRefiner?.(node?.id)}
+          onRetrieveClick={() => props.onRetrieve?.(node?.id)}
           onRunClick={() => props.onRun(node?.id)}
           onRestartClick={() => props.onRestart(node?.id)}
           onStopClick={() => props.onStop(node?.id)}
           onPauseClick={() => props.onPause(node?.id)}
+          graphRev={props.graphRev}
+          pendingEditsCount={(props.pendingEdits ?? []).filter((e) => e.status === "pending").length}
+          finalizedStatus={props.finalizedStatus}
+          onShowEdits={() => setEditsOpen(true)}
         />
 
         <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -621,6 +671,21 @@ export function WorkflowApp(props: WorkflowAppProps) {
           onDeleteTask={(id) => {
             props.onDeleteTask?.(id)
           }}
+        />
+
+        {/* P5 — Graph edits drawer. Mounted inside the relative container
+         * so its absolute backdrop only covers the workflow surface, not the
+         * surrounding session shell. Visibility is controlled by the
+         * `editsOpen` state, toggled from the TopBar pending-edits chip. */}
+        <GraphEditsDrawer
+          open={editsOpen}
+          onClose={() => setEditsOpen(false)}
+          graphRev={props.graphRev}
+          edits={props.pendingEdits ?? []}
+          finalizedStatus={props.finalizedStatus}
+          onApply={props.onApplyEdit}
+          onReject={props.onRejectEdit}
+          onFinalize={props.onFinalize}
         />
       </div>
       {/* Plan overlay — rendered last so it layers above the canvas,

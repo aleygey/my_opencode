@@ -107,10 +107,22 @@ interface TopBarProps {
   // and the Session button was a near-noop — see removal in commit history.
   onModelClick?: () => void
   onRefinerClick?: () => void
+  onRetrieveClick?: () => void
   onRunClick?: () => void
   onRestartClick?: () => void
   onStopClick?: () => void
   onPauseClick?: () => void
+  /** P1 — current dynamic-graph revision (server-side `workflow.graph_rev`).
+   *  Surfaced as a small mono `rev #N` chip so the user can spot in-flight
+   *  topology churn at a glance and reason about edit base_rev mismatches. */
+  graphRev?: number
+  /** P3 — number of `workflow_edit` rows in `pending` status. When > 0
+   *  the TopBar shows an amber chip; clicking it fires `onShowEdits`. */
+  pendingEditsCount?: number
+  /** P5 — terminal status when the workflow has been finalised. */
+  finalizedStatus?: "completed" | "failed" | "cancelled"
+  /** P3 — open the pending-edits drawer (apply / reject / inspect). */
+  onShowEdits?: () => void
 }
 
 export function TopBar({
@@ -122,10 +134,15 @@ export function TopBar({
   onTaskSidebarToggle,
   onModelClick,
   onRefinerClick,
+  onRetrieveClick,
   onRunClick,
   onRestartClick,
   onStopClick,
   onPauseClick,
+  graphRev,
+  pendingEditsCount,
+  finalizedStatus,
+  onShowEdits,
 }: TopBarProps) {
   const theme = useTheme()
   const isRunning = sessionStatus === 'running'
@@ -210,6 +227,40 @@ export function TopBar({
             </>
           )}
         </div>
+
+        {/* P1/P3/P5 — dynamic-graph chips. graph_rev shows the live
+         * topology revision; pending-edits is a clickable amber chip
+         * that opens the edits drawer; finalized appears once the
+         * workflow has been moved to a terminal status. All three are
+         * silent when not applicable, so legacy workflows pre-P1 stay
+         * visually identical to before. */}
+        {typeof graphRev === "number" && (
+          <span
+            title="Workflow graph revision (bumps on each applied topology edit)"
+            className="ml-1 inline-flex h-6 items-center rounded-full border border-[var(--wf-line)] bg-[var(--wf-surface)] px-2 font-mono text-[10px] text-[var(--wf-dim)]"
+          >
+            rev #{graphRev}
+          </span>
+        )}
+        {typeof pendingEditsCount === "number" && pendingEditsCount > 0 && (
+          <button
+            type="button"
+            onClick={onShowEdits}
+            title="Pending graph-edit proposals — click to review / apply / reject"
+            className="ml-1 inline-flex h-6 items-center gap-1 rounded-full border border-amber-300/70 bg-amber-100/70 px-2 text-[10px] font-semibold text-amber-800 transition hover:bg-amber-200/70 dark:border-amber-500/40 dark:bg-amber-500/15 dark:text-amber-200 dark:hover:bg-amber-500/25"
+          >
+            <span className="size-1.5 rounded-full bg-amber-500" />
+            {pendingEditsCount} pending edit{pendingEditsCount === 1 ? "" : "s"}
+          </button>
+        )}
+        {finalizedStatus && (
+          <span
+            title="Workflow finalised — further graph writes are server-side rejected"
+            className="ml-1 inline-flex h-6 items-center rounded-full border border-[var(--wf-line)] bg-[var(--wf-surface)] px-2 text-[10px] font-medium text-[var(--wf-dim)]"
+          >
+            finalized · {finalizedStatus}
+          </span>
+        )}
       </div>
 
       {/* Right cluster */}
@@ -262,6 +313,13 @@ export function TopBar({
           <button onClick={onRefinerClick} className="wf-topbar-text-btn">
             <Layers3 className="h-3.5 w-3.5" strokeWidth={1.6} />
             <span>Refiner</span>
+          </button>
+        )}
+
+        {onRetrieveClick && (
+          <button onClick={onRetrieveClick} className="wf-topbar-text-btn">
+            <Zap className="h-3.5 w-3.5" strokeWidth={1.6} />
+            <span>Retrieve</span>
           </button>
         )}
 

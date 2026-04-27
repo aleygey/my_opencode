@@ -15,6 +15,7 @@ import { SessionCompaction } from "./compaction"
 import { Bus } from "../bus"
 import { ProviderTransform } from "../provider"
 import { SystemPrompt } from "./system"
+import { Retrieve } from "../retrieve"
 import { Instruction } from "./instruction"
 import { Plugin } from "../plugin"
 import PROMPT_PLAN from "../session/prompt/plan.txt"
@@ -1477,6 +1478,28 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               MessageV2.toModelMessagesEffect(msgs, model),
             ])
             const system = [...env, ...(skills ? [skills] : []), ...instructions]
+            // Phase 2b — retrieve agent: inject relevant experiences into the
+            // system prompt. The Retrieve service swallows all errors and
+            // returns a benign default, so Effect.promise is safe here. Only
+            // runs on step 1 of a user turn so tool-call iterations don't
+            // re-pay latency or duplicate injects.
+            if (step === 1) {
+              const userText = lastUserMsg?.parts
+                .filter((p): p is MessageV2.TextPart => p.type === "text" && !p.ignored && !p.synthetic)
+                .map((p) => p.text)
+                .join("\n")
+                .slice(0, 4000)
+              const retrieved = yield* Effect.promise(() =>
+                Retrieve.selectForSession({
+                  sessionID,
+                  agentName: agent.name,
+                  userText,
+                }),
+              )
+              if (retrieved.system_text) {
+                system.push(retrieved.system_text)
+              }
+            }
             const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
             const result = yield* handle.process({
@@ -1520,6 +1543,10 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 auto: true,
                 overflow: !handle.message.finish,
               })
+              // Phase 2b — clear retrieve's per-session inject memory so the
+              // next post-compaction turn re-injects from scratch. The new
+              // truncated history may surface different needs.
+              yield* Effect.tryPromise(() => Retrieve.resetSession(sessionID)).pipe(Effect.ignore)
             }
             return "continue" as const
           }).pipe(Effect.ensuring(instruction.clear(handle.message.id)))
