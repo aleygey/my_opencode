@@ -79,8 +79,23 @@ export function WorkflowNode({ title, type, status, progress, summary, stale, is
 
         {/* Content */}
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <h3 className="truncate text-[12.5px] font-semibold leading-5 tracking-[-0.01em] text-[var(--wf-ink)]">{title}</h3>
+          <div className="flex items-start gap-2">
+            <h3
+              title={title}
+              className="text-[13px] font-semibold leading-5 tracking-[-0.01em] text-[var(--wf-ink)] min-w-0 flex-1"
+              style={{
+                // Allow up to 2 lines for long titles instead of single-line
+                // truncation that lopped off the most informative tail of LLM-
+                // generated names like "Run integration test suite for new …".
+                display: '-webkit-box',
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: 'vertical',
+                overflow: 'hidden',
+                wordBreak: 'break-word',
+              }}
+            >
+              {title}
+            </h3>
             {stale && (
               <span
                 title="Graph was edited after this node started — its inputs may be out of date."
@@ -133,7 +148,7 @@ export function WorkflowNode({ title, type, status, progress, summary, stale, is
                   {summary.slice(0, 3).map((item) => (
                     <span
                       key={item}
-                      className="inline-flex max-w-[92px] truncate rounded-full bg-[var(--wf-chip)] px-1.5 py-0.5 text-[9.5px] font-medium text-[var(--wf-ink-soft)]"
+                      className="inline-flex max-w-[140px] truncate rounded-full bg-[var(--wf-chip)] px-2 py-0.5 text-[10px] font-medium text-[var(--wf-ink-soft)]"
                       title={item}
                     >
                       {item}

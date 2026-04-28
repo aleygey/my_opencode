@@ -649,6 +649,30 @@ export const WorkflowNodeStartTool = Tool.define(
             }
           }
 
+          // P4 hard-cap on parallelism. `scanReady` only advertises the
+          // `saturated` flag — the master is meant to honour it but in practice
+          // the LLM frequently fans out far past `max_concurrent_nodes` (the
+          // user reported "并行数量有点大，看上去没有限制").
+          // Enforce the cap at the runtime level by refusing the start when
+          // the node is about to transition into a slot-consuming state
+          // (`running` / `waiting`). Idempotent re-calls on an already-running
+          // node are handled by the early-return above so they don't trip
+          // this check. We deliberately skip the cap when the caller asks
+          // for `status: "ready"` because that just attaches a session
+          // without consuming a slot.
+          const targetStatus = input.status ?? "running"
+          if (targetStatus === "running" || targetStatus === "waiting") {
+            const scan = yield* Effect.promise(() => Workflow.scanReady(current.workflow_id))
+            if (scan.running_count >= scan.max_concurrent) {
+              throw new Error(
+                `Workflow ${current.workflow_id} is at the parallel-execution cap ` +
+                  `(${scan.running_count}/${scan.max_concurrent} running). ` +
+                  `Wait for at least one node to finish before starting ${current.id}, ` +
+                  `or raise max_concurrent_nodes on the workflow.`,
+              )
+            }
+          }
+
           const picked = input.model ?? current.model
           if (!configured(picked)) {
             throw new Error(

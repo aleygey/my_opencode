@@ -6,6 +6,7 @@ import { WorkflowCanvas } from "./components/workflow-canvas"
 import { EnhancedInspectorPanel } from "./components/enhanced-inspector-panel"
 import { ChatPanel } from "./components/chat-panel"
 import type { Msg as ChatMsg } from "./components/chat-panel"
+import type { SlashCommand } from "./commands"
 import { TaskSidebar, type Task } from "./components/task-sidebar"
 import { NodeSessionView } from "./components/node-session-view"
 import {
@@ -125,6 +126,12 @@ export type WorkflowAppProps = {
   workspace?: string
   nodes: Node[]
   chains?: Chain[]
+  /** Optional merge-tail node — a single node downstream of multiple lanes
+   * that the canvas should render *after* the lanes with a converging
+   * connector (mirror of the top fan-out `BranchConnector`). When the
+   * graph has no fan-in (or only a single lane), this is undefined and
+   * the canvas falls back to plain lane rendering. */
+  chainTail?: Node
   tasks?: Task[]
   activeTaskId?: string
   details: Record<string, Detail>
@@ -155,6 +162,16 @@ export type WorkflowAppProps = {
   // Slash command callbacks
   onNewSession?: () => void
   onModelPickerOpen?: () => void
+  /** Server-side custom slash commands (from `sync.data.command`). When
+   * provided, these are merged into the chat-panel command palette
+   * alongside the built-ins (`/undo`, `/redo`, `/compact`, `/fork`,
+   * `/new`, `/model`). Without this wiring the user cannot discover
+   * project-defined commands like `/tmp`, `/notrack`, etc. — and even
+   * if they type the trigger by hand, the autocomplete won't match.
+   * The actual dispatch (when `action: "send"`) flows through
+   * `onSendMessage` / `onSend` which then routes to
+   * `client.session.command(...)` in `workflow-panel.tsx#send`. */
+  chatExtraCommands?: SlashCommand[]
   // Plan card callbacks
   onPlanRun?: (plan: WorkflowPlan) => void
   onPlanEdit?: (context: string) => void
@@ -522,6 +539,7 @@ export function WorkflowApp(props: WorkflowAppProps) {
                   completedCount: nodeProgress.done,
                 }}
                 chains={canvasChains}
+                tail={props.chainTail}
                 selectedNodeId={pick}
                 onNodeSelect={(id) => {
                   // Selecting a node only updates the inspector — it never
@@ -585,6 +603,7 @@ export function WorkflowApp(props: WorkflowAppProps) {
                   onWorkspaceClick={props.onWorkspaceClick}
                   onNewSession={props.onNewSession}
                   onModelPickerOpen={props.onModelPickerOpen ?? props.onModel}
+                  extraCommands={props.chatExtraCommands}
                   onPlanRun={props.onPlanRun}
                   onPlanEdit={props.onPlanEdit}
                   isRunning={rootSessionRunning}
