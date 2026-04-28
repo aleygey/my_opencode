@@ -26,6 +26,7 @@ import { SessionHeader } from "@/components/session"
 import { usePlatform } from "@/context/platform"
 import { useSDK } from "@/context/sdk"
 import { useServer } from "@/context/server"
+import { stableFetcher } from "@/utils/stable-fetch"
 import "./retrieve-page.css"
 
 /* ──────────────────────────────────────────────────────
@@ -231,16 +232,22 @@ export default function RetrievePage() {
     }
   }
 
-  const [logResource, { refetch }] = createResource(logArgs, async (input) => {
-    return await fetchLog({
-      sessionID: input.sessionID,
-      baseUrl: input.baseUrl,
-      directory: input.directory,
-      password: input.password,
-      username: input.username,
-      fetcher: input.fetcher,
-    })
-  })
+  // `stableFetcher` keeps the previous reference when the polled payload is
+  // structurally identical — without it, the 5s refetch would re-key the
+  // entry list every cycle and the page would visibly flash.
+  const [logResource, { refetch }] = createResource(
+    logArgs,
+    stableFetcher(async (input: NonNullable<ReturnType<typeof logArgs>>) => {
+      return await fetchLog({
+        sessionID: input.sessionID,
+        baseUrl: input.baseUrl,
+        directory: input.directory,
+        password: input.password,
+        username: input.username,
+        fetcher: input.fetcher,
+      })
+    }),
+  )
 
   // Auto-refresh while page is open. 5s interval is gentle on the backend.
   let interval: ReturnType<typeof setInterval> | undefined
@@ -321,7 +328,13 @@ export default function RetrievePage() {
 
       <div class="retrieve-body">
         <div class="retrieve-list-pane">
-          <Show when={!logResource.loading} fallback={<div class="retrieve-empty">Loading…</div>}>
+          {/*
+            Use `.latest` instead of `!logResource.loading` so that a 5s
+            polling refetch doesn't briefly flip this Show into the
+            "Loading…" fallback. We only want the spinner on the very first
+            load (no prior data), not on every poll cycle.
+          */}
+          <Show when={logResource.latest} fallback={<div class="retrieve-empty">Loading…</div>}>
             <Show
               when={entries().length > 0}
               fallback={

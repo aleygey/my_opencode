@@ -132,15 +132,18 @@ export const layer = Layer.effect(
             permission: Permission.merge(
               defaults,
               Permission.fromConfig({
-                // Plan-first contract: implementation agents (coding /
-                // build-flash / debug / deploy) must be delegated to via
-                // workflow_node_create + workflow_node_start, never via the
-                // generic task tool. Only `explore` is allowed through `task`
-                // because it's the read-only research path during planning.
-                task: {
-                  "*": "deny",
-                  explore: "allow",
-                },
+                // Plan-first contract: every agent delegation — including
+                // `explore` — MUST go through workflow nodes
+                // (workflow_node_create + workflow_node_start) so the user
+                // can see and inspect each subagent on the canvas. The
+                // generic `task` tool is denied wholesale here so the model
+                // can't fall back to an off-canvas dispatch when the prompt
+                // alone fails to discourage it. (Earlier versions allowed
+                // `task` -> `explore` as a planning shortcut; that exception
+                // is now removed because it conflicted with the prompt and
+                // led to explore runs that didn't appear in the workflow
+                // graph.)
+                task: { "*": "deny" },
                 edit: { "*": "deny" },
                 write: { "*": "deny" },
                 patch: { "*": "deny" },

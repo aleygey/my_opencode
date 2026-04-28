@@ -16,6 +16,7 @@ import { useModels } from "@/context/models"
 import { usePlatform } from "@/context/platform"
 import { useSDK } from "@/context/sdk"
 import { useServer } from "@/context/server"
+import { stableFetcher } from "@/utils/stable-fetch"
 import "./refiner-page.css"
 
 // One ELK instance is enough — it's stateless across calls and reuses an
@@ -4545,15 +4546,19 @@ export default function RefinerPage() {
     }
   }
 
-  const [overview, { refetch }] = createResource(overviewArgs, fetchOverview)
+  // Each resource is wrapped in `stableFetcher` so polling refetches don't
+  // produce new object references when the server returned an identical
+  // payload — that would otherwise re-key every <For> row and re-run every
+  // memo, causing the visible "page keeps refreshing" flash.
+  const [overview, { refetch }] = createResource(overviewArgs, stableFetcher(fetchOverview))
   const [taxonomy, { refetch: refetchTaxonomy }] = createResource(
     taxonomyArgs,
-    fetchTaxonomy,
+    stableFetcher(fetchTaxonomy),
   )
-  const [config, { refetch: refetchConfig }] = createResource(taxonomyArgs, fetchConfig)
+  const [config, { refetch: refetchConfig }] = createResource(taxonomyArgs, stableFetcher(fetchConfig))
   const [categoriesData, { refetch: refetchCategories }] = createResource(
     taxonomyArgs,
-    fetchCategories,
+    stableFetcher(fetchCategories),
   )
   // Full chain graph is only fetched while the Graph tab is open to avoid
   // paying the round-trip on every list-page view.
@@ -4565,7 +4570,9 @@ export default function RefinerPage() {
   }
   const [chainGraph, { refetch: refetchChainGraph }] = createResource(
     chainGraphArgs,
-    (args) => fetchChainGraph(args.base, { includeArchived: args.includeArchived }),
+    stableFetcher((args: { base: ApiBase; includeArchived: boolean }) =>
+      fetchChainGraph(args.base, { includeArchived: args.includeArchived }),
+    ),
   )
 
   // Auto-open the most recent experience ONCE on first data load.
@@ -5086,8 +5093,10 @@ export default function RefinerPage() {
         <Show when={viewMode() === "graph"}>
           <div class="rf-main rf-main-graph">
             <ExperienceGraphView
-              data={chainGraph()}
-              loading={chainGraph.loading}
+              data={chainGraph.latest}
+              // Only show "loading" on the first load; during a poll refetch
+              // we keep the previous graph mounted so the page doesn't flash.
+              loading={chainGraph.loading && !chainGraph.latest}
               onPick={pickExperienceByID}
               activeKind={activeKind()}
               activeEdgeKinds={graphEdgeKinds()}

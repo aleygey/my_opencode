@@ -2445,6 +2445,26 @@ export namespace Workflow {
     }),
     async (input) => {
       await state()
+      // Per-agent model inheritance — see the INSERT_NODE branch in
+      // applyGraphProposal for the rationale. Mirrored here so the legacy
+      // direct-create path doesn't silently regress to "no model" when the
+      // user has already configured the agent via the inspector pill.
+      const resolvedModel = await Database.use((db) => {
+        if (input.model) return input.model
+        const peer = db
+          .select({ model: WorkflowNodeTable.model })
+          .from(WorkflowNodeTable)
+          .where(
+            and(
+              eq(WorkflowNodeTable.workflow_id, input.workflowID),
+              eq(WorkflowNodeTable.agent, input.agent),
+            ),
+          )
+          .orderBy(desc(WorkflowNodeTable.time_created))
+          .limit(1)
+          .get()
+        return peer?.model ?? undefined
+      })
       const row = Database.use((db) =>
         db
           .insert(WorkflowNodeTable)
@@ -2454,7 +2474,7 @@ export namespace Workflow {
             session_id: input.session_id,
             title: input.title,
             agent: input.agent,
-            model: input.model,
+            model: resolvedModel,
             config: input.config,
             status: input.status ?? "pending",
             result_status: input.result_status ?? "unknown",
@@ -2782,6 +2802,32 @@ export namespace Workflow {
         for (const op of parsed.data) {
           if (op.kind === "INSERT_NODE") {
             const id = op.node.id ?? nodeID()
+            // Per-agent model inheritance: when the orchestrator does not
+            // pin a model on a new node, fall back to the model of the most
+            // recent node in this workflow that uses the same `agent`. This
+            // is the persistence path for "user clicked the agent pill in
+            // the workflow inspector and chose sonnet for `coding`" — the
+            // PATCH already updates current peers, and this clause makes
+            // the choice carry to subsequently-created peers without
+            // requiring a new schema field. Explicit model on the op
+            // always wins.
+            const inheritedModel =
+              op.node.model ??
+              (() => {
+                const peer = tx
+                  .select({ model: WorkflowNodeTable.model })
+                  .from(WorkflowNodeTable)
+                  .where(
+                    and(
+                      eq(WorkflowNodeTable.workflow_id, existing.workflow_id),
+                      eq(WorkflowNodeTable.agent, op.node.agent),
+                    ),
+                  )
+                  .orderBy(desc(WorkflowNodeTable.time_created))
+                  .limit(1)
+                  .get()
+                return peer?.model ?? null
+              })()
             tx.insert(WorkflowNodeTable)
               .values({
                 id,
@@ -2789,7 +2835,7 @@ export namespace Workflow {
                 session_id: op.node.session_id,
                 title: op.node.title,
                 agent: op.node.agent,
-                model: op.node.model,
+                model: inheritedModel,
                 config: op.node.config,
                 input_ports: op.node.input_ports,
                 output_ports: op.node.output_ports,

@@ -284,9 +284,9 @@ function TaskCard({
                     <Icon className="h-3 w-3" strokeWidth={1.8} />
                   </div>
 
-                  <div className="min-w-0 flex-1">
-                    <span className="block truncate text-[11px] font-medium text-[var(--wf-ink)]">{node.title}</span>
-                    <span className="mt-px block text-[9.5px] font-medium capitalize text-[var(--wf-dim)]">{node.type.replace('-', ' ')}</span>
+                  <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                    <span className="truncate text-[11px] font-medium text-[var(--wf-ink)]">{node.title}</span>
+                    <span className="flex-shrink-0 text-[9.5px] font-medium capitalize text-[var(--wf-dim)]">{node.type.replace('-', ' ')}</span>
                   </div>
 
                   <StatusDot status={node.status} />
