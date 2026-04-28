@@ -131,6 +131,13 @@ type SessionState = {
   lastInjected: Set<string>
   /** Monotonically-increasing turn counter (1-indexed). */
   turnIndex: number
+  /**
+   * Cached system_text from the most recent real (non-dry-run) injection.
+   * Once set, subsequent turns reuse it verbatim and skip the retrieve LLM
+   * call entirely until `resetSession` (called on compaction) clears it.
+   * This implements "已注入过的 exp 后续不再走 LLM，直到压缩重置".
+   */
+  cachedSystemText?: string
 }
 
 type InstanceState = {
@@ -786,7 +793,23 @@ export namespace Retrieve {
       if (!cfgEnabled) {
         return { picked: [], diff: { added: [], removed: [], kept: [] } }
       }
+      // Fast path — already injected this compaction cycle. Reuse the cached
+      // system_text and skip the retrieve LLM (the expensive bit, ~tens of
+      // seconds). `resetSession` clears the cache on compaction, so the very
+      // next turn after compaction re-runs the full pipeline.
+      const ss = sessionState(input.sessionID)
+      if (ss.cachedSystemText !== undefined) {
+        return {
+          system_text: ss.cachedSystemText,
+          picked: [],
+          diff: { added: [], removed: [], kept: [...ss.lastInjected] },
+        }
+      }
       const { result, logEntry } = await runPipeline({ ...input, dryRun: false })
+      // Remember what we injected so the next turn can short-circuit. Empty
+      // picks → cache empty string so we still skip the LLM next turn (the
+      // pipeline already decided "nothing to inject"; no point re-deciding).
+      ss.cachedSystemText = result.system_text ?? ""
       // fire-and-forget log persistence
       void appendLog(logEntry)
       return result
