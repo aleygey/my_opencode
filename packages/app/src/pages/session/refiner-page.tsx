@@ -4587,14 +4587,36 @@ export default function RefinerPage() {
     if (latest) setSelection({ kind: "experience", id: `experience:${latest.id}` })
   })
 
-  const poll = setInterval(() => {
+  // Polling cadence: drop to 15s and pause while the tab is hidden. The
+  // overview/taxonomy/config/categories endpoints don't change quickly, and
+  // the user typically discovers new refinements via observable activity in
+  // the app, not by staring at the page. Hidden-tab pause avoids burning
+  // bandwidth when the page is in the background.
+  const POLL_INTERVAL_MS = 15000
+  const tickPoll = () => {
+    if (typeof document !== "undefined" && document.visibilityState !== "visible") return
     void refetch()
     void refetchTaxonomy()
     void refetchConfig()
     void refetchCategories()
     if (viewMode() === "graph") void refetchChainGraph()
-  }, 4000)
-  onCleanup(() => clearInterval(poll))
+  }
+  const poll = setInterval(tickPoll, POLL_INTERVAL_MS)
+  // Resume immediately when the user returns to the tab so they don't have to
+  // wait an entire interval to see fresh data after coming back.
+  const onVisibility = () => {
+    if (typeof document === "undefined") return
+    if (document.visibilityState === "visible") tickPoll()
+  }
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", onVisibility)
+  }
+  onCleanup(() => {
+    clearInterval(poll)
+    if (typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", onVisibility)
+    }
+  })
 
   const refreshAll = () => {
     void refetch()

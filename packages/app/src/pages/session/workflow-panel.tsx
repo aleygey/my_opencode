@@ -2852,7 +2852,13 @@ export function WorkflowRuntimePanel(props: {
       title: `/${cmd.name}`,
       description: cmd.description ?? "",
       category: "session" as const,
-      action: "send" as const,
+      // Server-defined commands (notrack, tmp, …) are typically prefixes
+      // for a user-supplied message — picking them from the popover should
+      // *insert* `/<cmd> ` into the input so the user can keep typing,
+      // not auto-send a bare `/<cmd>`. The actual server-side dispatch
+      // happens later when the user presses Enter and `send()` recognises
+      // the leading slash via `client.session.command(...)`.
+      action: "insert" as const,
     })),
   )
 

@@ -4,6 +4,14 @@ export interface SlashCommandCallbacks {
   onSendMessage?: (msg: string) => void
   onNewSession?: () => void
   onModelPickerOpen?: () => void
+  /**
+   * Called for `action: 'insert'` commands — receives the text to put in
+   * the input box (typically `"/<trigger> "` with a trailing space) so the
+   * user can keep typing arguments before pressing Enter. The chat panel
+   * is responsible for setting the textarea value and placing the caret at
+   * the end.
+   */
+  onInsertText?: (text: string) => void
 }
 
 export interface SlashCommand {
@@ -12,8 +20,16 @@ export interface SlashCommand {
   title: string
   description: string
   category: SlashCommandCategory
-  /** 'send': calls onSendMessage("/<trigger>"); 'local': calls the named callback without sending */
-  action: 'send' | 'local'
+  /**
+   * - 'send':   calls onSendMessage("/<trigger>") immediately on Tab/Enter.
+   *             Use for zero-arg commands (`/compact`, `/undo`, …).
+   * - 'local':  calls the named callback without sending (`/new`, `/model`).
+   * - 'insert': fills the input with "/<trigger> " (trailing space) and
+   *             leaves it for the user to type arguments. Use for commands
+   *             that take a user-supplied message (`/notrack <msg>`,
+   *             `/tmp <msg>`, etc.).
+   */
+  action: 'send' | 'local' | 'insert'
   localCallbackKey?: keyof SlashCommandCallbacks
 }
 

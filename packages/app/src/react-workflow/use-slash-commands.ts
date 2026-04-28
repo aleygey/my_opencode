@@ -59,6 +59,11 @@ export function useSlashCommands({ callbacks, extraCommands = [] }: UseSlashComm
       closePopover()
       if (cmd.action === 'send') {
         callbacks.onSendMessage?.(`/${cmd.trigger}`)
+      } else if (cmd.action === 'insert') {
+        // Don't send — fill the input with `"/<trigger> "` and let the
+        // user type arguments before pressing Enter themselves. Used for
+        // commands that take a user-supplied message (e.g. `/notrack`).
+        callbacks.onInsertText?.(`/${cmd.trigger} `)
       } else if (cmd.action === 'local' && cmd.localCallbackKey) {
         const cb = callbacks[cmd.localCallbackKey]
         if (typeof cb === 'function') (cb as () => void)()

@@ -554,6 +554,22 @@ export function ChatPanel(props: Props) {
       onSendMessage: props.onSendMessage,
       onNewSession: props.onNewSession,
       onModelPickerOpen: props.onModelPickerOpen,
+      // Insert-action handler — fills the input with the command prefix
+      // and lets the user keep typing. The popover onSelect below skips
+      // its `setMsg('')` clear when the chosen command was an insert
+      // command, so the prefix survives until the user hits Enter.
+      onInsertText: (text) => {
+        setMsg(text)
+        // Defer focus + caret-to-end so React commits the value first.
+        requestAnimationFrame(() => {
+          const el = textareaRef.current
+          if (!el) return
+          el.style.height = 'auto'
+          el.style.height = `${Math.min(el.scrollHeight, 120)}px`
+          el.focus()
+          el.setSelectionRange(text.length, text.length)
+        })
+      },
     },
     extraCommands: props.extraCommands,
   })
@@ -1238,10 +1254,15 @@ export function ChatPanel(props: Props) {
             activeId={slash.activeId}
             onSelect={(cmd) => {
               slash.executeCommand(cmd)
-              setMsg('')
-              if (textareaRef.current) {
-                textareaRef.current.style.height = 'auto'
-                textareaRef.current.focus()
+              // For 'insert' commands, executeCommand has already populated
+              // the input via onInsertText — clearing it here would undo
+              // that. Only clear for send / local commands.
+              if (cmd.action !== 'insert') {
+                setMsg('')
+                if (textareaRef.current) {
+                  textareaRef.current.style.height = 'auto'
+                  textareaRef.current.focus()
+                }
               }
             }}
             onHover={slash.setActiveId}
