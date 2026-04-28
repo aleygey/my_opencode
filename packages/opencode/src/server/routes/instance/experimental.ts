@@ -17,8 +17,18 @@ import { lazy } from "@/util/lazy"
 import { Effect, Option } from "effect"
 import { Agent } from "@/agent/agent"
 import { Refiner } from "@/refiner"
-import { Retrieve } from "@/retrieve"
+// Retrieve is intentionally lazy-imported at the call sites below.
+// Reason: pulling `@/retrieve` into the static module graph (via a top-level
+// `import { Retrieve } from "@/retrieve"`) deadlocks `bun --compile`'s
+// startup-time module loader, producing a 100% CPU spin in stripped binary
+// frames before the HTTP server ever binds. The module body has no top-level
+// side effects — it's purely the AOT bundler's chunk-init ordering that
+// breaks. See commit message + git bisect at 54d99fb9f for the regression
+// trail. DO NOT promote this to a static import without re-verifying the
+// AOT smoke test (`script/build.ts` boots `serve` and probes a route).
 import { jsonRequest, runRequest } from "./trace"
+
+const loadRetrieve = () => import("@/retrieve").then((m) => m.Retrieve)
 
 const ConsoleOrgOption = z.object({
   accountID: z.string(),
@@ -247,6 +257,7 @@ export const ExperimentalRoutes = lazy(() =>
       ),
       async (c) => {
         const query = c.req.valid("query")
+        const Retrieve = await loadRetrieve()
         const entries = await Retrieve.listLog({
           sessionID: query.session_id,
           limit: query.limit ?? 100,
@@ -283,6 +294,7 @@ export const ExperimentalRoutes = lazy(() =>
       ),
       async (c) => {
         const body = c.req.valid("json")
+        const Retrieve = await loadRetrieve()
         const preview = await Retrieve.preview({
           sessionID: body.session_id,
           agentName: body.agent_name,

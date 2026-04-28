@@ -242,16 +242,103 @@ for (const item of targets) {
     },
   })
 
-  // Smoke test: only run if binary is for current platform
+  // Smoke test: only run if binary is for current platform.
+  // We run TWO checks:
+  //   1. `--version` — verifies CLI arg parsing and the cheap startup path.
+  //   2. `serve` — actually binds the HTTP listener, exercising the full
+  //      module graph (experimental routes, session/prompt, retrieve, etc.).
+  //      This is the regression guard against `bun --compile` startup-time
+  //      module-loader deadlocks: a hung binary can produce a working
+  //      `--version` but never bind the port. See git bisect 54d99fb9f for
+  //      the prior incident that motivated this check.
   if (item.os === process.platform && item.arch === process.arch && !item.abi) {
     const binaryPath = `dist/${name}/bin/opencode`
-    console.log(`Running smoke test: ${binaryPath} --version`)
+    console.log(`Running smoke test (--version): ${binaryPath}`)
     try {
       const versionOutput = await $`${binaryPath} --version`.text()
-      console.log(`Smoke test passed: ${versionOutput.trim()}`)
+      console.log(`  --version OK: ${versionOutput.trim()}`)
     } catch (e) {
-      console.error(`Smoke test failed for ${name}:`, e)
+      console.error(`Smoke test --version failed for ${name}:`, e)
       process.exit(1)
+    }
+
+    // Pick a free port. `0` is not reliably honoured by all server stacks,
+    // so we ask the kernel for an ephemeral port and reuse it.
+    const net = await import("node:net")
+    const port = await new Promise<number>((resolve, reject) => {
+      const srv = net.createServer()
+      srv.unref()
+      srv.on("error", reject)
+      srv.listen(0, "127.0.0.1", () => {
+        const addr = srv.address()
+        if (addr && typeof addr === "object") {
+          srv.close(() => resolve(addr.port))
+        } else {
+          srv.close(() => reject(new Error("could not get ephemeral port")))
+        }
+      })
+    })
+
+    console.log(`Running smoke test (serve probe on 127.0.0.1:${port}): ${binaryPath}`)
+    const proc = Bun.spawn([binaryPath, "serve", "--port", String(port), "--hostname", "127.0.0.1"], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, OPENCODE_DISABLE_AUTOUPDATE: "1" },
+    })
+    const startedAt = Date.now()
+    const BOOT_TIMEOUT_MS = 25_000
+    const POLL_INTERVAL_MS = 250
+    let bound = false
+    let lastErr: unknown = null
+    try {
+      while (Date.now() - startedAt < BOOT_TIMEOUT_MS) {
+        if (proc.exitCode !== null) {
+          throw new Error(`serve exited prematurely with code ${proc.exitCode}`)
+        }
+        try {
+          const res = await fetch(`http://127.0.0.1:${port}/openapi.json`, {
+            signal: AbortSignal.timeout(2000),
+          })
+          if (res.status > 0) {
+            await res.body?.cancel().catch(() => {})
+            bound = true
+            break
+          }
+        } catch (e) {
+          lastErr = e
+        }
+        await Bun.sleep(POLL_INTERVAL_MS)
+      }
+      if (!bound) {
+        const stderrText = await new Response(proc.stderr).text().catch(() => "")
+        const stdoutText = await new Response(proc.stdout).text().catch(() => "")
+        console.error(
+          `Smoke test serve failed for ${name}: server did not bind 127.0.0.1:${port} within ${BOOT_TIMEOUT_MS}ms.`,
+        )
+        console.error(`  last fetch error: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`)
+        if (stderrText) console.error(`  stderr (truncated): ${stderrText.slice(-2000)}`)
+        if (stdoutText) console.error(`  stdout (truncated): ${stdoutText.slice(-2000)}`)
+        throw new Error("serve did not bind in time — likely AOT module-loader hang")
+      }
+      console.log(`  serve probe OK (HTTP responded on /openapi.json)`)
+    } catch (e) {
+      try {
+        proc.kill("SIGKILL")
+      } catch {}
+      console.error(`Smoke test serve failed for ${name}:`, e)
+      process.exit(1)
+    } finally {
+      try {
+        proc.kill("SIGTERM")
+        // Give it a moment to shut down cleanly, then force.
+        const racer = Promise.race([proc.exited, Bun.sleep(2000)])
+        await racer
+        if (proc.exitCode === null) {
+          try {
+            proc.kill("SIGKILL")
+          } catch {}
+        }
+      } catch {}
     }
   }
 

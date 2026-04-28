@@ -15,7 +15,13 @@ import { SessionCompaction } from "./compaction"
 import { Bus } from "../bus"
 import { ProviderTransform } from "../provider"
 import { SystemPrompt } from "./system"
-import { Retrieve } from "../retrieve"
+// Retrieve is intentionally lazy-imported at the call sites below.
+// Reason: pulling `../retrieve` into the static module graph deadlocks
+// `bun --compile`'s startup-time module loader (100% CPU spin in stripped
+// frames before HTTP server binds). The module body has no top-level side
+// effects — it's the AOT bundler's chunk-init ordering that breaks. See
+// commit 54d99fb9f bisect for the regression trail. DO NOT promote to a
+// static import without re-running the AOT smoke test in script/build.ts.
 import { Instruction } from "./instruction"
 import { Plugin } from "../plugin"
 import PROMPT_PLAN from "../session/prompt/plan.txt"
@@ -1489,13 +1495,14 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 .map((p) => p.text)
                 .join("\n")
                 .slice(0, 4000)
-              const retrieved = yield* Effect.promise(() =>
-                Retrieve.selectForSession({
+              const retrieved = yield* Effect.promise(async () => {
+                const { Retrieve } = await import("../retrieve")
+                return Retrieve.selectForSession({
                   sessionID,
                   agentName: agent.name,
                   userText,
-                }),
-              )
+                })
+              })
               if (retrieved.system_text) {
                 system.push(retrieved.system_text)
               }
@@ -1546,7 +1553,10 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               // Phase 2b — clear retrieve's per-session inject memory so the
               // next post-compaction turn re-injects from scratch. The new
               // truncated history may surface different needs.
-              yield* Effect.tryPromise(() => Retrieve.resetSession(sessionID)).pipe(Effect.ignore)
+              yield* Effect.tryPromise(async () => {
+                const { Retrieve } = await import("../retrieve")
+                return Retrieve.resetSession(sessionID)
+              }).pipe(Effect.ignore)
             }
             return "continue" as const
           }).pipe(Effect.ensuring(instruction.clear(handle.message.id)))
