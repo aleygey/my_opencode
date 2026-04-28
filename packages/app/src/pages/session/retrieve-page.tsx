@@ -34,7 +34,7 @@ import "./retrieve-page.css"
    Types — mirror packages/opencode/src/retrieve/index.ts
    ────────────────────────────────────────────────────── */
 
-type PickSource = "seed" | "expand:requires" | "expand:refines" | "heuristic"
+type PickSource = "seed" | "expand:requires" | "expand:refines" | "heuristic" | "cache"
 
 type PickedExperience = {
   experience_id: string
@@ -188,6 +188,7 @@ const sourceLabel = (s: PickSource) => {
   if (s === "heuristic") return "兜底"
   if (s === "expand:requires") return "前置(requires)"
   if (s === "expand:refines") return "细化(refines)"
+  if (s === "cache") return "缓存"
   return s
 }
 
@@ -196,6 +197,7 @@ const sourceColorVar = (s: PickSource) => {
   if (s === "heuristic") return "var(--retrieve-heuristic)"
   if (s === "expand:requires") return "var(--retrieve-requires)"
   if (s === "expand:refines") return "var(--retrieve-refines)"
+  if (s === "cache") return "var(--retrieve-cache)"
   return "var(--retrieve-default)"
 }
 
@@ -617,8 +619,11 @@ export default function RetrievePage() {
                         <span class="retrieve-row-llm">llm</span>
                       </Show>
                       <Show when={!entry.llm_used && entry.picked.length > 0}>
-                        <span class="retrieve-row-llm" data-fallback>
-                          heuristic
+                        <span
+                          class="retrieve-row-llm"
+                          data-fallback={entry.picked.every((p) => p.source === "cache") ? "cache" : "heuristic"}
+                        >
+                          {entry.picked.every((p) => p.source === "cache") ? "cache" : "heuristic"}
                         </span>
                       </Show>
                       <Show when={entry.error}>
@@ -672,7 +677,11 @@ export default function RetrievePage() {
                       <code>{entry().model!.providerID}/{entry().model!.modelID}</code>
                       <span class="retrieve-detail-model-source"> ({entry().model!.source})</span>
                     </Show>
-                    {!entry().llm_used && entry().picked.length > 0 ? " · heuristic fallback" : ""}
+                    {!entry().llm_used && entry().picked.length > 0
+                      ? entry().picked.every((p) => p.source === "cache")
+                        ? " · cache replay (no LLM)"
+                        : " · heuristic fallback"
+                      : ""}
                   </div>
                   <Show when={entry().error}>
                     <div class="retrieve-detail-error">error: {entry().error}</div>

@@ -53,7 +53,7 @@ const log = Log.create({ service: "retrieve" })
 // Schemas / types
 // -----------------------------------------------------------------------------
 
-const PickSource = z.enum(["seed", "expand:requires", "expand:refines", "heuristic"])
+const PickSource = z.enum(["seed", "expand:requires", "expand:refines", "heuristic", "cache"])
 type PickSource = z.infer<typeof PickSource>
 
 const PickedExperienceSchema = z.object({
@@ -138,6 +138,14 @@ type SessionState = {
    * This implements "已注入过的 exp 后续不再走 LLM，直到压缩重置".
    */
   cachedSystemText?: string
+  /**
+   * Picks paired with `cachedSystemText`. Reused on cache-hit turns to render
+   * a `cache` log entry so the audit trail stays continuous across turns
+   * (otherwise only turn-1 shows up on the retrieve page).
+   */
+  cachedPicks?: PickedExperience[]
+  /** Model info recorded when the cache was filled — copied into cache-hit log entries. */
+  cachedModel?: RetrieveLogEntry["model"]
 }
 
 type InstanceState = {
@@ -864,12 +872,57 @@ export namespace Retrieve {
       // system_text and skip the retrieve LLM (the expensive bit, ~tens of
       // seconds). `resetSession` clears the cache on compaction, so the very
       // next turn after compaction re-runs the full pipeline.
+      //
+      // We still want a continuous audit trail on the retrieve frontend — the
+      // user's screenshot showed only turn-1 visible because cache hits
+      // skipped `appendLog`. So write a lightweight cache-hit log entry per
+      // turn: same picks, source flipped to "cache", llm_used=false,
+      // duration_ms ≈ 0. Frontend distinguishes via the new "cache" chip.
       const ss = sessionState(input.sessionID)
       if (ss.cachedSystemText !== undefined) {
+        const t0 = Date.now()
+        const turnIndex = ++ss.turnIndex
+        const cachedPicks = ss.cachedPicks ?? []
+        const picksForLog: PickedExperience[] = cachedPicks.map((p) => ({
+          ...p,
+          source: "cache" as PickSource,
+          reason: p.reason ?? "已注入，沿用上一次缓存",
+        }))
+        const pickedIDs = new Set(picksForLog.map((p) => p.experience_id))
+        const idSeed = `${input.sessionID}:${turnIndex}:cache:${[...pickedIDs].sort().join(",")}`
+        const cacheEntry: RetrieveLogEntry = {
+          id: "rl_" + Hash.fast(idSeed).slice(0, 12),
+          session_id: input.sessionID,
+          turn_index: turnIndex,
+          agent_name: input.agentName,
+          layer: agentLayer(input.agentName),
+          workflow_id: input.workflowID,
+          user_text_excerpt: input.userText
+            ? input.userText.length > 200
+              ? input.userText.slice(0, 200) + "…"
+              : input.userText
+            : undefined,
+          candidate_count: 0,
+          seed_ids: [],
+          expand_ids: [],
+          picked: picksForLog,
+          diff: {
+            added: [],
+            removed: [],
+            kept: [...ss.lastInjected],
+          },
+          model: ss.cachedModel,
+          llm_used: false,
+          duration_ms: Date.now() - t0,
+          created_at: Date.now(),
+        }
+        // Skip the log when the cache is empty (turn-1 selected nothing) —
+        // an `empty cache replay` row every turn would just be noise.
+        if (picksForLog.length > 0) void appendLog(cacheEntry)
         return {
           system_text: ss.cachedSystemText,
-          picked: [],
-          diff: { added: [], removed: [], kept: [...ss.lastInjected] },
+          picked: picksForLog,
+          diff: cacheEntry.diff,
         }
       }
       const { result, logEntry } = await runPipeline({ ...input, dryRun: false })
@@ -877,6 +930,8 @@ export namespace Retrieve {
       // picks → cache empty string so we still skip the LLM next turn (the
       // pipeline already decided "nothing to inject"; no point re-deciding).
       ss.cachedSystemText = result.system_text ?? ""
+      ss.cachedPicks = result.picked
+      ss.cachedModel = logEntry.model
       // fire-and-forget log persistence
       void appendLog(logEntry)
       return result
