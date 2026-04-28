@@ -286,14 +286,60 @@ function logFilepath(base: string) {
 }
 
 // -----------------------------------------------------------------------------
+// Runtime config override (persisted at .opencode/refiner-memory/retrieve-config.json)
+// Mirrors the refiner's override pattern so the frontend retrieve page can
+// switch the retrieve agent's model on the fly without an opencode restart.
+// -----------------------------------------------------------------------------
+
+const ConfigOverrideSchema = z.object({
+  model: z
+    .object({
+      providerID: z.string().min(1),
+      modelID: z.string().min(1),
+    })
+    .optional(),
+  temperature: z.number().min(0).max(2).optional(),
+})
+type ConfigOverride = z.infer<typeof ConfigOverrideSchema>
+
+async function configOverridePath() {
+  const cfg = await settings()
+  return path.join(cfg.base, "retrieve-config.json")
+}
+
+async function readConfigOverride(): Promise<ConfigOverride | undefined> {
+  try {
+    const p = await configOverridePath()
+    if (!(await Filesystem.exists(p))) return undefined
+    const raw = await Filesystem.readJson<unknown>(p).catch(() => undefined)
+    if (!raw) return undefined
+    const parsed = ConfigOverrideSchema.safeParse(raw)
+    if (!parsed.success) {
+      log.warn("retrieve config override invalid; ignoring", { error: parsed.error.message })
+      return undefined
+    }
+    return parsed.data
+  } catch {
+    return undefined
+  }
+}
+
+async function writeConfigOverride(next: ConfigOverride): Promise<void> {
+  const p = await configOverridePath()
+  await Filesystem.writeJson(p, next)
+}
+
+// -----------------------------------------------------------------------------
 // LLM model resolution (mirrors refiner's pattern; falls back to small/default)
 // -----------------------------------------------------------------------------
+
+type ModelSource = "override" | "agent" | "default"
 
 type ResolvedModel = {
   agent: Agent.Info
   model: Provider.Model
   selected: { providerID: string; modelID: string }
-  source: "agent" | "default"
+  source: ModelSource
 }
 
 async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | undefined> {
@@ -307,7 +353,28 @@ async function resolveRetrieveModel(): Promise<ResolvedModel | undefined> {
   const agent = await svcAgentGet("retrieve")
   if (!agent) return undefined
 
-  // 1. Static agent config — opencode.jsonc agent.retrieve.model
+  // 1. Runtime override (PUT /experimental/retrieve/config) — highest priority.
+  //    Lets the retrieve frontend page switch to a small/fast model without an
+  //    opencode restart. Falls through to agent/default if the override points
+  //    at an unreachable provider.
+  const override = await readConfigOverride()
+  if (override?.model) {
+    const model = await withTimeout(
+      svcProviderGetModel(
+        ProviderID.make(override.model.providerID),
+        ModelID.make(override.model.modelID),
+      ),
+      300,
+    )
+    if (model) {
+      return { agent, model, selected: override.model, source: "override" }
+    }
+    log.warn("retrieve override model unavailable; falling back", {
+      override: override.model,
+    })
+  }
+
+  // 2. Static agent config — opencode.jsonc agent.retrieve.model
   if (agent.model) {
     const model = await withTimeout(
       svcProviderGetModel(agent.model.providerID, agent.model.modelID),
@@ -316,7 +383,7 @@ async function resolveRetrieveModel(): Promise<ResolvedModel | undefined> {
     if (model) return { agent, model, selected: agent.model, source: "agent" }
   }
 
-  // 2. Provider default + small-model fallback
+  // 3. Provider default + small-model fallback
   const selected = await withTimeout(svcProviderDefaultModel(), 300)
   if (!selected) return undefined
   const model =
@@ -852,5 +919,57 @@ export namespace Retrieve {
     filtered.sort((a, b) => b.created_at - a.created_at)
     if (input?.limit) return filtered.slice(0, input.limit)
     return filtered
+  }
+
+  // ---------- Runtime config (model + temperature) ----------
+
+  export const ConfigOverrideSchemaExport = ConfigOverrideSchema
+
+  /**
+   * Current effective model + persisted override. Used by the retrieve
+   * frontend page to render the model picker. `source` is one of:
+   *   "override" — runtime override is winning
+   *   "agent"    — opencode.jsonc agent.retrieve.model is winning
+   *   "default"  — provider default / small-model fallback
+   *   "none"     — no model resolvable at all
+   */
+  export async function config() {
+    const override = await readConfigOverride()
+    const resolved = await resolveRetrieveModel()
+    return {
+      resolved: resolved?.selected,
+      source: (resolved?.source ?? "none") as ModelSource | "none",
+      override: override ?? null,
+    }
+  }
+
+  /**
+   * Set/clear the runtime override. Pass `model: null` to remove the model
+   * override (falls back to agent/default). Pass `temperature: null` to
+   * remove the temperature override. Returns the post-update config so the
+   * caller can refresh its view.
+   */
+  export async function setConfig(input: {
+    model?: { providerID: string; modelID: string } | null
+    temperature?: number | null
+  }) {
+    const existing: ConfigOverride = (await readConfigOverride()) ?? {}
+    const next: ConfigOverride = { ...existing }
+
+    if ("model" in input) {
+      if (input.model === null) {
+        delete next.model
+      } else if (input.model) {
+        next.model = { providerID: input.model.providerID, modelID: input.model.modelID }
+      }
+    }
+
+    if ("temperature" in input) {
+      if (input.temperature === null) delete next.temperature
+      else if (typeof input.temperature === "number") next.temperature = input.temperature
+    }
+
+    await writeConfigOverride(next)
+    return config()
   }
 }

@@ -23,6 +23,7 @@ import {
 } from "solid-js"
 import { useNavigate, useParams } from "@solidjs/router"
 import { SessionHeader } from "@/components/session"
+import { useModels } from "@/context/models"
 import { usePlatform } from "@/context/platform"
 import { useSDK } from "@/context/sdk"
 import { useServer } from "@/context/server"
@@ -199,6 +200,196 @@ const sourceColorVar = (s: PickSource) => {
 }
 
 /* ──────────────────────────────────────────────────────
+   Runtime config (model picker) — mirrors refiner-page's
+   /experimental/refiner/config plumbing.
+   ────────────────────────────────────────────────────── */
+
+type ConfigSource = "override" | "agent" | "default" | "none"
+
+type RetrieveConfig = {
+  resolved?: { providerID: string; modelID: string }
+  source: ConfigSource
+  override: { model?: { providerID: string; modelID: string }; temperature?: number } | null
+}
+
+async function fetchRetrieveConfig(input: {
+  baseUrl: string
+  directory: string
+  password?: string
+  username?: string
+  fetcher?: typeof fetch
+}): Promise<RetrieveConfig> {
+  const url = new URL("/experimental/retrieve/config", input.baseUrl)
+  const res = await (input.fetcher ?? fetch)(url, {
+    headers: buildHeaders({
+      directory: input.directory,
+      username: input.username,
+      password: input.password,
+    }),
+  })
+  if (!res.ok) throw new Error(`Failed to load retrieve config (${res.status})`)
+  return readJsonOrThrow<RetrieveConfig>(res, "Retrieve config")
+}
+
+async function putRetrieveConfig(input: {
+  baseUrl: string
+  directory: string
+  password?: string
+  username?: string
+  fetcher?: typeof fetch
+  body: { model?: { providerID: string; modelID: string } | null; temperature?: number | null }
+}): Promise<RetrieveConfig> {
+  const url = new URL("/experimental/retrieve/config", input.baseUrl)
+  const res = await (input.fetcher ?? fetch)(url, {
+    method: "PUT",
+    headers: {
+      "content-type": "application/json",
+      ...buildHeaders({
+        directory: input.directory,
+        username: input.username,
+        password: input.password,
+      }),
+    },
+    body: JSON.stringify(input.body),
+  })
+  if (!res.ok) throw new Error(`Failed to update retrieve config (${res.status})`)
+  return readJsonOrThrow<RetrieveConfig>(res, "Retrieve config update")
+}
+
+const SOURCE_LABEL: Record<ConfigSource, string> = {
+  override: "override",
+  agent: "agent config",
+  default: "default",
+  none: "—",
+}
+
+const modelLabel = (model?: { providerID: string; modelID: string }) =>
+  model ? `${model.providerID}/${model.modelID}` : "—"
+
+/**
+ * Dropdown that lists every visible model from `useModels()` grouped by
+ * provider, plus a "reset to default" item visible only when an override is
+ * active. On click, calls `props.onChange` with the chosen `{providerID,
+ * modelID}`. Visual classnames use the `rt-model-*` prefix to mirror the
+ * refiner page's `rf-model-*` styles.
+ */
+function ModelPicker(props: {
+  current?: { providerID: string; modelID: string }
+  source?: ConfigSource
+  busy?: boolean
+  onChange: (model: { providerID: string; modelID: string }) => void
+  onReset?: () => void
+}) {
+  const models = useModels()
+  const [open, setOpen] = createSignal(false)
+  let root: HTMLDivElement | undefined
+
+  onMount(() => {
+    const handler = (e: MouseEvent) => {
+      if (!root) return
+      if (!root.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener("mousedown", handler)
+    onCleanup(() => document.removeEventListener("mousedown", handler))
+  })
+
+  const list = createMemo(() => {
+    try {
+      return models
+        .list()
+        .filter((m) => models.visible({ providerID: m.provider.id, modelID: m.id }))
+    } catch {
+      return []
+    }
+  })
+
+  const grouped = createMemo(() => {
+    const map = new Map<string, Array<{ providerID: string; modelID: string; name: string }>>()
+    for (const m of list()) {
+      const key = m.provider.name ?? m.provider.id
+      const arr = map.get(key) ?? []
+      arr.push({ providerID: m.provider.id, modelID: m.id, name: m.name })
+      map.set(key, arr)
+    }
+    return [...map.entries()]
+  })
+
+  return (
+    <div class="rt-model" ref={(el) => (root = el)}>
+      <button
+        type="button"
+        class="rt-model-trigger"
+        aria-expanded={open() ? "true" : "false"}
+        onClick={() => setOpen((v) => !v)}
+        disabled={props.busy}
+        title={props.source ? `source: ${SOURCE_LABEL[props.source]}` : undefined}
+      >
+        <span class="rt-dot" />
+        <span>{modelLabel(props.current)}</span>
+        <Show when={props.source && props.source !== "none"}>
+          <span class="rt-model-source" data-source={props.source}>
+            {SOURCE_LABEL[props.source!]}
+          </span>
+        </Show>
+        <span class="rt-model-caret">▾</span>
+      </button>
+      <Show when={open()}>
+        <div class="rt-model-menu">
+          <Show when={props.source === "override" && props.onReset}>
+            <button
+              type="button"
+              class="rt-model-item rt-model-reset"
+              onClick={() => {
+                props.onReset?.()
+                setOpen(false)
+              }}
+            >
+              ⟲ 恢复默认（清除 override）
+            </button>
+            <div class="rt-model-sep" />
+          </Show>
+          <Show
+            when={grouped().length > 0}
+            fallback={<div class="rt-model-group">暂无可用模型</div>}
+          >
+            <For each={grouped()}>
+              {([providerName, items]) => (
+                <>
+                  <div class="rt-model-group">{providerName}</div>
+                  <For each={items}>
+                    {(item) => {
+                      const active = () =>
+                        props.current?.providerID === item.providerID &&
+                        props.current?.modelID === item.modelID
+                      return (
+                        <button
+                          type="button"
+                          class="rt-model-item"
+                          data-active={active() ? "true" : "false"}
+                          onClick={() => {
+                            props.onChange({
+                              providerID: item.providerID,
+                              modelID: item.modelID,
+                            })
+                            setOpen(false)
+                          }}
+                        >
+                          {item.name}
+                        </button>
+                      )
+                    }}
+                  </For>
+                </>
+              )}
+            </For>
+          </Show>
+        </div>
+      </Show>
+    </div>
+  )
+}
+
+/* ──────────────────────────────────────────────────────
    Page
    ────────────────────────────────────────────────────── */
 
@@ -218,6 +409,14 @@ export default function RetrievePage() {
   >(null)
   const [previewError, setPreviewError] = createSignal<string | null>(null)
 
+  // Runtime config (currently effective model + override).
+  // - `configResource` keeps the picker label live (refetched on update).
+  // - `configBusy` disables the trigger during a PUT round-trip.
+  // - `configError` shows up next to the picker in the toolbar so users see
+  //   why "save" didn't persist (e.g. unauthorized, schema mismatch).
+  const [configBusy, setConfigBusy] = createSignal(false)
+  const [configError, setConfigError] = createSignal<string | null>(null)
+
   const logArgs = () => {
     const current = server.current
     const sessionID = params.id
@@ -229,6 +428,47 @@ export default function RetrievePage() {
       password: current.http.password,
       username: current.http.username,
       fetcher: platform.fetch,
+    }
+  }
+
+  const configArgs = () => {
+    const current = server.current
+    if (!current) return
+    return {
+      baseUrl: current.http.url,
+      directory: sdk.directory,
+      password: current.http.password,
+      username: current.http.username,
+      fetcher: platform.fetch,
+    }
+  }
+
+  const [configResource, { refetch: refetchConfig }] = createResource(
+    configArgs,
+    async (input) => fetchRetrieveConfig(input),
+  )
+
+  const updateConfig = async (
+    body: { model?: { providerID: string; modelID: string } | null; temperature?: number | null },
+  ) => {
+    const current = server.current
+    if (!current) return
+    setConfigBusy(true)
+    setConfigError(null)
+    try {
+      await putRetrieveConfig({
+        baseUrl: current.http.url,
+        directory: sdk.directory,
+        password: current.http.password,
+        username: current.http.username,
+        fetcher: platform.fetch,
+        body,
+      })
+      await refetchConfig()
+    } catch (e) {
+      setConfigError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setConfigBusy(false)
     }
   }
 
@@ -309,6 +549,18 @@ export default function RetrievePage() {
           </div>
         </div>
         <div class="retrieve-toolbar-right">
+          <ModelPicker
+            current={configResource()?.resolved}
+            source={configResource()?.source ?? "none"}
+            busy={configBusy()}
+            onChange={(m) => updateConfig({ model: m })}
+            onReset={() => updateConfig({ model: null })}
+          />
+          <Show when={configError()}>
+            <span class="rt-config-error" title={configError() ?? ""}>
+              ⚠ {configError()}
+            </span>
+          </Show>
           <label class="retrieve-toggle">
             <input
               type="checkbox"

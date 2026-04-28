@@ -305,6 +305,69 @@ export const ExperimentalRoutes = lazy(() =>
       },
     )
     .get(
+      "/retrieve/config",
+      describeRoute({
+        summary: "Get retrieve config",
+        description:
+          "Get the retrieve agent's currently resolved model plus its source (runtime override, agent config, or provider default) and any persisted override.",
+        operationId: "experimental.retrieve.config.get",
+        responses: {
+          200: {
+            description: "Retrieve config",
+            content: {
+              "application/json": {
+                schema: resolver(z.record(z.string(), z.unknown())),
+              },
+            },
+          },
+        },
+      }),
+      async (c) => {
+        const Retrieve = await loadRetrieve()
+        return c.json(await Retrieve.config())
+      },
+    )
+    .put(
+      "/retrieve/config",
+      describeRoute({
+        summary: "Update retrieve config",
+        description:
+          "Persist a runtime override for the retrieve agent's model (and optional temperature). Pass `model: null` to clear the override. Lets the retrieve frontend page swap to a small/fast model without restarting opencode.",
+        operationId: "experimental.retrieve.config.update",
+        responses: {
+          200: {
+            description: "Updated retrieve config",
+            content: {
+              "application/json": {
+                schema: resolver(z.record(z.string(), z.unknown())),
+              },
+            },
+          },
+          ...errors(400),
+        },
+      }),
+      validator(
+        "json",
+        z.object({
+          model: z
+            .union([
+              z.object({
+                providerID: z.string().min(1),
+                modelID: z.string().min(1),
+              }),
+              z.null(),
+            ])
+            .optional(),
+          temperature: z.union([z.number().min(0).max(2), z.null()]).optional(),
+        }),
+      ),
+      async (c) => {
+        const body = c.req.valid("json")
+        const Retrieve = await loadRetrieve()
+        return c.json(await Retrieve.setConfig(body))
+      },
+    )
+    .get(
       "/refiner/config",
       describeRoute({
         summary: "Get refiner config",
