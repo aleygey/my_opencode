@@ -10,7 +10,6 @@ import {
   Show,
 } from "solid-js"
 import { useNavigate, useParams } from "@solidjs/router"
-import ELK from "elkjs/lib/elk.bundled.js"
 import { SessionHeader } from "@/components/session"
 import { useModels } from "@/context/models"
 import { usePlatform } from "@/context/platform"
@@ -18,11 +17,6 @@ import { useSDK } from "@/context/sdk"
 import { useServer } from "@/context/server"
 import { stableFetcher } from "@/utils/stable-fetch"
 import "./refiner-page.css"
-
-// One ELK instance is enough — it's stateless across calls and reuses an
-// internal worker pool. Keeping it module-level avoids re-creating the worker
-// every time the user toggles into the graph view.
-const ELK_INSTANCE = new ELK()
 
 /* ──────────────────────────────────────────────────────
    Types — schema v2 (experiences + observations)
@@ -3936,125 +3930,6 @@ type GraphLayoutNode = {
   y: number
 }
 
-/**
- * ELK-driven layered layout. Replaces the radial/star fallback for the chain
- * graph view: nodes flow left-to-right by topological depth, edges run mostly
- * forward with backedge detection, layers are spaced cleanly. Async because
- * ELK runs in a Web Worker; callers should fall back to `computeGraphLayout`
- * during the first paint or when ELK rejects (e.g. no nodes).
- *
- * The result is fitted to the canvas: we measure ELK's reported bbox, scale
- * uniformly to leave a margin, and center within `width x height` so the
- * graph never clips off-screen for tall or sparse layouts.
- */
-async function computeGraphLayoutElk(
-  experiences: ChainGraphExperienceLite[],
-  edges: ChainGraphEdge[],
-  opts: { width: number; height: number },
-): Promise<Map<string, GraphLayoutNode>> {
-  const out = new Map<string, GraphLayoutNode>()
-  if (experiences.length === 0) return out
-
-  // Per-node bbox MUST reflect the actual rendered label width or ELK's
-  // collision avoidance breaks. The renderer draws a circle plus a label
-  // clipped to 18 chars; Chinese glyphs are ~12.5px wide, ASCII ~7px. Pad for
-  // the dot (14px) + label gap (12px) + tail breathing room (8px). Without
-  // this, ELK is told "60×40 boxes" but draws ~220px-wide labels next to each
-  // other → adjacent labels visibly collide.
-  const measureNodeWidth = (title: string) => {
-    const clipped = title.length > 18 ? title.slice(0, 18) : title
-    let w = 0
-    for (const ch of clipped) w += /[\u4e00-\u9fff]/.test(ch) ? 12.5 : 7
-    return Math.ceil(14 + 12 + w + 8)
-  }
-  const NODE_H = 22
-  const NODE_W_FALLBACK = 60
-  const elkGraph = {
-    id: "root",
-    layoutOptions: {
-      "elk.algorithm": "layered",
-      "elk.direction": "RIGHT",
-      "elk.layered.spacing.nodeNodeBetweenLayers": "80",
-      "elk.spacing.nodeNode": "18",
-      // The refiner graph is typically sparse — many isolated experiences
-      // with only a few chains between them. Without these two options ELK
-      // packs disconnected components on top of each other; with them, each
-      // component lays out independently and is grid-packed with breathing
-      // room.
-      "elk.separateConnectedComponents": "true",
-      "elk.spacing.componentComponent": "40",
-      "elk.layered.crossingMinimization.semiInteractive": "true",
-      "elk.edgeRouting": "POLYLINE",
-      "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
-    },
-    children: experiences.map((e) => ({
-      id: e.id,
-      width: measureNodeWidth(e.title),
-      height: NODE_H,
-    })),
-    edges: edges
-      .filter((e) => experiences.some((x) => x.id === e.from) && experiences.some((x) => x.id === e.to))
-      .map((e) => ({ id: e.id, sources: [e.from], targets: [e.to] })),
-  }
-
-  let laid: Awaited<ReturnType<typeof ELK_INSTANCE.layout>>
-  try {
-    laid = await ELK_INSTANCE.layout(elkGraph)
-  } catch {
-    // ELK occasionally rejects on degenerate inputs (e.g. self-loops with no
-    // children). Fall back to the radial layout so the user still sees nodes.
-    return computeGraphLayout(experiences, opts)
-  }
-
-  // Fit-to-canvas: compute ELK's bbox from laid-out children, then translate
-  // and scale so the graph is centered with a 24px margin.
-  const margin = 24
-  const children = laid.children ?? []
-  if (children.length === 0) return out
-
-  let minX = Infinity
-  let maxX = -Infinity
-  let minY = Infinity
-  let maxY = -Infinity
-  for (const c of children) {
-    if (typeof c.x !== "number" || typeof c.y !== "number") continue
-    minX = Math.min(minX, c.x)
-    maxX = Math.max(maxX, c.x + (c.width ?? NODE_W_FALLBACK))
-    minY = Math.min(minY, c.y)
-    maxY = Math.max(maxY, c.y + (c.height ?? NODE_H))
-  }
-  const rawW = Math.max(1, maxX - minX)
-  const rawH = Math.max(1, maxY - minY)
-  const targetW = Math.max(1, opts.width - margin * 2)
-  const targetH = Math.max(1, opts.height - margin * 2)
-  // Uniform scale; if the graph is small don't enlarge past 1.0 (keeps single
-  // chains from looking absurd at full canvas width).
-  const scale = Math.min(targetW / rawW, targetH / rawH, 1.0)
-  const fitW = rawW * scale
-  const fitH = rawH * scale
-  const offsetX = (opts.width - fitW) / 2 - minX * scale
-  const offsetY = (opts.height - fitH) / 2 - minY * scale
-
-  const expByID = new Map<string, ChainGraphExperienceLite>()
-  for (const e of experiences) expByID.set(e.id, e)
-  for (const c of children) {
-    const exp = expByID.get(c.id ?? "")
-    if (!exp || typeof c.x !== "number" || typeof c.y !== "number") continue
-    // Anchor the dot at the LEFT edge of ELK's reported box, vertically
-    // centered. The label extends rightward from that anchor (x=12 inside
-    // the SVG group), so the bbox we passed to ELK already accounted for
-    // it. Centering on width/2 instead would shift labels back into their
-    // left-hand neighbour.
-    const h = c.height ?? NODE_H
-    out.set(exp.id, {
-      id: exp.id,
-      exp,
-      x: (c.x + 8) * scale + offsetX,
-      y: (c.y + h / 2) * scale + offsetY,
-    })
-  }
-  return out
-}
 
 function computeGraphLayout(
   experiences: ChainGraphExperienceLite[],
@@ -4104,6 +3979,159 @@ function computeGraphLayout(
   return out
 }
 
+/**
+ * Force-directed (Obsidian-like) layout. Seeds nodes on a kind-grouped
+ * radial ring, then runs a small fixed-iteration physics simulation:
+ *
+ * - Repulsion: every pair of nodes pushes apart with `k_rep / d^2`
+ * - Spring: every connected pair pulls together toward `targetLen`
+ * - Centering: a weak pull toward the canvas center prevents drift
+ *
+ * The simulation is deterministic (no randomness) and bounded — we cap it at
+ * 220 iterations with cooling, which is fast enough that we don't need a
+ * worker for graphs up to a few hundred nodes. Returns positions in canvas
+ * coordinates, scaled to fit a comfortable margin.
+ */
+function computeGraphLayoutForce(
+  experiences: ChainGraphExperienceLite[],
+  edges: ChainGraphEdge[],
+  opts: { width: number; height: number },
+): Map<string, GraphLayoutNode> {
+  const { width, height } = opts
+  const cx = width / 2
+  const cy = height / 2
+  const out = new Map<string, GraphLayoutNode>()
+  if (experiences.length === 0) return out
+
+  // 1. Seed positions on a kind-grouped radial ring.
+  const seed = computeGraphLayout(experiences, opts)
+
+  type Body = {
+    id: string
+    exp: ChainGraphExperienceLite
+    x: number
+    y: number
+    vx: number
+    vy: number
+  }
+  const bodies: Body[] = []
+  const indexOf = new Map<string, number>()
+  for (const e of experiences) {
+    const s = seed.get(e.id)
+    if (!s) continue
+    indexOf.set(e.id, bodies.length)
+    bodies.push({ id: e.id, exp: e, x: s.x, y: s.y, vx: 0, vy: 0 })
+  }
+  if (bodies.length === 0) return out
+
+  const n = bodies.length
+  // Tuning: bigger graphs need more space per node + a longer spring.
+  const area = width * height
+  const targetLen = Math.sqrt(area / Math.max(n, 1)) * 0.55
+  const kRep = targetLen * targetLen * 0.9 // repulsion constant
+  const kSpring = 0.04 // spring stiffness
+  const damping = 0.82
+  const maxStep = 18 // cap per-tick movement so things don't explode
+  const iterations = n < 20 ? 160 : n < 80 ? 220 : 280
+  const centerPull = 0.0024
+
+  const adj: Array<[number, number]> = []
+  for (const e of edges) {
+    const i = indexOf.get(e.from)
+    const j = indexOf.get(e.to)
+    if (i === undefined || j === undefined) continue
+    if (i === j) continue
+    adj.push([i, j])
+  }
+
+  for (let iter = 0; iter < iterations; iter++) {
+    // Cooling factor — lets the system settle by the end.
+    const cool = 1 - iter / iterations
+    // Repulsion (O(n²)).
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const a = bodies[i]
+        const b = bodies[j]
+        let dx = a.x - b.x
+        let dy = a.y - b.y
+        let d2 = dx * dx + dy * dy
+        if (d2 < 0.0001) {
+          // Coincident nodes — nudge apart deterministically.
+          dx = (i - j) * 0.5 + 0.01
+          dy = (j - i) * 0.5 + 0.01
+          d2 = dx * dx + dy * dy
+        }
+        const d = Math.sqrt(d2)
+        const f = kRep / d2
+        const fx = (dx / d) * f
+        const fy = (dy / d) * f
+        a.vx += fx
+        a.vy += fy
+        b.vx -= fx
+        b.vy -= fy
+      }
+    }
+    // Springs along edges.
+    for (const [i, j] of adj) {
+      const a = bodies[i]
+      const b = bodies[j]
+      const dx = b.x - a.x
+      const dy = b.y - a.y
+      const d = Math.sqrt(dx * dx + dy * dy) || 0.01
+      const delta = d - targetLen
+      const f = kSpring * delta
+      const fx = (dx / d) * f
+      const fy = (dy / d) * f
+      a.vx += fx
+      a.vy += fy
+      b.vx -= fx
+      b.vy -= fy
+    }
+    // Center pull + integrate.
+    for (const body of bodies) {
+      body.vx += (cx - body.x) * centerPull
+      body.vy += (cy - body.y) * centerPull
+      body.vx *= damping
+      body.vy *= damping
+      let step = Math.sqrt(body.vx * body.vx + body.vy * body.vy)
+      if (step > maxStep) {
+        body.vx = (body.vx / step) * maxStep
+        body.vy = (body.vy / step) * maxStep
+        step = maxStep
+      }
+      body.x += body.vx * cool
+      body.y += body.vy * cool
+    }
+  }
+
+  // Fit to canvas with a margin so the largest node + label still fit.
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const b of bodies) {
+    if (b.x < minX) minX = b.x
+    if (b.y < minY) minY = b.y
+    if (b.x > maxX) maxX = b.x
+    if (b.y > maxY) maxY = b.y
+  }
+  const margin = 70
+  const bw = Math.max(maxX - minX, 1)
+  const bh = Math.max(maxY - minY, 1)
+  const sx = (width - 2 * margin) / bw
+  const sy = (height - 2 * margin) / bh
+  const scale = Math.min(sx, sy, 1)
+  const ox = (width - bw * scale) / 2 - minX * scale
+  const oy = (height - bh * scale) / 2 - minY * scale
+
+  for (const b of bodies) {
+    out.set(b.id, {
+      id: b.id,
+      exp: b.exp,
+      x: b.x * scale + ox,
+      y: b.y * scale + oy,
+    })
+  }
+  return out
+}
+
 function ExperienceGraphView(props: {
   data?: ChainGraphResponse
   loading?: boolean
@@ -4135,31 +4163,21 @@ function ExperienceGraphView(props: {
     })
   })
 
-  // Synchronous radial layout — used as a fallback during ELK's first paint
-  // (Web Worker async) and when ELK rejects on degenerate input. Cheap to
-  // compute every render, so we always keep it warm.
-  const syncLayout = createMemo(() => {
+  // Force-directed star/Obsidian-style layout. Replaces the previous ELK
+  // (rectangular layered) pass. The simulation seeds nodes on a radial-by-
+  // kind ring (so first paint already looks star-shaped), then runs N
+  // iterations of repulsion + spring to spread overlapping clusters and pull
+  // related nodes together. Re-runs only when (nodes, edges, canvas size)
+  // actually change identity — polling is short-circuited upstream by
+  // stableFetcher so the simulation is rarely recomputed.
+  const layout = createMemo<Map<string, GraphLayoutNode>>(() => {
     const s = size()
-    return computeGraphLayout(filteredExps(), { width: s.w, height: s.h })
+    return computeGraphLayoutForce(
+      filteredExps(),
+      props.data?.edges ?? [],
+      { width: s.w, height: s.h },
+    )
   })
-
-  // ELK-driven layered layout. Keyed off (nodes, edges, canvas size) so it
-  // re-runs when any of those change. The renderer reads from `layout()` which
-  // falls back to syncLayout until the first ELK pass lands, then switches
-  // atomically once the worker resolves.
-  const elkInputs = createMemo(() => ({
-    exps: filteredExps(),
-    edges: props.data?.edges ?? [],
-    size: size(),
-  }))
-  const [elkLayout] = createResource(elkInputs, (input) =>
-    computeGraphLayoutElk(input.exps, input.edges, {
-      width: input.size.w,
-      height: input.size.h,
-    }),
-  )
-
-  const layout = createMemo(() => elkLayout() ?? syncLayout())
 
   const visibleEdges = createMemo(() => {
     const nodes = layout()
@@ -4175,6 +4193,69 @@ function ExperienceGraphView(props: {
   }))
 
   const [hovered, setHovered] = createSignal<string | null>(null)
+
+  // ── Pan / zoom state ───────────────────────────────────────────────────
+  // The graph SVG renders in viewBox coordinates. We apply a single
+  // transform `translate(pan) scale(zoom)` to a wrapping <g> so all nodes,
+  // edges and the hover hit-targets pan together.
+  // Why not viewBox? Because that changes coords on the fly and complicates
+  // hover-card positioning. A single CTM is simpler and lets us re-use the
+  // same screen→content mapping the hovercard already does.
+  const [zoom, setZoom] = createSignal(1)
+  const [pan, setPan] = createSignal({ x: 0, y: 0 })
+  let svgRef: SVGSVGElement | undefined
+  let dragState: { startX: number; startY: number; baseX: number; baseY: number } | null = null
+
+  const onMouseDown = (e: MouseEvent) => {
+    // Only left-button drag, and only when the click started on the SVG
+    // background — never steal a node's onClick.
+    if (e.button !== 0) return
+    const target = e.target as Element | null
+    if (target?.closest(".rf-graph-node")) return
+    e.preventDefault()
+    const p = pan()
+    dragState = { startX: e.clientX, startY: e.clientY, baseX: p.x, baseY: p.y }
+  }
+  const onMouseMove = (e: MouseEvent) => {
+    if (!dragState) return
+    setPan({
+      x: dragState.baseX + (e.clientX - dragState.startX),
+      y: dragState.baseY + (e.clientY - dragState.startY),
+    })
+  }
+  const onMouseUp = () => {
+    dragState = null
+  }
+  const onWheel = (e: WheelEvent) => {
+    if (!svgRef) return
+    e.preventDefault()
+    const rect = svgRef.getBoundingClientRect()
+    const px = e.clientX - rect.left
+    const py = e.clientY - rect.top
+    const z = zoom()
+    const factor = Math.exp(-e.deltaY * 0.0018)
+    const nz = Math.max(0.3, Math.min(3.5, z * factor))
+    // Zoom around the cursor: keep the content point under the cursor in place.
+    const p = pan()
+    const cx = (px - p.x) / z
+    const cy = (py - p.y) / z
+    setZoom(nz)
+    setPan({ x: px - cx * nz, y: py - cy * nz })
+  }
+  const resetView = () => {
+    setZoom(1)
+    setPan({ x: 0, y: 0 })
+  }
+
+  onMount(() => {
+    if (typeof window === "undefined") return
+    window.addEventListener("mousemove", onMouseMove)
+    window.addEventListener("mouseup", onMouseUp)
+    onCleanup(() => {
+      window.removeEventListener("mousemove", onMouseMove)
+      window.removeEventListener("mouseup", onMouseUp)
+    })
+  })
 
   // When a node is hovered, compose a Chinese "guidance card" by walking
   // every outgoing/incoming edge and rendering it via CHAIN_EDGE_PHRASE.
@@ -4284,110 +4365,202 @@ function ExperienceGraphView(props: {
       </div>
       <svg
         class="rf-graph-svg"
+        ref={(el) => (svgRef = el)}
         width={size().w}
         height={size().h}
         viewBox={`0 0 ${size().w} ${size().h}`}
+        onMouseDown={onMouseDown}
+        onWheel={onWheel}
+        onDblClick={resetView}
+        style={{ cursor: dragState ? "grabbing" : "grab" }}
       >
         <defs>
+          {/* Larger arrow markers so direction is unmistakable. `userSpaceOnUse`
+              keeps the marker size constant in viewBox px regardless of stroke-
+              width, and `auto-start-reverse` places the head at edge end. */}
           <For each={Object.entries(CHAIN_EDGE_STYLE) as [ChainEdgeKind, (typeof CHAIN_EDGE_STYLE)[ChainEdgeKind]][]}>
             {([k, style]) => (
               <marker
                 id={`rf-arrow-${k}`}
                 viewBox="0 0 10 10"
-                refX="9"
+                refX="10"
                 refY="5"
-                markerWidth="6"
-                markerHeight="6"
+                markerWidth="14"
+                markerHeight="14"
+                markerUnits="userSpaceOnUse"
                 orient="auto-start-reverse"
               >
-                <path d="M0,0 L10,5 L0,10 Z" fill={style.color} />
+                <path d="M0,0 L10,5 L0,10 L2,5 Z" fill={style.color} />
               </marker>
             )}
           </For>
         </defs>
 
-        {/* Edges first (so nodes render on top) */}
-        <For each={visibleEdges()}>
-          {(e) => {
-            const a = () => layout().get(e.from)
-            const b = () => layout().get(e.to)
-            const style = CHAIN_EDGE_STYLE[e.kind]
-            const isDimmed = () => {
-              const h = hovered()
-              if (!h) return false
-              return e.from !== h && e.to !== h
-            }
-            return (
-              <Show when={a() && b()}>
-                <line
-                  x1={a()!.x}
-                  y1={a()!.y}
-                  x2={b()!.x}
-                  y2={b()!.y}
-                  stroke={style.color}
-                  stroke-width={isDimmed() ? 0.8 : 1.4}
-                  stroke-dasharray={style.dash ?? "0"}
-                  opacity={isDimmed() ? 0.25 : 0.85}
-                  marker-end={`url(#rf-arrow-${e.kind})`}
-                >
-                  <title>{`${style.label}: ${e.reason ?? ""}`}</title>
-                </line>
-              </Show>
-            )
-          }}
-        </For>
+        <g
+          class="rf-graph-world"
+          transform={`translate(${pan().x},${pan().y}) scale(${zoom()})`}
+        >
+          {/* Edges first (so nodes render on top) */}
+          <For each={visibleEdges()}>
+            {(e) => {
+              const a = () => layout().get(e.from)
+              const b = () => layout().get(e.to)
+              const style = CHAIN_EDGE_STYLE[e.kind]
+              const isDimmed = () => {
+                const h = hovered()
+                if (!h) return false
+                return e.from !== h && e.to !== h
+              }
+              // Stop the line short of the node so the arrowhead lands just
+              // outside the node circle rather than under it. Node radius ≈ 9
+              // in content units; the hover-grown radius is 12.
+              const NODE_R = 11
+              const geom = () => {
+                const A = a()
+                const B = b()
+                if (!A || !B) return null
+                const dx = B.x - A.x
+                const dy = B.y - A.y
+                const d = Math.sqrt(dx * dx + dy * dy) || 1
+                const ux = dx / d
+                const uy = dy / d
+                return {
+                  x1: A.x + ux * NODE_R,
+                  y1: A.y + uy * NODE_R,
+                  x2: B.x - ux * NODE_R,
+                  y2: B.y - uy * NODE_R,
+                }
+              }
+              return (
+                <Show when={geom()} keyed>
+                  {(g) => (
+                    <line
+                      x1={g.x1}
+                      y1={g.y1}
+                      x2={g.x2}
+                      y2={g.y2}
+                      stroke={style.color}
+                      stroke-width={isDimmed() ? 1.6 : 2.6}
+                      stroke-dasharray={style.dash ?? "0"}
+                      stroke-linecap="round"
+                      opacity={isDimmed() ? 0.3 : 0.9}
+                      marker-end={`url(#rf-arrow-${e.kind})`}
+                    >
+                      <title>{`${style.label}: ${e.reason ?? ""}`}</title>
+                    </line>
+                  )}
+                </Show>
+              )
+            }}
+          </For>
 
-        {/* Nodes */}
-        <For each={[...layout().values()]}>
-          {(node) => {
-            const exp = node.exp
-            const pal = paletteFor(exp.kind)
-            const isHovered = () => hovered() === node.id
-            const isArchived = !!exp.archived
-            return (
-              <g
-                class="rf-graph-node"
-                data-palette={pal}
-                data-hovered={isHovered() ? "true" : "false"}
-                data-archived={isArchived ? "true" : "false"}
-                transform={`translate(${node.x},${node.y})`}
-                onMouseEnter={() => setHovered(node.id)}
-                onMouseLeave={() => setHovered(null)}
-                onClick={() => props.onPick(node.id)}
-              >
-                <circle
-                  r={isHovered() ? 10 : 7}
-                  class="rf-graph-node-dot"
-                />
-                <text
-                  class="rf-graph-node-label"
-                  x={12}
-                  y={4}
-                  text-anchor="start"
+          {/* Nodes */}
+          <For each={[...layout().values()]}>
+            {(node) => {
+              const exp = node.exp
+              const pal = paletteFor(exp.kind)
+              const isHovered = () => hovered() === node.id
+              const isArchived = !!exp.archived
+              return (
+                <g
+                  class="rf-graph-node"
+                  data-palette={pal}
+                  data-hovered={isHovered() ? "true" : "false"}
+                  data-archived={isArchived ? "true" : "false"}
+                  transform={`translate(${node.x},${node.y})`}
+                  onMouseEnter={() => setHovered(node.id)}
+                  onMouseLeave={() => setHovered(null)}
+                  onClick={(ev) => {
+                    ev.stopPropagation()
+                    props.onPick(node.id)
+                  }}
                 >
-                  {clip(exp.title, 18)}
-                </text>
-              </g>
-            )
-          }}
-        </For>
+                  <circle
+                    r={isHovered() ? 12 : 9}
+                    class="rf-graph-node-dot"
+                  />
+                  <text
+                    class="rf-graph-node-label"
+                    x={15}
+                    y={5}
+                    text-anchor="start"
+                  >
+                    {clip(exp.title, 22)}
+                  </text>
+                </g>
+              )
+            }}
+          </For>
+        </g>
       </svg>
+      <div class="rf-graph-controls" aria-label="Zoom controls">
+        <button
+          type="button"
+          class="rf-graph-ctrl"
+          onClick={() => {
+            const z = zoom()
+            const nz = Math.min(3.5, z * 1.2)
+            const { w, h } = size()
+            const p = pan()
+            const cx = (w / 2 - p.x) / z
+            const cy = (h / 2 - p.y) / z
+            setZoom(nz)
+            setPan({ x: w / 2 - cx * nz, y: h / 2 - cy * nz })
+          }}
+          title="放大"
+        >
+          ＋
+        </button>
+        <button
+          type="button"
+          class="rf-graph-ctrl"
+          onClick={() => {
+            const z = zoom()
+            const nz = Math.max(0.3, z / 1.2)
+            const { w, h } = size()
+            const p = pan()
+            const cx = (w / 2 - p.x) / z
+            const cy = (h / 2 - p.y) / z
+            setZoom(nz)
+            setPan({ x: w / 2 - cx * nz, y: h / 2 - cy * nz })
+          }}
+          title="缩小"
+        >
+          －
+        </button>
+        <button
+          type="button"
+          class="rf-graph-ctrl"
+          onClick={resetView}
+          title="重置视图（双击空白处也可）"
+        >
+          ⌖
+        </button>
+        <span class="rf-graph-ctrl-zoom" title="当前缩放">
+          {Math.round(zoom() * 100)}%
+        </span>
+      </div>
       <Show when={hoverCard()} keyed>
         {(c) => {
           // Position the card beside the hovered node, clamped into view.
-          // SVG viewBox coords match CSS px (width/height attributes are set
-          // equal), so we can reuse node.x/y directly.
+          // c.x / c.y are content coordinates (pre-transform); we project them
+          // to screen coords using the current pan + zoom so the card tracks
+          // the node when the canvas is panned/zoomed.
           const cardW = 340
           const cardMaxH = 360
           const pad = 12
           const style = () => {
             const { w, h } = size()
+            const z = zoom()
+            const p = pan()
+            const sx = p.x + c.x * z
+            const sy = p.y + c.y * z
             const offset = 18
             // Prefer right side; fall back to left if near right edge.
-            let left = c.x + offset
-            if (left + cardW + pad > w) left = c.x - offset - cardW
+            let left = sx + offset
+            if (left + cardW + pad > w) left = sx - offset - cardW
             left = Math.max(pad, Math.min(w - cardW - pad, left))
-            let top = c.y - 20
+            let top = sy - 20
             top = Math.max(pad, Math.min(h - 80, top))
             return {
               left: `${left}px`,
@@ -4587,14 +4760,33 @@ export default function RefinerPage() {
     if (latest) setSelection({ kind: "experience", id: `experience:${latest.id}` })
   })
 
-  // Polling cadence: drop to 15s and pause while the tab is hidden. The
-  // overview/taxonomy/config/categories endpoints don't change quickly, and
-  // the user typically discovers new refinements via observable activity in
-  // the app, not by staring at the page. Hidden-tab pause avoids burning
-  // bandwidth when the page is in the background.
-  const POLL_INTERVAL_MS = 15000
+  // Refresh strategy: this page used to poll every 4s, then 15s — but the
+  // user found even 15s too noisy ("the page keeps refreshing while I'm
+  // editing"). The data here changes slowly (a refinement is admitted every
+  // few minutes at most), so we drop background polling to **5 minutes** and
+  // rely on these explicit refresh moments instead:
+  //
+  //   1. Initial mount (handled by createResource's source-tracking)
+  //   2. After any successful action (handle{Edit,Create,Augment,…} all
+  //      call refreshAll() at the end)
+  //   3. When the tab becomes visible after being hidden (catch-up)
+  //   4. When the user closes any modal (in case the action mutated data —
+  //      cheap "did anything change while you were busy?" check)
+  //   5. The manual ↻ button at the top of the page
+  //
+  // The interval is kept (not removed) so a long-running session eventually
+  // sees new data without the user having to click — but at 5 minutes it's
+  // basically invisible compared to the 15s previous cadence.
+  const POLL_INTERVAL_MS = 5 * 60 * 1000
   const tickPoll = () => {
     if (typeof document !== "undefined" && document.visibilityState !== "visible") return
+    // Hard pause while any action modal is open. Refetching mid-edit can
+    // cause `selectedExperience()` (and thus the modal's parent props chain)
+    // to swap reference, which in some Solid render paths costs the input
+    // its focus / scroll / a typed character. The user would then see "the
+    // page refreshed and ate my edit". Polling resumes when they close the
+    // modal (see the action effect below), plus an extra tick fires there.
+    if (action()) return
     void refetch()
     void refetchTaxonomy()
     void refetchConfig()
@@ -4611,6 +4803,17 @@ export default function RefinerPage() {
   if (typeof document !== "undefined") {
     document.addEventListener("visibilitychange", onVisibility)
   }
+  // Refetch once when an action modal closes — covers the case where the
+  // action mutated something but didn't call refreshAll() (rare, but the
+  // belt-and-braces here is cheap and means the user always sees fresh data
+  // the moment they finish whatever they were doing).
+  let prevActionType: string | undefined
+  createEffect(() => {
+    const a = action()
+    const next = a?.type
+    if (prevActionType && !next) tickPoll()
+    prevActionType = next
+  })
   onCleanup(() => {
     clearInterval(poll)
     if (typeof document !== "undefined") {

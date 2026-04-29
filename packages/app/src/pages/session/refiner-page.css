@@ -2567,6 +2567,54 @@
       light-dark(var(--gray-light-2), var(--gray-dark-2)) 0%,
       light-dark(var(--gray-light-1), var(--gray-dark-1)) 70%
     );
+  /* Block accidental text-selection during pan-drag so the cursor doesn't
+     paint a selection rectangle across labels. */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Pan/zoom control cluster, anchored bottom-right of the graph stage. */
+.refiner-page .rf-graph-controls {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border-radius: var(--radius-md);
+  background: light-dark(var(--gray-light-1), var(--gray-dark-2));
+  border: 1px solid light-dark(var(--gray-light-5), var(--gray-dark-5));
+  box-shadow: var(--shadow-md);
+  z-index: 4;
+}
+
+.refiner-page .rf-graph-ctrl {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: light-dark(var(--gray-light-12), var(--gray-dark-12));
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  transition: background 120ms ease;
+}
+.refiner-page .rf-graph-ctrl:hover {
+  background: light-dark(var(--gray-light-3), var(--gray-dark-3));
+}
+.refiner-page .rf-graph-ctrl-zoom {
+  font-size: var(--font-size-small);
+  font-variant-numeric: tabular-nums;
+  color: light-dark(var(--gray-light-11), var(--gray-dark-11));
+  padding: 0 6px 0 2px;
+  min-width: 36px;
+  text-align: center;
 }
 
 .refiner-page .rf-graph-node {
@@ -2602,10 +2650,17 @@
 
 .refiner-page .rf-graph-node-label {
   fill: light-dark(var(--gray-light-11), var(--gray-dark-11));
-  font-size: 11px;
+  font-size: 14px;
   font-family: var(--font-family-sans);
+  font-weight: var(--font-weight-medium);
   pointer-events: none;
   user-select: none;
+  /* Subtle paint-stroke halo so labels stay legible when they overlap a
+     node circle of the same hue. The fill paints over the stroke. */
+  paint-order: stroke fill;
+  stroke: light-dark(var(--gray-light-1), var(--gray-dark-1));
+  stroke-width: 3.5px;
+  stroke-linejoin: round;
 }
 
 .refiner-page .rf-graph-node[data-hovered="true"] .rf-graph-node-label {
