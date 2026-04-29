@@ -1,0 +1,33 @@
+Search the project's accumulated experience library for relevant guidance,
+rules, conventions, or pitfalls captured from prior interactions in this
+workspace.
+
+Use proactively when:
+- entering an unfamiliar subsystem (first time touching a module)
+- before destructive or hard-to-undo operations (deploy, push, schema migration, rm -rf, force push)
+- a tool call returned a surprising or non-obvious error
+- the user's request mentions a domain you have not worked in this session
+- you are about to follow a workflow that may have a project-specific convention
+
+Don't use for:
+- trivial questions or small edits inside a well-understood loop
+- when the system prompt's <baseline_experiences> or <retrieved_experiences>
+  already cover the relevant rule
+- general programming knowledge (use codesearch / websearch instead)
+
+The tool runs an LLM-backed search over the workspace's experience graph.
+Latency is typically a few seconds. Returns up to `max` matched experiences
+plus their auto-expanded preconditions (rules they depend on). Each entry
+has a `relevance_reason` so you can scan quickly and decide whether to
+follow the rule.
+
+Each returned experience has fields:
+- kind: workflow_rule | constraint_or_policy | preference_style | know_how |
+        domain_knowledge | pitfall_or_caveat | workflow_gap | custom:*
+- title: 10-30 char summary
+- statement: machine-readable rule (when present, treat as authoritative)
+- abstract: 1-3 sentence detail
+- relevance: why this came back (seed match, or precondition of another match)
+
+If the result is empty, the workspace has no captured experience for that
+query — proceed with general best practices.

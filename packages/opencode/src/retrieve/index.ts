@@ -1,29 +1,41 @@
 /**
- * Phase 2b — Retrieve agent (read side).
+ * Retrieve agent (read side) — three-tier injection model.
  *
  * Counterpart to the Refiner: takes the current session/agent context and
- * produces a small set of experiences to inject into the system prompt of
- * the next LLM turn. No writes. Reuses Refiner's experience graph.
+ * produces experiences to inject into the system prompt or hand back to the
+ * agent on demand. No writes. Reuses Refiner's experience graph.
  *
- * Pipeline (selectForSession):
- *   1. coarse-filter: load all non-archived experiences, filter by target_layer
- *   2. LLM seed:      retrieve agent picks N seed IDs from the candidate list
- *      (heuristic fallback if no model is available)
- *   3. graph expand:  BFS along `requires` + `refines` edges from each seed
- *      (depth 1, direction "out") so prerequisites and refinements ride along
- *   4. budget:        cap total picks at MAX_PICKS, seed-priority preserved
- *   5. diff & render: compare against the per-session last-injected set,
- *      render as <experience id=... kind=...> blocks, append to system prompt
- *      and persist a log entry for frontend inspection
+ * Three tiers:
+ *
+ *   Tier A — Baseline (hard-filtered, no LLM, session-scope cache)
+ *     `selectForSession` always layers in workspace-level rules of kind
+ *     constraint_or_policy / preference_style / workflow_rule.
+ *     Cached aggressively: same picks for the whole compaction cycle since
+ *     these rules don't depend on the user's query. Cleared on compaction.
+ *
+ *   Tier B — Per-user-msg topical fit (LLM, no cache between user msgs)
+ *     The classic seed→expand→render pipeline. Runs on every user msg's
+ *     step 1. With Tier A providing the stable rules baseline and Tier C
+ *     handling on-demand recall, Tier B specifically picks up topical fit
+ *     for the *current query*. NO caching between user msgs — drop Plan A's
+ *     whole-cycle cache, since same picks across a long session is the very
+ *     thing that motivated this rework.
+ *
+ *   Tier C — Agent-on-demand recall_experience tool (LLM, never cached)
+ *     Exposed as a tool the master agent calls when it needs guidance for
+ *     the current step (entering an unfamiliar subsystem, before destructive
+ *     ops, after a surprising error). Runs the same pipeline as Tier B but
+ *     with a query the agent provides; returns a structured YAML list with
+ *     graph preconditions instead of a system_text block.
  *
  * State:
- *   - In-memory map: Map<sessionID, { lastInjected, history }>, scoped per
- *     Instance.directory (mirrors how Refiner scopes its state).
+ *   - In-memory map: Map<sessionID, SessionState>, scoped per
+ *     Instance.directory. Holds the diff-target set and Tier A's cache.
  *   - Disk log: NDJSON at .opencode/refiner-memory/retrieve-log.ndjson
- *     (one entry per selectForSession call, kept for the frontend page).
+ *     (one entry per Tier A/B injection or Tier C tool call).
  *
- * Failure mode: any error in the pipeline → return { system_text: undefined,
- * picked: [] } so the host turn never blocks. Errors are logged.
+ * Failure mode: any error → return { system_text: undefined, picked: [] }
+ * so the host turn never blocks. Errors are logged.
  */
 
 import path from "path"
@@ -53,8 +65,23 @@ const log = Log.create({ service: "retrieve" })
 // Schemas / types
 // -----------------------------------------------------------------------------
 
-const PickSource = z.enum(["seed", "expand:requires", "expand:refines", "heuristic", "cache"])
+const PickSource = z.enum([
+  "seed",                // Tier B/C — picked by retrieve LLM
+  "expand:requires",     // Tier B/C — graph: requires precondition of a seed
+  "expand:refines",      // Tier B/C — graph: refines a seed
+  "heuristic",           // Tier B/C — fallback when no LLM available
+  "baseline",            // Tier A   — workspace-level rule, no LLM
+  "cache",               // Tier A   — cached baseline replay
+])
 type PickSource = z.infer<typeof PickSource>
+
+/** Kinds eligible for Tier A baseline injection. Stable workspace rules
+ * that don't depend on what the user just asked. */
+const BASELINE_KINDS = new Set([
+  "constraint_or_policy",
+  "preference_style",
+  "workflow_rule",
+])
 
 const PickedExperienceSchema = z.object({
   experience_id: z.string(),
@@ -132,20 +159,19 @@ type SessionState = {
   /** Monotonically-increasing turn counter (1-indexed). */
   turnIndex: number
   /**
-   * Cached system_text from the most recent real (non-dry-run) injection.
-   * Once set, subsequent turns reuse it verbatim and skip the retrieve LLM
-   * call entirely until `resetSession` (called on compaction) clears it.
-   * This implements "已注入过的 exp 后续不再走 LLM，直到压缩重置".
+   * Tier A cache. Baseline rules don't depend on user_text and rarely
+   * change, so once selected we reuse them verbatim until compaction
+   * clears the cache via `resetSession`. The first turn pays the read +
+   * filter + render cost; subsequent turns reuse `baselinePicks` and
+   * `baselineSystemText` without touching disk.
+   *
+   * NOTE: Plan A's full-cycle cache (cached entire system_text including
+   * Tier B picks) was removed. Tier B now re-runs every user msg so the
+   * agent gets fresh topical picks per query, while Tier A's stable rules
+   * still ride for free off this lightweight cache.
    */
-  cachedSystemText?: string
-  /**
-   * Picks paired with `cachedSystemText`. Reused on cache-hit turns to render
-   * a `cache` log entry so the audit trail stays continuous across turns
-   * (otherwise only turn-1 shows up on the retrieve page).
-   */
-  cachedPicks?: PickedExperience[]
-  /** Model info recorded when the cache was filled — copied into cache-hit log entries. */
-  cachedModel?: RetrieveLogEntry["model"]
+  baselineSystemText?: string
+  baselinePicks?: PickedExperience[]
 }
 
 type InstanceState = {
@@ -591,14 +617,25 @@ function expandFromSeeds(
 // Render
 // -----------------------------------------------------------------------------
 
-function renderSystemBlock(picks: PickedExperience[]): string | undefined {
+function renderSystemBlock(
+  picks: PickedExperience[],
+  opts: {
+    /** Outer tag name. Tier A uses `baseline_experiences`, Tier B keeps the
+     * legacy `retrieved_experiences` so existing prompts don't change. */
+    tag?: string
+    /** Custom intro paragraph. Falls back to a topical-fit default. */
+    intro?: string
+  } = {},
+): string | undefined {
   if (picks.length === 0) return undefined
-  const lines: string[] = []
-  lines.push("<retrieved_experiences>")
-  lines.push(
+  const tag = opts.tag ?? "retrieved_experiences"
+  const intro =
+    opts.intro ??
     "These reusable experiences were selected for this turn based on the conversation. " +
-      "Use them as soft guidance — they describe rules, conventions, or knowledge from prior interactions in this workspace.",
-  )
+      "Use them as soft guidance — they describe rules, conventions, or knowledge from prior interactions in this workspace."
+  const lines: string[] = []
+  lines.push(`<${tag}>`)
+  lines.push(intro)
   lines.push("")
   for (const p of picks) {
     const head = `<experience id="${p.experience_id}" kind="${p.kind}"${
@@ -611,7 +648,7 @@ function renderSystemBlock(picks: PickedExperience[]): string | undefined {
     if (p.trigger_condition) lines.push(`when: ${p.trigger_condition}`)
     lines.push(`</experience>`)
   }
-  lines.push("</retrieved_experiences>")
+  lines.push(`</${tag}>`)
   return lines.join("\n")
 }
 
@@ -652,6 +689,78 @@ async function readLog(): Promise<RetrieveLogEntry[]> {
   } catch {
     return []
   }
+}
+
+// -----------------------------------------------------------------------------
+// Tier A — Baseline picker (no LLM, hard filter)
+// -----------------------------------------------------------------------------
+
+const BASELINE_MAX_PICKS = 12
+
+/**
+ * Pick the workspace-level rules that should be in EVERY turn's system
+ * prompt regardless of what the user asks. Pure filter — kind ∈ baseline
+ * set + target_layer match + non-archived. Sorted to prefer rules with a
+ * machine-readable `statement` (clearer to the agent), capped at
+ * `BASELINE_MAX_PICKS` so a runaway library doesn't blow the budget.
+ *
+ * Caches at session level: same picks for the whole compaction cycle, since
+ * the baseline doesn't depend on user_text. The cache is dropped by
+ * `resetSession` on compaction and naturally on opencode restart.
+ */
+async function pickBaseline(
+  sessionID: string,
+  agentName: string,
+): Promise<{ picks: PickedExperience[]; system_text?: string; cached: boolean }> {
+  const ss = sessionState(sessionID)
+  if (ss.baselinePicks !== undefined) {
+    return {
+      picks: ss.baselinePicks,
+      system_text: ss.baselineSystemText,
+      cached: true,
+    }
+  }
+
+  const layer = agentLayer(agentName)
+  const all = await Refiner.experiences()
+  const filtered = all
+    .filter((e) => !e.archived)
+    .filter((e) => BASELINE_KINDS.has(e.kind))
+    .filter((e) => layerMatches((e as any).target_layer ?? "both", layer))
+
+  // Sort: experiences with `statement` first (more actionable), then by
+  // most recently refined so newer rules surface first if the cap kicks in.
+  filtered.sort((a, b) => {
+    const aHasStmt = a.statement ? 1 : 0
+    const bHasStmt = b.statement ? 1 : 0
+    if (aHasStmt !== bHasStmt) return bHasStmt - aHasStmt
+    const aT = (a as any).last_refined_at ?? 0
+    const bT = (b as any).last_refined_at ?? 0
+    return bT - aT
+  })
+
+  const picks: PickedExperience[] = filtered.slice(0, BASELINE_MAX_PICKS).map((exp) => ({
+    experience_id: exp.id,
+    kind: exp.kind,
+    title: exp.title,
+    abstract: exp.abstract,
+    statement: exp.statement,
+    trigger_condition: exp.trigger_condition,
+    task_type: exp.task_type,
+    target_layer: (exp as any).target_layer ?? "both",
+    source: "baseline" as PickSource,
+    reason: "workspace baseline rule",
+  }))
+
+  const system_text = renderSystemBlock(picks, {
+    tag: "baseline_experiences",
+    intro:
+      "These are workspace-level rules, conventions, and constraints. Treat them as always-on guidance for this session — they apply regardless of the immediate user query.",
+  })
+
+  ss.baselinePicks = picks
+  ss.baselineSystemText = system_text ?? ""
+  return { picks, system_text, cached: false }
 }
 
 // -----------------------------------------------------------------------------
@@ -854,8 +963,10 @@ export namespace Retrieve {
   export const PickedExperienceSchemaExport = PickedExperienceSchema
 
   /**
-   * Called from session/prompt.ts each turn. Mutates per-session state and
-   * persists a log entry. Best-effort: errors are swallowed and logged.
+   * Called from session/prompt.ts at step 1 of each user turn. Combines
+   * Tier A (cached baseline rules) + Tier B (fresh topical pick from
+   * retrieve LLM). Mutates per-session state and persists a log entry.
+   * Best-effort: errors are swallowed and logged.
    */
   export async function selectForSession(input: {
     sessionID: string
@@ -868,76 +979,132 @@ export namespace Retrieve {
       if (!cfgEnabled) {
         return { picked: [], diff: { added: [], removed: [], kept: [] } }
       }
-      // Fast path — already injected this compaction cycle. Reuse the cached
-      // system_text and skip the retrieve LLM (the expensive bit, ~tens of
-      // seconds). `resetSession` clears the cache on compaction, so the very
-      // next turn after compaction re-runs the full pipeline.
-      //
-      // We still want a continuous audit trail on the retrieve frontend — the
-      // user's screenshot showed only turn-1 visible because cache hits
-      // skipped `appendLog`. So write a lightweight cache-hit log entry per
-      // turn: same picks, source flipped to "cache", llm_used=false,
-      // duration_ms ≈ 0. Frontend distinguishes via the new "cache" chip.
-      const ss = sessionState(input.sessionID)
-      if (ss.cachedSystemText !== undefined) {
-        const t0 = Date.now()
-        const turnIndex = ++ss.turnIndex
-        const cachedPicks = ss.cachedPicks ?? []
-        const picksForLog: PickedExperience[] = cachedPicks.map((p) => ({
-          ...p,
-          source: "cache" as PickSource,
-          reason: p.reason ?? "已注入，沿用上一次缓存",
-        }))
-        const pickedIDs = new Set(picksForLog.map((p) => p.experience_id))
-        const idSeed = `${input.sessionID}:${turnIndex}:cache:${[...pickedIDs].sort().join(",")}`
-        const cacheEntry: RetrieveLogEntry = {
-          id: "rl_" + Hash.fast(idSeed).slice(0, 12),
-          session_id: input.sessionID,
-          turn_index: turnIndex,
-          agent_name: input.agentName,
-          layer: agentLayer(input.agentName),
-          workflow_id: input.workflowID,
-          user_text_excerpt: input.userText
-            ? input.userText.length > 200
-              ? input.userText.slice(0, 200) + "…"
-              : input.userText
-            : undefined,
-          candidate_count: 0,
+
+      // Tier A — baseline rules (cached, no LLM, runs every turn but cheap)
+      const baseline = await pickBaseline(input.sessionID, input.agentName)
+      const baselineIDs = new Set(baseline.picks.map((p) => p.experience_id))
+
+      // Tier B — topical fit (LLM each user msg). The pipeline's coarse
+      // filter pulls from the same candidate pool, but Tier B's LLM seed
+      // selection naturally picks the topical fit. We dedupe against
+      // Tier A baseline so the same rule doesn't double-render.
+      const { result: topical, logEntry } = await runPipeline({ ...input, dryRun: false })
+      const topicalPicks = topical.picked.filter((p) => !baselineIDs.has(p.experience_id))
+
+      // Merge — baseline first (always-on rules), then topical (this turn's
+      // query-specific picks). The agent reads top-down, so high-stake rules
+      // come before topical guidance.
+      const mergedPicks: PickedExperience[] = [...baseline.picks, ...topicalPicks]
+      const baselineSysText = baseline.system_text
+      const topicalSysText = renderSystemBlock(topicalPicks)
+      const merged_system_text = [baselineSysText, topicalSysText]
+        .filter((s): s is string => Boolean(s))
+        .join("\n\n") || undefined
+
+      // Persist a baseline-only log entry the first time it's actually
+      // injected (cached === false), so the audit page shows the workspace
+      // rules baseline as a row. After the first time it's silent — the
+      // baseline is by definition stable.
+      if (!baseline.cached && baseline.picks.length > 0) {
+        const baselineLog: RetrieveLogEntry = {
+          ...logEntry,
+          id: "rl_" + Hash.fast(`${input.sessionID}:baseline:${[...baselineIDs].sort().join(",")}`).slice(0, 12),
+          turn_index: logEntry.turn_index,
+          candidate_count: baseline.picks.length,
           seed_ids: [],
           expand_ids: [],
-          picked: picksForLog,
-          diff: {
-            added: [],
-            removed: [],
-            kept: [...ss.lastInjected],
-          },
-          model: ss.cachedModel,
+          picked: baseline.picks,
+          diff: { added: [...baselineIDs], removed: [], kept: [] },
+          model: undefined,
           llm_used: false,
-          duration_ms: Date.now() - t0,
-          created_at: Date.now(),
+          duration_ms: 0,
+          error: undefined,
         }
-        // Skip the log when the cache is empty (turn-1 selected nothing) —
-        // an `empty cache replay` row every turn would just be noise.
-        if (picksForLog.length > 0) void appendLog(cacheEntry)
-        return {
-          system_text: ss.cachedSystemText,
-          picked: picksForLog,
-          diff: cacheEntry.diff,
-        }
+        void appendLog(baselineLog)
       }
-      const { result, logEntry } = await runPipeline({ ...input, dryRun: false })
-      // Remember what we injected so the next turn can short-circuit. Empty
-      // picks → cache empty string so we still skip the LLM next turn (the
-      // pipeline already decided "nothing to inject"; no point re-deciding).
-      ss.cachedSystemText = result.system_text ?? ""
-      ss.cachedPicks = result.picked
-      ss.cachedModel = logEntry.model
-      // fire-and-forget log persistence
-      void appendLog(logEntry)
-      return result
+
+      // Persist Tier B log entry (always — the user wanted every turn to
+      // show retrieve activity). The log entry already reflects topical
+      // picks from runPipeline; we don't include baseline picks here so the
+      // retrieve page shows them as separate rows.
+      void appendLog({
+        ...logEntry,
+        picked: topicalPicks,
+      })
+
+      return {
+        system_text: merged_system_text,
+        picked: mergedPicks,
+        diff: topical.diff, // diff is computed against lastInjected which only tracks topical
+      }
     } catch (error) {
       log.warn("retrieve.selectForSession failed", { error })
       return { picked: [], diff: { added: [], removed: [], kept: [] } }
+    }
+  }
+
+  /**
+   * Tier C — agent-on-demand recall via the `recall_experience` tool.
+   *
+   * Reuses the runPipeline machinery (LLM seed select + graph expand) but
+   * with the agent-supplied query, and returns a *structured* list rather
+   * than a system_text block. The caller (the tool wrapper) renders the
+   * list to YAML for the agent to read.
+   *
+   * Differences from `selectForSession`:
+   *   - No diff against `lastInjected` — Tier C is one-shot
+   *   - No state mutation — turn index stays put, baseline cache untouched
+   *   - Persists a Tier-C-flavored log entry (`agent_name = original + ":recall"`)
+   *     so the audit page can distinguish tool calls from user-msg injects
+   *   - Auto-expands graph (already in runPipeline) and orders requires-first
+   */
+  export async function recall(input: {
+    sessionID: string
+    agentName: string
+    workflowID?: string
+    /** Free-text query — agent says what it wants guidance on. */
+    query: string
+    /** Cap on returned experiences (excluding auto-added preconditions). 1-8, default 5. */
+    max?: number
+  }): Promise<{
+    experiences: PickedExperience[]
+    matched_count: number
+    preconditions_added: number
+  }> {
+    const cfgEnabled = (await settings()).enabled
+    if (!cfgEnabled) {
+      return { experiences: [], matched_count: 0, preconditions_added: 0 }
+    }
+    const max = Math.max(1, Math.min(8, input.max ?? 5))
+    const { result, logEntry } = await runPipeline({
+      sessionID: input.sessionID,
+      agentName: input.agentName,
+      workflowID: input.workflowID,
+      userText: input.query,
+      dryRun: true, // don't bump turn / mutate lastInjected
+    })
+
+    // Order: requires-preconditions first, then seeds, then refines.
+    // Within a class, preserve runPipeline's ordering (which already put
+    // seeds before expansions).
+    const requires = result.picked.filter((p) => p.source === "expand:requires")
+    const seeds = result.picked.filter((p) => p.source === "seed" || p.source === "heuristic")
+    const refines = result.picked.filter((p) => p.source === "expand:refines")
+    const ordered = [...requires, ...seeds.slice(0, max), ...refines]
+
+    // Persist a Tier-C log row so the retrieve page surfaces tool calls.
+    const recallLog: RetrieveLogEntry = {
+      ...logEntry,
+      agent_name: `${input.agentName}:recall`,
+      picked: ordered,
+      duration_ms: logEntry.duration_ms,
+    }
+    if (ordered.length > 0) void appendLog(recallLog)
+
+    return {
+      experiences: ordered,
+      matched_count: seeds.length,
+      preconditions_added: requires.length,
     }
   }
 
