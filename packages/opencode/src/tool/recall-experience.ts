@@ -85,10 +85,15 @@ export const RecallExperienceTool = Tool.define(
           if (result.experiences.length === 0) {
             return {
               title: `recall: no match for "${params.query.slice(0, 40)}"`,
+              // Keep the shape identical to the matched branch so the Effect's
+              // inferred return type stays consistent. Empty array is the
+              // honest answer ("no IDs") and lets downstream code treat the
+              // field uniformly without a `?:` check.
               metadata: {
                 query: params.query,
                 matched: 0,
                 preconditions: 0,
+                experience_ids: [] as string[],
               },
               output:
                 "<recall_experience>\n" +
