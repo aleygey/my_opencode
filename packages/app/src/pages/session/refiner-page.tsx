@@ -3698,7 +3698,8 @@ function Filterbar(props: {
 
   return (
     <div class="rf-fbar">
-      <div class="rf-fbar-group">
+      {/* Kind chips — small fixed set (≤ 12), always visible, never scroll. */}
+      <div class="rf-fbar-group rf-fbar-kinds">
         <span class="rf-fbar-label">分类</span>
         <button
           type="button"
@@ -3753,35 +3754,42 @@ function Filterbar(props: {
         </Show>
       </div>
 
+      {/* Tag chips — variable count (can be many). Scrolls *inside* this
+          container so the search bar on the right is never pushed off-screen.
+          The active tag stays bound to a category filter that also flows into
+          the graph view (so picking a tag highlights only that subset there). */}
       <Show when={props.categories.length > 0}>
         <span class="rf-fbar-div" />
-        <div class="rf-fbar-group">
+        <div class="rf-fbar-group rf-fbar-tags">
           <span class="rf-fbar-label">标签</span>
-          <For each={props.categories}>
-            {(cat) => {
-              const active = () => props.activeCategory === cat.slug
-              return (
-                <button
-                  type="button"
-                  class="rf-chip rf-chip-tag"
-                  data-active={active() ? "true" : "false"}
-                  title={`${cat.slug} · ${cat.count}`}
-                  onClick={() =>
-                    props.setActiveCategory(active() ? undefined : cat.slug)
-                  }
-                >
-                  <span class="rf-chip-hash">#</span>
-                  {cat.slug}
-                  <span class="rf-chip-count">{cat.count}</span>
-                </button>
-              )
-            }}
-          </For>
+          <div class="rf-fbar-tags-scroll">
+            <For each={props.categories}>
+              {(cat) => {
+                const active = () => props.activeCategory === cat.slug
+                return (
+                  <button
+                    type="button"
+                    class="rf-chip rf-chip-tag"
+                    data-active={active() ? "true" : "false"}
+                    title={`${cat.slug} · ${cat.count}`}
+                    onClick={() =>
+                      props.setActiveCategory(active() ? undefined : cat.slug)
+                    }
+                  >
+                    <span class="rf-chip-hash">#</span>
+                    {cat.slug}
+                    <span class="rf-chip-count">{cat.count}</span>
+                  </button>
+                )
+              }}
+            </For>
+          </div>
         </div>
       </Show>
 
-      <div class="rf-fbar-spacer" />
-
+      {/* Search + sort pinned right; never moves off-screen no matter how many
+          tags are present. */}
+      <div class="rf-fbar-right">
       <div class="rf-fbar-search">
         <svg
           class="rf-fbar-search-ic"
@@ -3824,6 +3832,7 @@ function Filterbar(props: {
         </svg>
         {SORT_LABEL[props.sort]}
       </button>
+      </div>
     </div>
   )
 }
@@ -4006,6 +4015,26 @@ function computeGraphLayoutForce(
   // 1. Seed positions on a kind-grouped radial ring.
   const seed = computeGraphLayout(experiences, opts)
 
+  // Estimate the rendered label box for each title. Mirrors the renderer:
+  // - Title is clipped to 22 chars
+  // - Font is 14px medium, label sits to the right of the node circle (x=15)
+  // - Chinese / wide CJK ≈ 14px/char; ASCII ≈ 7.5px/char
+  // The bbox we use for collision is anchored at the node center and extends
+  // RIGHT by `labelW + leftOffset + tail` and HALF-HEIGHT up/down by 11px.
+  // Slight half-pad on the LEFT covers the node disc itself.
+  const LABEL_OFFSET_X = 15
+  const LABEL_TAIL = 6
+  const LABEL_HALF_H = 11
+  const NODE_HALF_H = 11
+  const measureLabelWidth = (title: string) => {
+    const s = title.length > 22 ? title.slice(0, 22) : title
+    let w = 0
+    for (const ch of s) {
+      w += /[一-鿿　-〿＀-￯]/.test(ch) ? 14 : 7.5
+    }
+    return Math.max(w, 28)
+  }
+
   type Body = {
     id: string
     exp: ChainGraphExperienceLite
@@ -4013,6 +4042,14 @@ function computeGraphLayoutForce(
     y: number
     vx: number
     vy: number
+    /** Half-width of the personal-space ellipse, measured from the node
+     *  CENTER. Includes the dot offset, label width, and a small tail. The
+     *  label only extends rightward, but for the physics pass we treat it
+     *  symmetrically — labels will be untangled in a final bbox-collision
+     *  pass that knows about the right-skew. */
+    halfW: number
+    halfH: number
+    labelW: number
   }
   const bodies: Body[] = []
   const indexOf = new Map<string, number>()
@@ -4020,20 +4057,33 @@ function computeGraphLayoutForce(
     const s = seed.get(e.id)
     if (!s) continue
     indexOf.set(e.id, bodies.length)
-    bodies.push({ id: e.id, exp: e, x: s.x, y: s.y, vx: 0, vy: 0 })
+    const lw = measureLabelWidth(e.title)
+    bodies.push({
+      id: e.id,
+      exp: e,
+      x: s.x,
+      y: s.y,
+      vx: 0,
+      vy: 0,
+      labelW: lw,
+      halfW: 0.5 * (LABEL_OFFSET_X + lw + LABEL_TAIL) + 6,
+      halfH: Math.max(NODE_HALF_H, LABEL_HALF_H) + 4,
+    })
   }
   if (bodies.length === 0) return out
 
   const n = bodies.length
-  // Tuning: bigger graphs need more space per node + a longer spring.
+  // Tuning: bigger graphs need more space per node + a longer spring. Bumped
+  // both repulsion and target spacing 1.6× from v1 because the previous
+  // settings let label boxes routinely overlap on dense subgraphs.
   const area = width * height
-  const targetLen = Math.sqrt(area / Math.max(n, 1)) * 0.55
-  const kRep = targetLen * targetLen * 0.9 // repulsion constant
-  const kSpring = 0.04 // spring stiffness
+  const targetLen = Math.sqrt(area / Math.max(n, 1)) * 0.85
+  const kRep = targetLen * targetLen * 1.6
+  const kSpring = 0.045
   const damping = 0.82
-  const maxStep = 18 // cap per-tick movement so things don't explode
-  const iterations = n < 20 ? 160 : n < 80 ? 220 : 280
-  const centerPull = 0.0024
+  const maxStep = 22
+  const iterations = n < 20 ? 200 : n < 80 ? 280 : 340
+  const centerPull = 0.002
 
   const adj: Array<[number, number]> = []
   for (const e of edges) {
@@ -4104,19 +4154,80 @@ function computeGraphLayoutForce(
     }
   }
 
-  // Fit to canvas with a margin so the largest node + label still fit.
+  // ── Label-collision relaxation pass ──────────────────────────────────
+  // Force-directed alone treats nodes as point-masses, so labels (which can
+  // be ~200 px wide for long Chinese titles) frequently end up overlapping
+  // each other even when the dots themselves are well-spaced. Run a few
+  // iterations of bbox-overlap-relaxation: for every pair whose label
+  // bounding boxes overlap, push them apart along the axis of *minimum*
+  // overlap. Vertical offsets are usually fine (labels don't grow downward),
+  // so most fixes resolve as small Y-shifts instead of jittering X.
+  // Labels render to the right of the node circle; bbox left edge is the
+  // node center, right edge is `LABEL_OFFSET_X + labelW + LABEL_TAIL`.
+  const labelBox = (b: Body) => ({
+    x1: b.x - 4,
+    x2: b.x + LABEL_OFFSET_X + b.labelW + LABEL_TAIL,
+    y1: b.y - LABEL_HALF_H - 2,
+    y2: b.y + LABEL_HALF_H + 2,
+  })
+  const RELAX_ITERS = 60
+  for (let iter = 0; iter < RELAX_ITERS; iter++) {
+    let movedAny = false
+    for (let i = 0; i < n; i++) {
+      const A = labelBox(bodies[i])
+      for (let j = i + 1; j < n; j++) {
+        const B = labelBox(bodies[j])
+        const ox = Math.min(A.x2, B.x2) - Math.max(A.x1, B.x1)
+        const oy = Math.min(A.y2, B.y2) - Math.max(A.y1, B.y1)
+        if (ox <= 0 || oy <= 0) continue
+        // Push apart along the axis of smaller overlap (cheaper to fix).
+        // Distribute the push 50/50 so neither node gets pinned.
+        if (oy <= ox) {
+          const push = oy * 0.5 + 0.5
+          if (bodies[i].y < bodies[j].y) {
+            bodies[i].y -= push
+            bodies[j].y += push
+          } else {
+            bodies[i].y += push
+            bodies[j].y -= push
+          }
+        } else {
+          const push = ox * 0.5 + 0.5
+          // Note: labels grow rightward, so X-pushes prefer to move the
+          // RIGHTMOST node further right, which usually clears overlaps
+          // without dragging the left node into something else.
+          if (bodies[i].x < bodies[j].x) {
+            bodies[i].x -= push * 0.6
+            bodies[j].x += push * 1.4
+          } else {
+            bodies[i].x += push * 1.4
+            bodies[j].x -= push * 0.6
+          }
+        }
+        movedAny = true
+      }
+    }
+    if (!movedAny) break
+  }
+
+  // Fit to canvas: include label extents in the bounding box so the
+  // rightmost label doesn't get clipped by the canvas edge. The label box
+  // for body b runs from `b.x` to `b.x + LABEL_OFFSET_X + b.labelW + tail`.
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
   for (const b of bodies) {
+    const lx2 = b.x + LABEL_OFFSET_X + b.labelW + LABEL_TAIL
     if (b.x < minX) minX = b.x
-    if (b.y < minY) minY = b.y
-    if (b.x > maxX) maxX = b.x
-    if (b.y > maxY) maxY = b.y
+    if (b.y - LABEL_HALF_H < minY) minY = b.y - LABEL_HALF_H
+    if (lx2 > maxX) maxX = lx2
+    if (b.y + LABEL_HALF_H > maxY) maxY = b.y + LABEL_HALF_H
   }
-  const margin = 70
+  const marginX = 36
+  const marginY = 24
   const bw = Math.max(maxX - minX, 1)
   const bh = Math.max(maxY - minY, 1)
-  const sx = (width - 2 * margin) / bw
-  const sy = (height - 2 * margin) / bh
+  const sx = (width - 2 * marginX) / bw
+  const sy = (height - 2 * marginY) / bh
+  // Cap at 1.0 so a sparse graph isn't blown up to fill the canvas.
   const scale = Math.min(sx, sy, 1)
   const ox = (width - bw * scale) / 2 - minX * scale
   const oy = (height - bh * scale) / 2 - minY * scale
@@ -4137,6 +4248,10 @@ function ExperienceGraphView(props: {
   loading?: boolean
   onPick: (id: string) => void
   activeKind?: Kind
+  /** Category filter (e.g. "embedded-system"). When set, only experiences
+   *  whose `categories` includes this slug are rendered. Edges are kept iff
+   *  both endpoints survive the filter — orphan edges would mislead. */
+  activeCategory?: string
   activeEdgeKinds: Set<ChainEdgeKind>
   toggleEdgeKind: (k: ChainEdgeKind) => void
   includeArchived: boolean
@@ -4156,9 +4271,11 @@ function ExperienceGraphView(props: {
   const filteredExps = createMemo(() => {
     const src = props.data?.experiences ?? []
     const kind = props.activeKind
+    const cat = props.activeCategory
     return src.filter((e) => {
       if (!props.includeArchived && e.archived) return false
       if (kind && e.kind !== kind) return false
+      if (cat && !(e.categories ?? []).includes(cat)) return false
       return true
     })
   })
@@ -5324,6 +5441,7 @@ export default function RefinerPage() {
               loading={chainGraph.loading && !chainGraph.latest}
               onPick={pickExperienceByID}
               activeKind={activeKind()}
+              activeCategory={activeCategory()}
               activeEdgeKinds={graphEdgeKinds()}
               toggleEdgeKind={toggleGraphEdgeKind}
               includeArchived={includeArchived()}

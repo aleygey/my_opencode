@@ -445,17 +445,57 @@
   padding: 10px 22px;
   border-bottom: 1px solid var(--rf-line);
   background: var(--rf-bg);
-  overflow-x: auto;
-  scrollbar-width: none;
+  /* No horizontal scroll on the bar itself — the tag group below scrolls
+     inside its own container so the search box on the right is always
+     visible regardless of how many tags exist. */
+  overflow: hidden;
+  min-width: 0;
 }
-
-.refiner-page .rf-fbar::-webkit-scrollbar { display: none; }
 
 .refiner-page .rf-fbar-group {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
+}
+
+/* Kind group never shrinks — small fixed set, must remain readable. */
+.refiner-page .rf-fbar-kinds { flex-shrink: 0; }
+
+/* Tag group: scrolls horizontally INSIDE itself when there are many tags,
+   instead of pushing the search bar off-screen. */
+.refiner-page .rf-fbar-tags {
+  flex: 1 1 0;
+  min-width: 80px;
+  overflow: hidden;
+}
+.refiner-page .rf-fbar-tags-scroll {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  /* Soft fade at the right edge hints "more tags hide here" without taking
+     vertical space for a scroll bar. */
+  mask-image: linear-gradient(to right, black calc(100% - 24px), transparent);
+  -webkit-mask-image: linear-gradient(to right, black calc(100% - 24px), transparent);
+  padding-right: 18px;
+  max-width: 100%;
+}
+.refiner-page .rf-fbar-tags-scroll::-webkit-scrollbar { height: 6px; }
+.refiner-page .rf-fbar-tags-scroll::-webkit-scrollbar-thumb {
+  background: var(--rf-line);
+  border-radius: 3px;
+}
+
+/* Right cluster — search + sort pinned, never affected by tag overflow. */
+.refiner-page .rf-fbar-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  margin-left: auto;
 }
 
 .refiner-page .rf-fbar-label {
