@@ -107,13 +107,14 @@ async function readJsonOrThrow<T>(res: Response, label: string): Promise<T> {
 async function fetchLog(input: {
   baseUrl: string
   directory: string
-  sessionID: string
+  /** When omitted/undefined, the backend returns entries from ALL sessions. */
+  sessionID?: string
   password?: string
   username?: string
   fetcher?: typeof fetch
 }): Promise<LogResponse> {
   const url = new URL("/experimental/retrieve/log", input.baseUrl)
-  url.searchParams.set("session_id", input.sessionID)
+  if (input.sessionID) url.searchParams.set("session_id", input.sessionID)
   url.searchParams.set("limit", "200")
   const res = await (input.fetcher ?? fetch)(url, {
     headers: buildHeaders({
@@ -404,6 +405,10 @@ export default function RetrievePage() {
 
   const [selected, setSelected] = createSignal<RetrieveLogEntry | null>(null)
   const [autoRefresh, setAutoRefresh] = createSignal(true)
+  // When true, the page shows entries from ALL sessions (TUI build agent etc.).
+  // Useful because the NDJSON log is global but the page defaults to the
+  // current /session/:id only.
+  const [showAllSessions, setShowAllSessions] = createSignal(false)
   const [previewText, setPreviewText] = createSignal("")
   const [previewBusy, setPreviewBusy] = createSignal(false)
   const [previewResult, setPreviewResult] = createSignal<
@@ -423,8 +428,11 @@ export default function RetrievePage() {
     const current = server.current
     const sessionID = params.id
     if (!current || !sessionID) return
+    // showAllSessions === true → omit sessionID so backend returns every
+    // session's entries. The signal access here is what wires the toggle into
+    // SolidJS's reactivity so flipping it triggers a refetch.
     return {
-      sessionID,
+      sessionID: showAllSessions() ? undefined : sessionID,
       baseUrl: current.http.url,
       directory: sdk.directory,
       password: current.http.password,
@@ -563,6 +571,17 @@ export default function RetrievePage() {
               ⚠ {configError()}
             </span>
           </Show>
+          <label class="retrieve-toggle" title="显示来自所有 session 的条目（含 TUI / 其他 agent）">
+            <input
+              type="checkbox"
+              checked={showAllSessions()}
+              onChange={(e) => {
+                setShowAllSessions(e.currentTarget.checked)
+                setSelected(null)
+              }}
+            />
+            <span>全部 session</span>
+          </label>
           <label class="retrieve-toggle">
             <input
               type="checkbox"
@@ -611,6 +630,15 @@ export default function RetrievePage() {
                     <div class="retrieve-row-head">
                       <span class="retrieve-row-turn">#{entry.turn_index}</span>
                       <span class="retrieve-row-time">{fmtTime(entry.created_at)}</span>
+                      <Show when={showAllSessions()}>
+                        <span
+                          class="retrieve-row-session"
+                          classList={{ "is-current": entry.session_id === params.id }}
+                          title={entry.session_id}
+                        >
+                          {entry.session_id.slice(-8)}
+                        </span>
+                      </Show>
                       <span class="retrieve-row-agent">{entry.agent_name}</span>
                       <span class="retrieve-row-layer" data-layer={entry.layer}>
                         {entry.layer}

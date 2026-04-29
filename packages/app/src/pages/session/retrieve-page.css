@@ -181,6 +181,29 @@
   font-size: var(--font-size-small);
 }
 
+/* Shown only when 全部 session toggle is on. The last 8 chars of the
+   session id make it identifiable but compact. Current-session chip is
+   highlighted so the user can quickly tell their own session apart. */
+.retrieve-page .retrieve-row-session {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-family-mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  background: var(--rt-chip);
+  color: var(--rt-dim);
+  border: 1px solid var(--rt-line-soft);
+}
+
+.retrieve-page .retrieve-row-session.is-current {
+  color: var(--rt-ink);
+  background: var(--rt-selected);
+  border-color: var(--rt-selected-border);
+}
+
 .retrieve-page .retrieve-row-layer {
   display: inline-flex;
   align-items: center;
