@@ -387,6 +387,40 @@ async function fetchTaxonomy(input: {
   return readJsonOrThrow<TaxonomyResponse>(res, "Refiner taxonomy")
 }
 
+type ExperienceUsageStat = {
+  injected: {
+    total: number
+    by_tier: { baseline: number; topical: number; recall: number }
+    last_at: number
+  }
+  used: {
+    cited: number
+    recalled: number
+    last_at: number
+  }
+}
+
+type UsageStatsResponse = Record<string, ExperienceUsageStat>
+
+async function fetchUsageStats(input: {
+  baseUrl: string
+  directory: string
+  password?: string
+  username?: string
+  fetcher?: typeof fetch
+}): Promise<UsageStatsResponse> {
+  const url = new URL("/experimental/refiner/stats", input.baseUrl)
+  const res = await (input.fetcher ?? fetch)(url, {
+    headers: buildHeaders({
+      directory: input.directory,
+      username: input.username,
+      password: input.password,
+    }),
+  })
+  if (!res.ok) throw new Error(`Failed to load usage stats (${res.status})`)
+  return readJsonOrThrow<UsageStatsResponse>(res, "Refiner usage stats")
+}
+
 type ConfigSource = "override" | "agent" | "default" | "none"
 
 type RefinerConfig = {
@@ -2833,6 +2867,8 @@ type ExperiencePeekProps = {
   onReview: (status: ReviewStatus) => Promise<void> | void
   onToggleMergeSelect: (id: string) => void
   mergeSelected: boolean
+  /** Live counters for this experience — undefined when no stats exist yet. */
+  usageStat?: ExperienceUsageStat
 }
 
 function ExperiencePeek(props: ExperiencePeekProps) {
@@ -2927,6 +2963,32 @@ function ExperiencePeek(props: ExperiencePeekProps) {
             <span class="rf-peek-head-tag">
               <b>refined</b>
               {refCount()}×
+            </span>
+          </Show>
+          <Show when={props.usageStat && props.usageStat.injected.total > 0}>
+            <span
+              class="rf-peek-head-tag rf-peek-head-tag-injected"
+              title={(() => {
+                const t = props.usageStat!.injected.by_tier
+                return `injected ${props.usageStat!.injected.total}× — baseline ${t.baseline} / topical ${t.topical} / recall ${t.recall}`
+              })()}
+            >
+              <b>注入</b>
+              {props.usageStat!.injected.total}×
+            </span>
+          </Show>
+          <Show
+            when={
+              props.usageStat &&
+              (props.usageStat.used.cited > 0 || props.usageStat.used.recalled > 0)
+            }
+          >
+            <span
+              class="rf-peek-head-tag rf-peek-head-tag-used"
+              title={`used ${props.usageStat!.used.cited + props.usageStat!.used.recalled}× — cited ${props.usageStat!.used.cited} (refiner judge) / recalled ${props.usageStat!.used.recalled} (recall_experience tool)`}
+            >
+              <b>使用</b>
+              {props.usageStat!.used.cited + props.usageStat!.used.recalled}×
             </span>
           </Show>
           <span class="rf-peek-id">
@@ -3361,6 +3423,7 @@ function ExperienceModal(props: {
   onReview: (id: string, status: ReviewStatus) => Promise<void> | void
   onToggleMergeSelect: (id: string) => void
   mergeSelected: (id: string) => boolean
+  usageStat?: ExperienceUsageStat
 }) {
   // Lock <body> scroll + bind Escape while open; releases on close.
   createEffect(() => {
@@ -3409,6 +3472,7 @@ function ExperienceModal(props: {
               onReview={(status) => props.onReview(exp().id, status)}
               onToggleMergeSelect={props.onToggleMergeSelect}
               mergeSelected={props.mergeSelected(exp().id)}
+              usageStat={props.usageStat}
             />
           </div>
         </div>
@@ -4846,6 +4910,13 @@ export default function RefinerPage() {
     stableFetcher(fetchTaxonomy),
   )
   const [config, { refetch: refetchConfig }] = createResource(taxonomyArgs, stableFetcher(fetchConfig))
+  // Per-experience usage statistics (injection / cited / recalled). Polled
+  // alongside the overview so the peek card's badges update naturally as
+  // counters tick over without the user reloading.
+  const [usageStats, { refetch: refetchUsageStats }] = createResource(
+    taxonomyArgs,
+    stableFetcher(fetchUsageStats),
+  )
   const [categoriesData, { refetch: refetchCategories }] = createResource(
     taxonomyArgs,
     stableFetcher(fetchCategories),
@@ -4868,13 +4939,42 @@ export default function RefinerPage() {
   // Auto-open the most recent experience ONCE on first data load.
   // Guarded with a flag so that refetch polls won't re-open it after the
   // user closes the modal.
+  //
+  // Hash deeplink: when the URL has `#<experience_id>` (e.g. linked from the
+  // retrieve page's exp chip), open THAT experience instead of the latest.
+  // We also listen for hash changes so navigating to a different exp from
+  // outside (or via History API) re-opens the correct card.
   let autoOpened = false
+  const openExpFromHash = (data: NonNullable<ReturnType<typeof overview>>): boolean => {
+    if (typeof window === "undefined") return false
+    const hash = window.location.hash.replace(/^#/, "").trim()
+    if (!hash) return false
+    const target = data.experiences.find((e) => e.id === hash)
+    if (!target) return false
+    setSelection({ kind: "experience", id: `experience:${target.id}` })
+    return true
+  }
   createEffect(() => {
     const data = overview()
     if (!data || autoOpened || selection()) return
     autoOpened = true
+    if (openExpFromHash(data)) return
     const latest = data.experiences[0]
     if (latest) setSelection({ kind: "experience", id: `experience:${latest.id}` })
+  })
+
+  // Re-act to hashchange so deeplinks fired AFTER initial load (e.g. user
+  // is on /refiner and the retrieve page opens a new tab to a different
+  // exp_id) still surface the correct card.
+  onMount(() => {
+    if (typeof window === "undefined") return
+    const handler = () => {
+      const data = overview()
+      if (!data) return
+      openExpFromHash(data)
+    }
+    window.addEventListener("hashchange", handler)
+    onCleanup(() => window.removeEventListener("hashchange", handler))
   })
 
   // Refresh strategy: this page used to poll every 4s, then 15s — but the
@@ -5594,6 +5694,11 @@ export default function RefinerPage() {
         onReview={(id, status) => handleReview(id, status)}
         onToggleMergeSelect={toggleMergeSelect}
         mergeSelected={(id) => mergeIDs().has(id)}
+        usageStat={(() => {
+          const sel = selectedExperience()
+          if (!sel) return undefined
+          return usageStats()?.[sel.id]
+        })()}
       />
 
       <MergeTray

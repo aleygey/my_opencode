@@ -231,6 +231,28 @@ export const ExperimentalRoutes = lazy(() =>
       },
     )
     .get(
+      "/refiner/stats",
+      describeRoute({
+        summary: "Get per-experience usage statistics",
+        description:
+          "Per-experience injection / usage counters. `injected.by_tier` separates baseline / topical / recall sources. `used.cited` is the refiner judge's count of times the agent applied the experience; `used.recalled` is the count of voluntary `recall_experience` tool calls that returned this experience. Single JSON dict keyed by experience id.",
+        operationId: "experimental.refiner.stats.get",
+        responses: {
+          200: {
+            description: "Per-experience usage stats",
+            content: {
+              "application/json": {
+                schema: resolver(z.record(z.string(), z.unknown())),
+              },
+            },
+          },
+        },
+      }),
+      async (c) => {
+        return c.json(await Refiner.usageStats())
+      },
+    )
+    .get(
       "/retrieve/log",
       describeRoute({
         summary: "Get retrieve injection log",

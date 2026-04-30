@@ -1069,6 +1069,26 @@
   margin-right: 1px;
 }
 
+/* Usage stats — distinct accents so the eye separates them from the
+   metadata tags (scope / refined / sessions). Cool-blue for "injected"
+   (system-side fact), warm-green for "used" (signal of utility). */
+.refiner-page .rf-peek-head-tag-injected {
+  color: light-dark(oklch(0.36 0.10 235), oklch(0.84 0.10 235));
+  background: light-dark(oklch(0.96 0.04 235), oklch(0.30 0.06 235));
+  border-color: light-dark(oklch(0.86 0.06 235), oklch(0.40 0.06 235));
+}
+.refiner-page .rf-peek-head-tag-injected b {
+  color: light-dark(oklch(0.46 0.10 235), oklch(0.78 0.10 235));
+}
+.refiner-page .rf-peek-head-tag-used {
+  color: light-dark(oklch(0.36 0.12 155), oklch(0.84 0.12 155));
+  background: light-dark(oklch(0.96 0.04 155), oklch(0.28 0.06 155));
+  border-color: light-dark(oklch(0.84 0.07 155), oklch(0.38 0.06 155));
+}
+.refiner-page .rf-peek-head-tag-used b {
+  color: light-dark(oklch(0.44 0.12 155), oklch(0.78 0.12 155));
+}
+
 .refiner-page .rf-peek-id {
   font-family: var(--font-family-mono);
   font-size: 10.5px;

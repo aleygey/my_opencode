@@ -2023,6 +2023,270 @@ function buildOverviewGraph(experiences: ExperienceWithPath[], chainEdges: Exper
 }
 
 // -----------------------------------------------------------------------------
+// Sidecar usage judge — LLM-as-judge for "did the agent actually USE
+// the experiences we injected last turn?"
+//
+// Architectural decision (see docs/05-Retrieve-Agent-Design.md): the judge
+// lives on the refiner side, not retrieve. Refiner is already a sidecar
+// agent that sees session messages on every user msg; adding a usage
+// judge to its lifecycle is cheaper than spinning a separate observer.
+//
+// Runs fire-and-forget after each user message. Reads the most recent
+// retrieve log entry for the session that has picks, gathers the
+// assistant text/tool calls produced AFTER it (and before the new user
+// msg), then asks a small model: "which of these injected experiences did
+// the agent apply?" — and bumps usage-stats accordingly.
+//
+// In-memory `judgedRetrieveEntries` set deduplicates so a process won't
+// re-judge the same retrieve log entry on a restart-immune session. On
+// restart we may re-judge once, which is acceptable noise.
+// -----------------------------------------------------------------------------
+
+const judgedRetrieveEntries = new Set<string>()
+
+const UsageJudgeWireSchema = z.object({
+  applied_experience_ids: z.array(z.string()).default([]),
+  rationale: z.string().max(400).default(""),
+})
+
+type RetrieveLogPick = {
+  experience_id: string
+  kind: string
+  title: string
+  abstract?: string
+  statement?: string
+  source: string
+}
+
+type RetrieveLogRow = {
+  id: string
+  session_id: string
+  turn_index: number
+  agent_name: string
+  picked: RetrieveLogPick[]
+  llm_used: boolean
+  duration_ms: number
+  created_at: number
+}
+
+async function readRetrieveLogRaw(): Promise<RetrieveLogRow[]> {
+  const { base } = await settings()
+  const fp = path.join(base, "retrieve-log.ndjson")
+  const raw = await Filesystem.readText(fp).catch(() => "")
+  if (!raw) return []
+  const out: RetrieveLogRow[] = []
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    try {
+      const parsed = JSON.parse(trimmed)
+      if (parsed && typeof parsed === "object" && Array.isArray(parsed.picked)) {
+        out.push(parsed as RetrieveLogRow)
+      }
+    } catch {
+      // skip malformed
+    }
+  }
+  return out
+}
+
+/**
+ * Find the most recent retrieve log entry for a session that:
+ *   - has at least one picked experience
+ *   - was created BEFORE `asOf` (so the new user msg's row, if any, is
+ *     excluded — we're judging what happened in the PREVIOUS turn)
+ *   - hasn't already been judged in this process
+ * Returns undefined if nothing eligible.
+ */
+async function findUnjudgedRetrieveEntry(
+  sessionID: string,
+  asOf: number,
+): Promise<RetrieveLogRow | undefined> {
+  const all = await readRetrieveLogRaw()
+  const candidates = all
+    .filter((e) => e.session_id === sessionID)
+    .filter((e) => e.picked.length > 0)
+    .filter((e) => e.created_at < asOf)
+    .filter((e) => !judgedRetrieveEntries.has(e.id))
+    .sort((a, b) => b.created_at - a.created_at)
+  return candidates[0]
+}
+
+/**
+ * Collect assistant text + tool calls produced between `since` and `until`
+ * timestamps in this session. Truncates each item to keep prompt size
+ * bounded (we don't need full tool outputs to judge "did the agent
+ * follow the rule?").
+ */
+async function collectAssistantWork(
+  sessionID: SessionID,
+  since: number,
+  until: number,
+): Promise<string> {
+  const messages = await svcSessionMessages({ sessionID, limit: 80 })
+  const filtered = messages
+    .filter((m) => {
+      const t = m.info.time.created
+      return t > since && t < until
+    })
+    .filter((m) => m.info.role === "assistant")
+    .sort((a, b) => a.info.time.created - b.info.time.created)
+  if (filtered.length === 0) return ""
+  const lines: string[] = []
+  for (const m of filtered) {
+    for (const part of m.parts) {
+      if (part.type === "text" && !part.synthetic && !part.ignored) {
+        lines.push(part.text.slice(0, 800))
+      } else if (part.type === "tool") {
+        const argsStr =
+          typeof (part as any).input === "object"
+            ? JSON.stringify((part as any).input).slice(0, 300)
+            : ""
+        lines.push(`[tool ${part.tool}${argsStr ? " " + argsStr : ""}]`)
+      }
+    }
+  }
+  return lines.join("\n").slice(0, 6000)
+}
+
+async function judgePreviousTurnUsage(input: {
+  sessionID: SessionID
+  asOf: number
+}): Promise<{ applied: string[]; entry_id?: string } | undefined> {
+  const target = await findUnjudgedRetrieveEntry(input.sessionID, input.asOf)
+  if (!target) return undefined
+
+  // Mark immediately to avoid races within the same process.
+  judgedRetrieveEntries.add(target.id)
+
+  const work = await collectAssistantWork(
+    input.sessionID,
+    target.created_at,
+    input.asOf,
+  )
+  if (!work.trim()) {
+    log.debug("refiner.judge: no assistant work after retrieve entry", {
+      entry_id: target.id,
+    })
+    return { applied: [], entry_id: target.id }
+  }
+
+  const resolved = await resolveRefinerModel()
+  if (!resolved?.model) return undefined
+  const language = await svcProviderGetLanguage(resolved.model)
+  if (!language) return undefined
+  const auth = await svcAuthGet(resolved.model.providerID)
+  const cfg = await svcConfigGet()
+  const isOpenaiOauth = resolved.model.providerID === "openai" && auth?.type === "oauth"
+
+  const injected = target.picked.map((p) => ({
+    id: p.experience_id,
+    kind: p.kind,
+    title: p.title,
+    statement: p.statement,
+    abstract: p.abstract ? p.abstract.slice(0, 220) : undefined,
+  }))
+
+  const systemPrompt = [
+    "你是 retrieve usage judge，一个旁路评估角色。",
+    "任务：根据 agent 这一轮的产出（文字 + 工具调用），判断它**实际遵循/应用了**注入经验中的哪几条。",
+    "判断标准（严格）：",
+    "  1. 对应规则在 agent 的代码改动、工具调用 args、或解释性文字中**有可观察的体现** → applied",
+    "  2. 仅仅 agent 的文字里**提到了**经验主题、但没有动作 → 不算 applied",
+    "  3. agent 完全没产出（空 turn）或产出与经验无关 → applied 为空数组",
+    "  4. 不确定时 **不要** 算 applied — 漏报比误报代价小",
+    "",
+    "只调用 StructuredOutput 工具一次，给出 applied_experience_ids 数组（来自下面经验的 id）和一句 rationale。",
+  ].join("\n")
+
+  const userPayload = {
+    task: "judge_usage",
+    injected_experiences: injected,
+    agent_work_excerpt: work,
+  }
+
+  const schema = ProviderTransform.schema(
+    resolved.model,
+    z.toJSONSchema(UsageJudgeWireSchema),
+  ) as Record<string, unknown>
+
+  let parsed: { applied_experience_ids: string[]; rationale: string } | undefined
+
+  const messages: ModelMessage[] = [
+    ...(isOpenaiOauth || !systemPrompt
+      ? []
+      : ([{ role: "system", content: systemPrompt }] as ModelMessage[])),
+    { role: "user", content: JSON.stringify(userPayload, null, 2) },
+  ]
+
+  const params = {
+    experimental_telemetry: {
+      isEnabled: cfg?.experimental?.openTelemetry,
+      metadata: { userId: cfg?.username ?? "unknown" },
+    },
+    temperature: 0,
+    messages,
+    model: language,
+    tools: {
+      StructuredOutput: createStructuredOutputTool({
+        schema,
+        onSuccess(output) {
+          const wire = UsageJudgeWireSchema.safeParse(output)
+          if (wire.success) parsed = wire.data
+          else
+            log.warn("usage judge output failed schema", {
+              error: wire.error.message,
+            })
+        },
+      }),
+    },
+    providerOptions: ProviderTransform.providerOptions(resolved.model, {
+      instructions: systemPrompt,
+      store: false,
+    }),
+    stopWhen: stepCountIs(3),
+  } satisfies Parameters<typeof generateText>[0]
+
+  try {
+    if (isOpenaiOauth) {
+      const result = streamText({ ...params, onError: () => {} })
+      for await (const part of result.fullStream) {
+        if (part.type === "error") throw part.error
+      }
+    } else {
+      await generateText(params)
+    }
+  } catch (error) {
+    log.warn("usage judge LLM failed", { error, entry_id: target.id })
+    return undefined
+  }
+
+  if (!parsed) return undefined
+
+  // Only count ids that were actually injected — guards against the LLM
+  // hallucinating ids that weren't on the menu.
+  const validIds = new Set(injected.map((e) => e.id))
+  const applied = parsed.applied_experience_ids.filter((id) => validIds.has(id))
+
+  if (applied.length > 0) {
+    const { bumpUsageCited } = await import("./usage")
+    await bumpUsageCited(applied)
+    log.info("refiner.judge: usage cited", {
+      entry_id: target.id,
+      applied,
+      rationale: parsed.rationale.slice(0, 120),
+    })
+  } else {
+    log.debug("refiner.judge: no applied experiences", {
+      entry_id: target.id,
+      rationale: parsed.rationale.slice(0, 120),
+    })
+  }
+
+  return { applied, entry_id: target.id }
+}
+
+// -----------------------------------------------------------------------------
 // Public namespace
 // -----------------------------------------------------------------------------
 
@@ -2069,6 +2333,18 @@ export namespace Refiner {
       })
       return
     }
+
+    // Sidecar usage judge: BEFORE we observe the new user message, judge
+    // the previous turn's work — what experiences did the agent actually
+    // apply when reacting to the previous user message? Fire-and-forget so
+    // it can't block the main observation pipeline.
+    void judgePreviousTurnUsage({
+      sessionID: input.sessionID,
+      asOf: Date.now(),
+    }).catch((error) => {
+      log.warn("refiner.judge: previous turn usage judge failed", { error })
+    })
+
     const extracted = await extractUserMessage(input.sessionID, input.messageID).catch(() => undefined)
     if (!extracted) return
     const observation = await captureObservation({
@@ -2080,6 +2356,22 @@ export namespace Refiner {
     await observeObservation(observation).catch((error) => {
       log.warn("observeObservation failed", { error, observation_id: observation.id })
     })
+  }
+
+  /**
+   * Manual entry point for the usage judge — exposed so backend tests and
+   * future cron-style triggers can drive it without going through the user
+   * message hook. The default trigger is the fire-and-forget call inside
+   * `observeUserMessage` above.
+   */
+  export async function judgeUsage(input: { sessionID: SessionID; asOf?: number }) {
+    return judgePreviousTurnUsage({ sessionID: input.sessionID, asOf: input.asOf ?? Date.now() })
+  }
+
+  /** Read aggregated injection / usage counters for all experiences. */
+  export async function usageStats() {
+    const { readStats } = await import("./usage")
+    return readStats()
   }
 
   export async function experienceByID(id: string) {
