@@ -3359,6 +3359,82 @@ export namespace Workflow {
             db.select().from(WorkflowNodeTable).where(inArray(WorkflowNodeTable.id, changedNodeIDs)).all(),
           ).map(fromNodeRow)
         : []
+
+      // Per-cursor-window key projection. Without this, the orchestrator
+      // sees each changed node's *full* state_json / result_json on every
+      // read — so a hot node updated N times across N reads carries a
+      // 1+2+3+…+N cumulative cost into master context. With it, each read
+      // only ships the keys that actually changed in this cursor window.
+      //
+      // patchNode tags the `node.updated` event payload with `state_patch`
+      // / `result_patch` describing what was touched. Here we union those
+      // keys per node and project the JSON down. mode="replace" wipes
+      // prior keys so we fall back to the full snapshot for that node —
+      // we can't safely tell master "these other keys you saw before are
+      // gone" via projection alone.
+      type PatchInfo = { mode?: string; keys?: unknown }
+      const collectPatchKeys = (
+        nodeID: string,
+        field: "state_patch" | "result_patch",
+      ): { keys: Set<string>; replace: boolean; touched: boolean } => {
+        const out = { keys: new Set<string>(), replace: false, touched: false }
+        for (const evt of events) {
+          if (evt.node_id !== nodeID) continue
+          const info = (evt.payload as Record<string, unknown> | undefined)?.[field] as
+            | PatchInfo
+            | undefined
+          if (!info) continue
+          out.touched = true
+          if (info.mode === "replace") {
+            out.replace = true
+            return out
+          }
+          if (Array.isArray(info.keys)) {
+            for (const k of info.keys) if (typeof k === "string") out.keys.add(k)
+          }
+        }
+        return out
+      }
+      const projectKeys = (
+        obj: Record<string, unknown> | undefined,
+        keys: Set<string>,
+      ): Record<string, unknown> | undefined => {
+        if (!obj) return undefined
+        const out: Record<string, unknown> = {}
+        for (const k of keys) {
+          if (Object.prototype.hasOwnProperty.call(obj, k)) out[k] = obj[k]
+        }
+        return out
+      }
+      const projectedChangedNodes = changedNodes.map((node) => {
+        const stateInfo = collectPatchKeys(node.id, "state_patch")
+        const resultInfo = collectPatchKeys(node.id, "result_patch")
+        // If neither field was touched in this window, the node only
+        // appeared because of a status / lifecycle event — return as-is
+        // so master gets the row metadata (status, attempt, etc.).
+        // state_json / result_json are still attached because they may
+        // legitimately be unchanged but still relevant. We only strip
+        // them when we *can prove* what changed.
+        if (!stateInfo.touched && !resultInfo.touched) return node
+        return {
+          ...node,
+          state_json: !stateInfo.touched
+            ? node.state_json
+            : stateInfo.replace
+              ? node.state_json
+              : stateInfo.keys.size === 0
+                ? undefined
+                : projectKeys(node.state_json, stateInfo.keys),
+          result_json: !resultInfo.touched
+            ? node.result_json
+            : resultInfo.replace
+              ? node.result_json
+              : resultInfo.keys.size === 0
+                ? undefined
+                : projectKeys(node.result_json, resultInfo.keys),
+        }
+      })
+
       const changedEdge = events.some((row) => row.kind.startsWith("edge."))
       const changedCheckpoint = events.some((row) => row.kind.startsWith("checkpoint."))
       // P3 — surface recent edit transactions whenever a graph.edit.* event
@@ -3393,7 +3469,7 @@ export namespace Workflow {
                   ).map(fromEventRow),
             })
           : undefined,
-        nodes: changedNodes,
+        nodes: projectedChangedNodes,
         edges: changedEdge
           ? Database.use((db) => db.select().from(WorkflowEdgeTable).where(eq(WorkflowEdgeTable.workflow_id, input.workflowID)).all()).map(fromEdgeRow)
           : [],
@@ -3691,6 +3767,26 @@ export namespace Workflow {
           selected_node_id: row.id,
         },
       })
+      // Capture which top-level keys of state_json / result_json this patch
+      // touched so `read()` can emit per-cursor-window deltas to the
+      // orchestrator instead of re-shipping the full accumulated snapshot
+      // every time the node is mentioned. mode="replace" means prior keys
+      // were wiped — read() falls back to a full snapshot in that case
+      // because we can't tell master "these other keys are gone" without
+      // also sending the full new state. mode="merge" + key list = clean
+      // delta projection on the read side.
+      const statePatchInfo = input.patch.state_json
+        ? {
+            mode: input.patch.state_json.mode ?? "merge",
+            keys: Object.keys(input.patch.state_json.value ?? {}),
+          }
+        : undefined
+      const resultPatchInfo = input.patch.result_json
+        ? {
+            mode: input.patch.result_json.mode ?? "merge",
+            keys: Object.keys(input.patch.result_json.value ?? {}),
+          }
+        : undefined
       Database.effect(async () => {
         await Bus.publish(Event.NodeUpdated, { info: row })
         await writeEvent({
@@ -3706,6 +3802,8 @@ export namespace Workflow {
             result_status: row.result_status,
             action_count: row.action_count,
             attempt: row.attempt,
+            ...(statePatchInfo ? { state_patch: statePatchInfo } : {}),
+            ...(resultPatchInfo ? { result_patch: resultPatchInfo } : {}),
           },
         })
         if (row.action_count >= row.max_actions) {
