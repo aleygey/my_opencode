@@ -4868,13 +4868,42 @@ export default function RefinerPage() {
   // Auto-open the most recent experience ONCE on first data load.
   // Guarded with a flag so that refetch polls won't re-open it after the
   // user closes the modal.
+  //
+  // Hash deeplink: when the URL has `#<experience_id>` (e.g. linked from the
+  // retrieve page's exp chip), open THAT experience instead of the latest.
+  // We also listen for hash changes so navigating to a different exp from
+  // outside (or via History API) re-opens the correct card.
   let autoOpened = false
+  const openExpFromHash = (data: NonNullable<ReturnType<typeof overview>>): boolean => {
+    if (typeof window === "undefined") return false
+    const hash = window.location.hash.replace(/^#/, "").trim()
+    if (!hash) return false
+    const target = data.experiences.find((e) => e.id === hash)
+    if (!target) return false
+    setSelection({ kind: "experience", id: `experience:${target.id}` })
+    return true
+  }
   createEffect(() => {
     const data = overview()
     if (!data || autoOpened || selection()) return
     autoOpened = true
+    if (openExpFromHash(data)) return
     const latest = data.experiences[0]
     if (latest) setSelection({ kind: "experience", id: `experience:${latest.id}` })
+  })
+
+  // Re-act to hashchange so deeplinks fired AFTER initial load (e.g. user
+  // is on /refiner and the retrieve page opens a new tab to a different
+  // exp_id) still surface the correct card.
+  onMount(() => {
+    if (typeof window === "undefined") return
+    const handler = () => {
+      const data = overview()
+      if (!data) return
+      openExpFromHash(data)
+    }
+    window.addEventListener("hashchange", handler)
+    onCleanup(() => window.removeEventListener("hashchange", handler))
   })
 
   // Refresh strategy: this page used to poll every 4s, then 15s — but the
