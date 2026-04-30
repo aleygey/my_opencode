@@ -1021,6 +1021,15 @@ export namespace Retrieve {
           error: undefined,
         }
         void appendLog(baselineLog)
+        // Per-experience injection stats: each baseline pick counts once
+        // when the cache is filled, not on every cache hit. This matches
+        // "real injection events" rather than "every reuse" — the latter
+        // would flood the counter with cache replays.
+        const { bumpInjection } = await import("@/refiner/usage")
+        void bumpInjection(
+          baseline.picks.map((p) => p.experience_id),
+          "baseline",
+        )
       }
 
       // Persist Tier B log entry (always — the user wanted every turn to
@@ -1031,6 +1040,13 @@ export namespace Retrieve {
         ...logEntry,
         picked: topicalPicks,
       })
+      if (topicalPicks.length > 0) {
+        const { bumpInjection } = await import("@/refiner/usage")
+        void bumpInjection(
+          topicalPicks.map((p) => p.experience_id),
+          "topical",
+        )
+      }
 
       return {
         system_text: merged_system_text,
@@ -1099,7 +1115,17 @@ export namespace Retrieve {
       picked: ordered,
       duration_ms: logEntry.duration_ms,
     }
-    if (ordered.length > 0) void appendLog(recallLog)
+    if (ordered.length > 0) {
+      void appendLog(recallLog)
+      // Tier C is special: each returned experience counts as BOTH an
+      // injection (the agent now sees it) AND as a "recalled" usage —
+      // the agent voluntarily asked for it, which is the strongest signal
+      // we have that it's actually useful.
+      const { bumpInjection, bumpUsageRecalled } = await import("@/refiner/usage")
+      const ids = ordered.map((p) => p.experience_id)
+      void bumpInjection(ids, "recall")
+      void bumpUsageRecalled(ids)
+    }
 
     return {
       experiences: ordered,
