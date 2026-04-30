@@ -99,10 +99,22 @@
   padding: 6px 10px;
   border-radius: 6px;
   transition: background 0.14s, color 0.14s;
+  font-variant-numeric: tabular-nums;
 }
 .rt-topbar-link:hover {
   background: var(--rt-surface-2);
   color: var(--rt-ink);
+}
+
+.rt-refresh-toggle {
+  /* On state — accent green dot reads as "live" without being noisy. */
+  color: light-dark(oklch(0.42 0.10 155), oklch(0.80 0.10 155));
+  font-weight: 500;
+}
+.rt-refresh-toggle.off {
+  /* Off state — neutral muted, easy to scan as "paused". */
+  color: var(--rt-ink-4);
+  font-weight: 400;
 }
 
 .rt-config-error {

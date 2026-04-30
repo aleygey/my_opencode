@@ -526,7 +526,16 @@ function ModelPicker(props: {
    Recall row — expandable, shows statement + matched obs
    ────────────────────────────────────────────────────── */
 
-function RecallRow(props: { rec: PickedExperience; idx: number; total: number; dir: string }) {
+function RecallRow(props: {
+  rec: PickedExperience
+  idx: number
+  total: number
+  dir: string
+  /** Session id used to build the refiner deep-link route. The router
+   * mounts refiner under /:dir/session/:id/refiner, so a bare
+   * /:dir/refiner href falls through to the workflow page. */
+  sessionID: string
+}) {
   const [open, setOpen] = createSignal(false)
   const hue = () => kindHue(props.rec.kind)
   const cat = () => kindName(props.rec.kind)
@@ -555,7 +564,7 @@ function RecallRow(props: { rec: PickedExperience; idx: number; total: number; d
             </span>
             <a
               class="rt-id-link"
-              href={`/${props.dir}/refiner#${props.rec.experience_id}`}
+              href={`/${props.dir}/session/${props.sessionID}/refiner#${props.rec.experience_id}`}
               target="_blank"
               rel="noopener"
               title="在 Refiner 中查看该 experience"
@@ -682,11 +691,30 @@ export default function RetrievePage() {
     stableFetcher(async (input: NonNullable<ReturnType<typeof logArgs>>) => fetchLog(input)),
   )
 
+  // Polling cadence: 30s (was 5s — too aggressive on a page where the user
+  // is reading detailed cards). `stableFetcher` already prevents same-payload
+  // re-renders, so 30s is a fine compromise. The toggle in the topbar lets
+  // the user disable polling entirely while editing or comparing entries.
+  //
+  // Visibility gate: when the tab is hidden (Cmd+Tab away, minimised, etc.)
+  // we skip the refetch — there's no reader to surface stale data to, and
+  // it cuts background HTTP traffic for users who leave the page open.
+  const POLL_INTERVAL_MS = 30_000
   let interval: ReturnType<typeof setInterval> | undefined
   onMount(() => {
     interval = setInterval(() => {
-      if (autoRefresh()) refetch()
-    }, 5000)
+      if (!autoRefresh()) return
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return
+      refetch()
+    }, POLL_INTERVAL_MS)
+    // Catch up immediately when the tab regains focus — covers the case
+    // where the user comes back after a long absence and wants the latest
+    // without waiting for the next tick.
+    const onVisible = () => {
+      if (autoRefresh() && document.visibilityState === "visible") refetch()
+    }
+    document.addEventListener("visibilitychange", onVisible)
+    onCleanup(() => document.removeEventListener("visibilitychange", onVisible))
   })
   onCleanup(() => {
     if (interval) clearInterval(interval)
@@ -795,6 +823,27 @@ export default function RetrievePage() {
               {currentSession()!.totalTurns} 轮命中
             </span>
           </Show>
+          <button
+            type="button"
+            class="rt-topbar-link rt-refresh-toggle"
+            classList={{ off: !autoRefresh() }}
+            onClick={() => setAutoRefresh((v) => !v)}
+            title={
+              autoRefresh()
+                ? "30s 自动刷新已开启 — 点击暂停"
+                : "自动刷新已暂停 — 点击恢复 30s 轮询"
+            }
+          >
+            {autoRefresh() ? "● 自动刷新" : "○ 已暂停"}
+          </button>
+          <button
+            type="button"
+            class="rt-topbar-link"
+            onClick={() => refetch()}
+            title="立刻刷新一次"
+          >
+            ↻
+          </button>
           <button
             type="button"
             class="rt-topbar-link"
@@ -971,6 +1020,7 @@ export default function RetrievePage() {
                               idx={i()}
                               total={recall().length}
                               dir={params.dir}
+                              sessionID={selectedSession() ?? params.id}
                             />
                           )}
                         </For>
