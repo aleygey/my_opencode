@@ -33,7 +33,7 @@
   display: grid;
   grid-template-rows: auto auto 1fr;
   height: 100%;
-  font-family: "Inter", "Noto Sans SC", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-family: var(--font-family-sans);
   font-size: 13px;
   color: var(--rt-ink);
   background: var(--rt-bg);
@@ -53,7 +53,7 @@
 }
 .rt-page code,
 .rt-page .mono {
-  font-family: var(--font-family-mono), "JetBrains Mono", ui-monospace, monospace;
+  font-family: var(--font-family-mono);
 }
 
 /* ──────────────────────────────────────────────────────
@@ -71,7 +71,7 @@
 }
 
 .rt-page-title {
-  font-family: "Source Serif 4", "Source Serif Pro", "Inter", "Noto Sans SC", serif;
+  font-family: var(--font-family-sans);
   font-weight: 500;
   font-size: 20px;
   color: var(--rt-ink);
@@ -165,7 +165,7 @@
   font-size: 13px;
 }
 .rt-pop-label code {
-  font-family: var(--font-family-mono), "JetBrains Mono", ui-monospace, monospace;
+  font-family: var(--font-family-mono);
   font-size: 12px;
 }
 
@@ -254,14 +254,14 @@
   font-weight: 500;
 }
 .rt-pop-opt-ttl code {
-  font-family: var(--font-family-mono), "JetBrains Mono", ui-monospace, monospace;
+  font-family: var(--font-family-mono);
   font-size: 12px;
 }
 
 .rt-pop-opt-sub {
   font-size: 11.5px;
   color: var(--rt-ink-3);
-  font-family: var(--font-family-mono), "JetBrains Mono", ui-monospace, monospace;
+  font-family: var(--font-family-mono);
   letter-spacing: 0;
 }
 
@@ -329,7 +329,7 @@
   font-weight: 600;
 }
 .rt-t-count {
-  font-family: var(--font-family-mono), "JetBrains Mono", ui-monospace, monospace;
+  font-family: var(--font-family-mono);
   font-size: 11px;
   color: var(--rt-ink-4);
   letter-spacing: 0;
@@ -422,7 +422,7 @@
   border-radius: 9px;
   background: var(--rt-accent-bg);
   color: var(--rt-accent);
-  font-family: var(--font-family-mono), "JetBrains Mono", ui-monospace, monospace;
+  font-family: var(--font-family-mono);
   font-size: 10.5px;
   font-weight: 500;
 }
@@ -508,7 +508,7 @@
   display: grid;
   place-items: center;
   border-radius: 50%;
-  font-family: var(--font-family-mono), "JetBrains Mono", ui-monospace, monospace;
+  font-family: var(--font-family-mono);
   font-size: 11px;
   font-weight: 600;
   background: light-dark(oklch(0.94 0.04 var(--t-hue)), oklch(0.32 0.08 var(--t-hue)));
@@ -530,7 +530,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-family: var(--font-family-mono), "JetBrains Mono", ui-monospace, monospace;
+  font-family: var(--font-family-mono);
   font-size: 10px;
   color: var(--rt-ink-4);
   letter-spacing: 0.04em;
@@ -584,7 +584,7 @@
 }
 .rt-msg p {
   margin: 0;
-  font-family: "Source Serif 4", "Source Serif Pro", "Inter", "Noto Sans SC", serif;
+  font-family: var(--font-family-sans);
   font-size: 23px;
   line-height: 1.55;
   color: var(--rt-ink);
@@ -601,7 +601,7 @@
   background: light-dark(oklch(0.97 0.02 25), oklch(0.22 0.05 25));
   color: light-dark(oklch(0.40 0.14 25), oklch(0.86 0.14 25));
   font-size: 12.5px;
-  font-family: var(--font-family-mono), "JetBrains Mono", ui-monospace, monospace;
+  font-family: var(--font-family-mono);
 }
 
 /* ─── Query line ─── */
@@ -622,7 +622,7 @@
   font-weight: 600;
 }
 .rt-q-v {
-  font-family: var(--font-family-mono), "JetBrains Mono", ui-monospace, monospace;
+  font-family: var(--font-family-mono);
   font-size: 13px;
   color: var(--rt-ink-2);
   line-height: 1.5;
@@ -661,7 +661,7 @@
   padding-top: 2px;
 }
 .rt-rank-num {
-  font-family: var(--font-family-mono), "JetBrains Mono", ui-monospace, monospace;
+  font-family: var(--font-family-mono);
   font-size: 28px;
   font-weight: 500;
   color: var(--rt-ink);
@@ -670,7 +670,7 @@
   font-variant-numeric: tabular-nums;
 }
 .rt-rank-tot {
-  font-family: var(--font-family-mono), "JetBrains Mono", ui-monospace, monospace;
+  font-family: var(--font-family-mono);
   font-size: 10.5px;
   color: var(--rt-ink-4);
   margin-top: 2px;
@@ -724,7 +724,7 @@
 }
 .rt-id {
   color: var(--rt-ink-4);
-  font-family: var(--font-family-mono), "JetBrains Mono", ui-monospace, monospace;
+  font-family: var(--font-family-mono);
   letter-spacing: 0.04em;
 }
 
@@ -796,7 +796,7 @@
 }
 .rt-quote {
   color: var(--rt-ink-2);
-  font-family: "Source Serif 4", "Source Serif Pro", serif;
+  font-family: var(--font-family-sans);
   font-style: italic;
   font-size: 13.5px;
 }
@@ -816,7 +816,7 @@
   height: 18px;
   padding: 0 7px;
   border-radius: 4px;
-  font-family: var(--font-family-mono), "JetBrains Mono", ui-monospace, monospace;
+  font-family: var(--font-family-mono);
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0;
@@ -836,7 +836,7 @@
 .rt-diff-stat {
   margin-left: auto;
   color: var(--rt-ink-4);
-  font-family: var(--font-family-mono), "JetBrains Mono", ui-monospace, monospace;
+  font-family: var(--font-family-mono);
   font-size: 11px;
   letter-spacing: 0;
 }
