@@ -33,6 +33,10 @@ import {
   SerialCreateTool,
   SerialWriteTool,
   SerialReadRecentTool,
+  SerialGrepTool,
+  SerialWaitTool,
+  SerialArmTool,
+  SerialDisarmTool,
   SerialCloseTool,
 } from "./serial"
 import {
@@ -154,6 +158,10 @@ export const layer: Layer.Layer<
     const serialCreate = yield* SerialCreateTool
     const serialWrite = yield* SerialWriteTool
     const serialReadRecent = yield* SerialReadRecentTool
+    const serialGrep = yield* SerialGrepTool
+    const serialWait = yield* SerialWaitTool
+    const serialArm = yield* SerialArmTool
+    const serialDisarm = yield* SerialDisarmTool
     const serialClose = yield* SerialCloseTool
     const workflowCreate = yield* WorkflowCreateTool
     const workflowNodeCreate = yield* WorkflowNodeCreateTool
@@ -263,6 +271,10 @@ export const layer: Layer.Layer<
           serialCreate: Tool.init(serialCreate),
           serialWrite: Tool.init(serialWrite),
           serialReadRecent: Tool.init(serialReadRecent),
+          serialGrep: Tool.init(serialGrep),
+          serialWait: Tool.init(serialWait),
+          serialArm: Tool.init(serialArm),
+          serialDisarm: Tool.init(serialDisarm),
           serialClose: Tool.init(serialClose),
           workflowCreate: Tool.init(workflowCreate),
           workflowNodeCreate: Tool.init(workflowNodeCreate),
@@ -311,6 +323,10 @@ export const layer: Layer.Layer<
             tool.serialCreate,
             tool.serialWrite,
             tool.serialReadRecent,
+            tool.serialGrep,
+            tool.serialWait,
+            tool.serialArm,
+            tool.serialDisarm,
             tool.serialClose,
             tool.workflowCreate,
             tool.workflowNodeCreate,
