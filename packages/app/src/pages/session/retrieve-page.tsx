@@ -25,6 +25,7 @@ import {
 } from "solid-js"
 import { useNavigate, useParams } from "@solidjs/router"
 import { UnifiedShell } from "@/components/unified-shell"
+import { TraceRecall, type TraceRecallEntry } from "@/components/unified-shell/modules"
 import { useModels } from "@/context/models"
 import { usePlatform } from "@/context/platform"
 import { useSDK } from "@/context/sdk"
@@ -786,6 +787,39 @@ export default function RetrievePage() {
     sessions().find((s) => s.id === selectedSession()),
   )
 
+  // Map RetrieveLogEntry[] → TraceRecallEntry[] for the design module.
+  const traceEntries = createMemo<TraceRecallEntry[]>(() =>
+    sessionEntries().map((e) => {
+      const role = triggerForEntry(e)
+      const intent =
+        role === "tool"
+          ? "Tier C · agent recall_experience"
+          : role === "agent"
+            ? "Tier A · workspace baseline"
+            : "Tier B · topical pick"
+      return {
+        id: e.id,
+        time: fmtClock(e.created_at),
+        shortTime: fmtClock(e.created_at).slice(0, 5),
+        turn: e.turn_index,
+        query: e.user_text_excerpt,
+        intent,
+        hitCount: e.picked.length,
+        durationMs: e.duration_ms,
+        source: e.layer,
+        llmUsed: e.llm_used,
+        hits: e.picked.map((p, i) => ({
+          index: String(i + 1).padStart(2, "0"),
+          cat: p.kind,
+          catLabel: kindName(p.kind),
+          code: p.experience_id.slice(-10).toUpperCase(),
+          title: p.title,
+          body: p.reason || p.abstract,
+        })),
+      }
+    }),
+  )
+
   // Build the substrip's right slot — Trace-specific actions: session picker,
   // model picker, refresh toggle, manual refresh. The session picker stays
   // here (rather than the unified Header) because it's purely Trace's
@@ -872,211 +906,12 @@ export default function RetrievePage() {
         right: substripRight(),
       }}
     >
-      <div class="rt-page" data-component="retrieve-page">
-      {/* ─── Body ─── */}
-      <div class="rt-body">
-        {/* Timeline */}
-        <aside class="rt-timeline">
-          <div class="rt-t-head">
-            <span>对话时间线</span>
-            <span class="rt-t-count">{sessionEntries().length}</span>
-          </div>
-          <div class="rt-t-list">
-            <Show
-              when={sessionEntries().length > 0}
-              fallback={
-                <div class="rt-empty">
-                  <Show
-                    when={!logResource.loading}
-                    fallback="正在加载日志…"
-                  >
-                    暂无日志
-                  </Show>
-                </div>
-              }
-            >
-              <For each={sessionEntries()}>
-                {(entry) => {
-                  const role = triggerForEntry(entry)
-                  const has = entry.picked.length > 0
-                  return (
-                    <button
-                      type="button"
-                      class="rt-turn"
-                      classList={{
-                        active: selectedEntry() === entry.id,
-                        "role-user": role === "user",
-                        "role-agent": role === "agent",
-                        "role-tool": role === "tool",
-                        "has-recall": has,
-                      }}
-                      onClick={() => setSelectedEntry(entry.id)}
-                    >
-                      <span class="rt-role-mark">{TRIGGER_GLYPH[role]}</span>
-                      <span class="rt-turn-text">
-                        <Show
-                          when={entry.user_text_excerpt}
-                          fallback={
-                            <em class="rt-turn-text-empty">
-                              <Show when={role === "agent"} fallback="(no user text)">
-                                baseline · turn {entry.turn_index}
-                              </Show>
-                            </em>
-                          }
-                        >
-                          {entry.user_text_excerpt}
-                        </Show>
-                      </span>
-                      <Show when={has}>
-                        <span class="rt-hit">{entry.picked.length}</span>
-                      </Show>
-                    </button>
-                  )
-                }}
-              </For>
-            </Show>
-          </div>
-        </aside>
-
-        {/* Main */}
-        <main class="rt-main">
-          <Show
-            when={activeEntry()}
-            fallback={
-              <div class="rt-main-empty">
-                <p>选择左侧任意一行查看详情。</p>
-              </div>
-            }
-          >
-            {(entryFn) => {
-              const e = entryFn
-              const role = () => triggerForEntry(e())
-              const recall = () => e().picked
-              return (
-                <div class="rt-main-inner">
-                  {/* Trigger badge + message */}
-                  <section class="rt-sec rt-sec-msg">
-                    <div
-                      class="rt-trigger-badge"
-                      style={{ "--t-hue": String(TRIGGER_HUE[role()]) }}
-                      data-role={role()}
-                    >
-                      <span class="rt-trigger-glyph">{TRIGGER_GLYPH[role()]}</span>
-                      <span class="rt-trigger-text">
-                        <span class="rt-trigger-label">{TRIGGER_LABEL[role()]}</span>
-                        <span class="rt-trigger-sub">
-                          turn {String(e().turn_index).padStart(2, "0")} · {fmtClock(e().created_at)} ·{" "}
-                          {e().agent_name}
-                          <Show when={e().llm_used}>
-                            <span class="rt-pill-llm">LLM</span>
-                          </Show>
-                          <Show when={!e().llm_used && e().picked.length > 0}>
-                            <span
-                              class="rt-pill-llm"
-                              data-fallback={
-                                e().picked.every((p) => p.source === "baseline")
-                                  ? "baseline"
-                                  : e().picked.every((p) => p.source === "cache")
-                                    ? "cache"
-                                    : "heuristic"
-                              }
-                            >
-                              {e().picked.every((p) => p.source === "baseline")
-                                ? "BASELINE"
-                                : e().picked.every((p) => p.source === "cache")
-                                  ? "CACHE"
-                                  : "HEUR"}
-                            </span>
-                          </Show>
-                          <Show when={e().error}>
-                            <span class="rt-pill-err">ERR</span>
-                          </Show>
-                        </span>
-                      </span>
-                    </div>
-
-                    <Show when={e().user_text_excerpt}>
-                      <blockquote class="rt-msg">
-                        <p>{e().user_text_excerpt}</p>
-                      </blockquote>
-                    </Show>
-
-                    <Show when={e().error}>
-                      <div class="rt-error-line">error: {e().error}</div>
-                    </Show>
-                  </section>
-
-                  {/* Recall list */}
-                  <Show
-                    when={recall().length > 0}
-                    fallback={
-                      <section class="rt-sec rt-sec-empty">
-                        <div class="rt-sec-kicker">
-                          <span class="rt-sec-dot rt-sec-dot-empty" /> 经验召回
-                        </div>
-                        <p class="rt-empty-note">该轮未触发 retrieve</p>
-                      </section>
-                    }
-                  >
-                    <section class="rt-sec rt-sec-recall">
-                      <div class="rt-sec-kicker">
-                        <span class="rt-sec-dot rt-sec-dot-rec" /> 经验召回 · {recall().length} 条命中
-                      </div>
-
-                      <Show when={e().user_text_excerpt}>
-                        <div class="rt-query-line">
-                          <span class="rt-q-k">检索 QUERY</span>
-                          <span class="rt-q-v">{e().user_text_excerpt}</span>
-                        </div>
-                      </Show>
-
-                      <div class="rt-rec-list">
-                        <For each={recall()}>
-                          {(rec, i) => (
-                            <RecallRow
-                              rec={rec}
-                              idx={i()}
-                              total={recall().length}
-                              dir={params.dir}
-                              sessionID={selectedSession() ?? params.id}
-                            />
-                          )}
-                        </For>
-                      </div>
-
-                      {/* Diff summary at end */}
-                      <Show
-                        when={
-                          e().diff.added.length > 0 ||
-                          e().diff.removed.length > 0 ||
-                          e().diff.kept.length > 0
-                        }
-                      >
-                        <div class="rt-diff-row">
-                          <Show when={e().diff.added.length > 0}>
-                            <span class="rt-diff-chip rt-diff-add">+{e().diff.added.length}</span>
-                          </Show>
-                          <Show when={e().diff.removed.length > 0}>
-                            <span class="rt-diff-chip rt-diff-rem">−{e().diff.removed.length}</span>
-                          </Show>
-                          <Show when={e().diff.kept.length > 0}>
-                            <span class="rt-diff-chip rt-diff-kept">={e().diff.kept.length}</span>
-                          </Show>
-                          <span class="rt-diff-stat">
-                            候选 {e().candidate_count} · 种子 {e().seed_ids.length} · 展开{" "}
-                            {e().expand_ids.length} · {e().duration_ms}ms
-                          </span>
-                        </div>
-                      </Show>
-                    </section>
-                  </Show>
-                </div>
-              )
-            }}
-          </Show>
-        </main>
-      </div>
-      </div>
+      <TraceRecall
+        entries={traceEntries()}
+        activeId={selectedEntry() ?? undefined}
+        onPick={(id) => setSelectedEntry(id)}
+        modelTag={configResource()?.resolved?.modelID}
+      />
     </UnifiedShell>
   )
 }

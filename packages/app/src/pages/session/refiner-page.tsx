@@ -5364,6 +5364,42 @@ export default function RefinerPage() {
     return out
   })
 
+  // Categories surfaced into the unified Rail so the body view stays
+  // focused on the list / graph. The core 7 kinds (workflow_rule etc.)
+  // plus any custom slugs become Rail sub-rows; clicking syncs the
+  // existing kind filter signal so all downstream filtering still works.
+  const railCategorySubs = createMemo(() => {
+    const tax = taxonomy()
+    const counts = kindCounts()
+    const items: { id: string; title: string; meta?: string }[] = [
+      {
+        id: "__all",
+        title: "全部",
+        meta: String(overview()?.status.total_experiences ?? 0),
+      },
+    ]
+    if (!tax) return items
+    const coreSlugs = (tax.core ?? []).map((k) =>
+      typeof k === "string" ? k : k.slug,
+    )
+    for (const slug of coreSlugs) {
+      const c = counts.get(slug as Kind) ?? 0
+      items.push({
+        id: slug,
+        title: kindDisplay(slug as Kind),
+        meta: c > 0 ? String(c) : undefined,
+      })
+    }
+    for (const c of tax.custom ?? []) {
+      items.push({
+        id: c.slug,
+        title: c.slug.replace(/^custom:/, ""),
+        meta: c.count > 0 ? String(c.count) : undefined,
+      })
+    }
+    return items
+  })
+
   return (
     <UnifiedShell
       module="knowledge"
@@ -5375,10 +5411,30 @@ export default function RefinerPage() {
           { k: "OBS", v: String(overview()?.status.total_observations ?? 0) },
         ],
       }}
+      substrip={{
+        tabs: [
+          { id: "list", name: "List" },
+          { id: "graph", name: "Graph" },
+        ],
+        active: viewMode(),
+        onTab: (id) => setViewMode(id as "list" | "graph"),
+        variant: "segmented",
+      }}
+      railSubs={railCategorySubs()}
+      activeSubId={activeKind() ?? "__all"}
+      onPickSub={(id) => {
+        if (id === "__all") setActiveKind(undefined)
+        else setActiveKind(id as Kind)
+      }}
     >
-    <div class="refiner-page relative flex size-full min-h-0 flex-col overflow-hidden">
+    <div class="refiner-page relative flex size-full min-h-0 flex-col overflow-hidden" data-rune-shell-knowledge="true">
 
-      <div class="rf-top">
+      {/* Legacy rf-top toolbar — hidden when running inside UnifiedShell.
+          Its functions (Refiner header, model picker, view toggle, scope
+          toggle, refresh) are now provided by the shell's Header /
+          Substrip. The block is kept rendered so all the buttons remain
+          mounted (existing handlers / focus refs / etc.); CSS hides it. */}
+      <div class="rf-top" style={{ display: "none" }}>
         <div class="rf-brand">
           <span class="rf-brand-title">Refiner</span>
           <span class="rf-brand-meta">

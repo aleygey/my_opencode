@@ -1,0 +1,819 @@
+/*
+ * Module interior styles — Trace / Knowledge / Workflow Inspector.
+ *
+ * Translated from the Claude Design source (trace.css / knowledge.css /
+ * workflow.css) with every var() rewritten to the shell's `--rune-*`
+ * tokens so light / dark themes follow `data-theme` on `.rune-shell`.
+ *
+ * Each module's selectors are prefixed by their parent class so styles
+ * stay scoped:
+ *   .rune-shell .rt-*  (Trace / retrieve)
+ *   .rune-shell .kw-*  (Knowledge / refiner)
+ *   .rune-shell .wf-*  (Workflow Inspector aside)
+ *
+ * Selectors are intentionally hyphenated (rt-… not rt__…) so they don't
+ * collide with the existing legacy CSS that the original retrieve-page /
+ * refiner-page CSS still use.
+ */
+
+/* ──────────────────────────────────────────────────────
+   TRACE module
+   ────────────────────────────────────────────────────── */
+
+.rune-shell .rt-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--rune-aside-w);
+  min-height: 0;
+  overflow: hidden;
+  height: 100%;
+}
+.rune-shell .rt-grid.is-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.rune-shell .rt-main-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-right: 1px solid var(--rune-line);
+}
+.rune-shell .rt-aside-pane {
+  background: var(--rune-bg-surface);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+.rune-shell .rt-aside-hd {
+  height: var(--rune-substrip-h);
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--rune-u2);
+  padding: 0 14px;
+  border-bottom: 1px solid var(--rune-line-faint);
+  background: var(--rune-bg-base);
+}
+.rune-shell .rt-aside-title {
+  font-size: var(--rune-fs-sm);
+  font-weight: 500;
+  color: var(--rune-fg);
+}
+.rune-shell .rt-aside-count {
+  font-size: 10px;
+  color: var(--rune-fg-faint);
+  font-variant-numeric: tabular-nums;
+  font-family: var(--rune-font-mono);
+}
+.rune-shell .rt-aside-bd {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--rune-u2) 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rune-shell .rt-rsess {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--rune-bg-base);
+  border: 1px solid var(--rune-line-faint);
+  border-radius: var(--rune-r);
+  cursor: pointer;
+  transition: border-color var(--rune-t-fast), background var(--rune-t-fast);
+  text-align: left;
+  font: inherit;
+  color: var(--rune-fg);
+}
+.rune-shell .rt-rsess:hover {
+  border-color: var(--rune-line);
+  background: var(--rune-bg-surface);
+}
+.rune-shell .rt-rsess.is-on {
+  border-color: var(--rune-ac-edge);
+  background: var(--rune-ac-soft);
+}
+.rune-shell .rt-rsess-head {
+  display: flex;
+  align-items: center;
+  gap: var(--rune-u2);
+  font-size: 10px;
+  color: var(--rune-fg-dim);
+  font-variant-numeric: tabular-nums;
+}
+.rune-shell .rt-rsess-t {
+  color: var(--rune-fg-mute);
+  font-family: var(--rune-font-mono);
+}
+.rune-shell .rt-rsess-turn { color: var(--rune-fg-faint); }
+.rune-shell .rt-rsess-ms {
+  color: var(--rune-fg-faint);
+  font-family: var(--rune-font-mono);
+}
+.rune-shell .rt-rsess-q {
+  font-size: var(--rune-fs-sm);
+  line-height: 1.45;
+  color: var(--rune-fg);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.rune-shell .rt-rsess-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+}
+.rune-shell .rt-rsess-chip {
+  padding: 1px 6px;
+  background: var(--rune-bg-inset);
+  color: var(--rune-fg-mute);
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--rune-font-mono);
+}
+.rune-shell .rt-rsess-chip.is-mute {
+  background: transparent;
+  color: var(--rune-fg-faint);
+  padding-left: 0;
+}
+
+/* Recall main column */
+.rune-shell .rt-recall {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 24px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.rune-shell .rt-recall-q {
+  position: relative;
+  background: var(--rune-bg-raised);
+  border: 1px solid var(--rune-line);
+  border-radius: var(--rune-r-lg);
+  padding: 16px 18px 18px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: var(--rune-shadow-sm);
+}
+.rune-shell .rt-recall-q::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 14px;
+  bottom: 14px;
+  width: 3px;
+  background: var(--rune-ac);
+  border-radius: 2px;
+}
+.rune-shell .rt-recall-q-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--rune-fs-xs);
+  color: var(--rune-fg-dim);
+}
+.rune-shell .rt-recall-q-text {
+  font-size: var(--rune-fs-lg);
+  font-weight: 500;
+  color: var(--rune-fg);
+  line-height: 1.45;
+  letter-spacing: -0.005em;
+  white-space: pre-wrap;
+}
+.rune-shell .rt-recall-sec-hd {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--rune-fs-xs);
+  color: var(--rune-fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0 4px 8px;
+  margin-top: 4px;
+}
+.rune-shell .rt-recall-sec-hd b {
+  color: var(--rune-fg);
+  font-weight: 600;
+  font-size: var(--rune-fs-sm);
+}
+.rune-shell .rt-recall-sec-count {
+  font-family: var(--rune-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--rune-fs-sm);
+  color: var(--rune-ac);
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.rune-shell .rt-recall-sec-count > span {
+  color: var(--rune-fg-faint);
+  font-weight: 400;
+  margin-left: 1px;
+}
+.rune-shell .rt-recall-sec-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  color: var(--rune-fg-faint);
+  text-transform: none;
+  letter-spacing: 0;
+  font-family: var(--rune-font-mono);
+  margin-left: auto;
+}
+.rune-shell .rt-recall-sec-sep {
+  width: 3px;
+  height: 3px;
+  background: var(--rune-fg-faint);
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.rune-shell .rt-hit {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--rune-line-faint);
+  border-radius: var(--rune-r);
+  background: var(--rune-bg-base);
+  align-items: start;
+  transition: background var(--rune-t-fast), border-color var(--rune-t-fast);
+  cursor: pointer;
+  text-align: left;
+}
+.rune-shell .rt-hit + .rune-shell .rt-hit { margin-top: 6px; }
+.rune-shell .rt-hit:hover {
+  border-color: var(--rune-line);
+  background: var(--rune-bg-surface);
+}
+.rune-shell .rt-hit-i {
+  font-size: var(--rune-fs-md);
+  color: var(--rune-fg-faint);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-family: var(--rune-font-mono);
+}
+.rune-shell .rt-hit-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.rune-shell .rt-hit-row1 {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.rune-shell .rt-hit-cat {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--rune-ac);
+  font-weight: 600;
+}
+.rune-shell .rt-hit-code {
+  font-size: var(--rune-fs-xs);
+  color: var(--rune-fg-faint);
+  font-family: var(--rune-font-mono);
+}
+.rune-shell .rt-hit-title {
+  font-size: var(--rune-fs-md);
+  font-weight: 500;
+  color: var(--rune-fg);
+}
+.rune-shell .rt-hit-body {
+  font-size: var(--rune-fs-sm);
+  color: var(--rune-fg-mute);
+  line-height: 1.55;
+}
+.rune-shell .rt-hit-empty {
+  padding: 32px 16px;
+  text-align: center;
+  color: var(--rune-fg-faint);
+  font-size: var(--rune-fs-sm);
+  font-style: italic;
+}
+
+/* ──────────────────────────────────────────────────────
+   KNOWLEDGE module
+   ────────────────────────────────────────────────────── */
+
+.rune-shell .kw-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+  height: 100%;
+}
+.rune-shell .kw-main-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.rune-shell .kw-list {
+  flex: 1;
+  overflow-y: auto;
+}
+.rune-shell .kw-exp {
+  border-bottom: 1px solid var(--rune-line-faint);
+  padding: 14px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  cursor: pointer;
+  transition: background var(--rune-t-fast);
+  position: relative;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+}
+.rune-shell .kw-exp:hover { background: var(--rune-bg-surface); }
+.rune-shell .kw-exp.is-on {
+  background: var(--rune-bg-surface);
+  box-shadow: inset 2px 0 0 var(--rune-ac);
+}
+.rune-shell .kw-exp-row1 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.rune-shell .kw-exp-cat {
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--rune-ac);
+  flex: none;
+  font-weight: 600;
+  padding: 2px 6px;
+  border: 1px solid var(--rune-ac-edge);
+  background: var(--rune-ac-soft);
+}
+.rune-shell .kw-exp-title {
+  font-size: var(--rune-fs-md);
+  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--rune-fg);
+  letter-spacing: 0.01em;
+}
+.rune-shell .kw-exp-ago {
+  font-size: var(--rune-fs-xs);
+  color: var(--rune-fg-dim);
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--rune-font-mono);
+}
+.rune-shell .kw-exp-body {
+  font-size: var(--rune-fs-sm);
+  color: var(--rune-fg-mute);
+  line-height: 1.55;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.rune-shell .kw-exp-row3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--rune-fs-xs);
+}
+.rune-shell .kw-exp-obs {
+  color: var(--rune-fg-dim);
+  font-family: var(--rune-font-mono);
+  margin-left: auto;
+}
+.rune-shell .kw-exp-flag {
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0 5px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 2px;
+}
+.rune-shell .kw-exp-flag.f-pending {
+  color: var(--rune-st-warn);
+  border: 1px solid var(--rune-st-warn);
+}
+.rune-shell .kw-exp-flag.f-rejected {
+  color: var(--rune-st-err);
+  border: 1px solid var(--rune-st-err);
+}
+.rune-shell .kw-exp-empty {
+  padding: 64px 24px;
+  text-align: center;
+  color: var(--rune-fg-faint);
+  font-size: var(--rune-fs-sm);
+  font-style: italic;
+}
+
+/* Graph view */
+.rune-shell .kw-graph {
+  flex: 1;
+  position: relative;
+  background: var(--rune-bg-inset);
+  background-image: radial-gradient(var(--rune-line-faint) 1px, transparent 1px);
+  background-size: 16px 16px;
+  overflow: hidden;
+}
+.rune-shell .kw-graph svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.rune-shell .kw-graph-legend {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--rune-fs-xs);
+  background: var(--rune-bg-surface);
+  border: 1px solid var(--rune-line);
+  padding: 6px 10px;
+  border-radius: var(--rune-r-sm);
+}
+.rune-shell .kw-graph-legend-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--rune-fg-mute);
+}
+.rune-shell .kw-graph-legend-row .swatch {
+  width: 16px;
+  height: 1px;
+}
+.rune-shell .kw-gnode {
+  fill: var(--rune-bg-surface);
+  stroke: var(--rune-line-strong);
+  stroke-width: 1.25;
+  cursor: pointer;
+  transition: stroke 0.15s, fill 0.15s;
+}
+.rune-shell .kw-gnode:hover { stroke: var(--rune-ac); }
+.rune-shell .kw-gnode.is-on {
+  fill: var(--rune-ac-soft);
+  stroke: var(--rune-ac);
+}
+.rune-shell .kw-gnode-label {
+  font-family: var(--rune-font-sans);
+  font-size: 10px;
+  fill: var(--rune-fg-mute);
+  pointer-events: none;
+}
+.rune-shell .kw-gedge {
+  fill: none;
+  stroke: var(--rune-line-strong);
+  stroke-width: 1;
+  opacity: 0.5;
+}
+.rune-shell .kw-gedge.support {
+  stroke-dasharray: 2 2;
+  stroke: var(--rune-ac);
+  opacity: 0.4;
+}
+
+/* Modal */
+.rune-shell .kw-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: light-dark(rgba(15, 23, 42, 0.42), rgba(0, 0, 0, 0.70));
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  animation: rune-fade-in var(--rune-t-base) ease;
+}
+.rune-shell .kw-modal-panel {
+  background: var(--rune-bg-base);
+  border: 1px solid var(--rune-line);
+  border-radius: var(--rune-r-lg);
+  box-shadow: var(--rune-shadow-lg);
+  width: min(640px, 100%);
+  max-height: min(80vh, 720px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: rune-pop-in var(--rune-t-base) ease;
+}
+@keyframes rune-pop-in {
+  from { transform: translateY(8px) scale(0.985); opacity: 0; }
+  to   { transform: none; opacity: 1; }
+}
+.rune-shell .kw-modal-hd {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--rune-line-faint);
+}
+.rune-shell .kw-modal-bd {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.rune-shell .kw-modal-bd h3 {
+  font-size: var(--rune-fs-xl);
+  font-weight: 600;
+  margin: 0;
+  line-height: 1.3;
+  color: var(--rune-fg);
+  letter-spacing: -0.012em;
+}
+.rune-shell .kw-modal-bd p {
+  font-size: var(--rune-fs-md);
+  color: var(--rune-fg-mute);
+  line-height: 1.65;
+  margin: 0;
+  white-space: pre-wrap;
+}
+.rune-shell .kw-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid var(--rune-line);
+  border-radius: var(--rune-r-sm);
+  background: var(--rune-bg-inset);
+  color: var(--rune-fg-mute);
+  font-size: var(--rune-fs-xs);
+  font-family: var(--rune-font-mono);
+}
+.rune-shell .kw-modal-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.rune-shell .kw-kv {
+  display: grid;
+  grid-template-columns: 88px 1fr;
+  gap: 6px 14px;
+  font-size: var(--rune-fs-sm);
+}
+.rune-shell .kw-kv > dt {
+  color: var(--rune-fg-dim);
+  font-size: var(--rune-fs-xs);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.rune-shell .kw-kv > dd {
+  color: var(--rune-fg);
+  margin: 0;
+  word-break: break-all;
+}
+.rune-shell .kw-modal-stmt {
+  padding: 10px 12px;
+  border: 1px solid var(--rune-line-faint);
+  background: var(--rune-bg-inset);
+  border-radius: var(--rune-r-sm);
+  font-family: var(--rune-font-mono);
+  font-size: var(--rune-fs-sm);
+  color: var(--rune-fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.rune-shell .kw-modal-divider {
+  height: 1px;
+  background: var(--rune-line-faint);
+  margin: 4px 0;
+}
+.rune-shell .kw-modal-sec-label {
+  font-size: 10px;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--rune-fg-faint);
+}
+
+/* ──────────────────────────────────────────────────────
+   WORKFLOW Inspector aside
+   ────────────────────────────────────────────────────── */
+
+.rune-shell .wf-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--rune-aside-w);
+  min-height: 0;
+  overflow: hidden;
+  transition: grid-template-columns var(--rune-t-base) ease;
+  height: 100%;
+}
+.rune-shell .wf-grid[data-aside="closed"] {
+  grid-template-columns: minmax(0, 1fr) 0;
+}
+.rune-shell .wf-center {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  border-right: 1px solid var(--rune-line-faint);
+}
+.rune-shell .wf-aside {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--rune-bg-base);
+  position: relative;
+  overflow: visible;
+}
+.rune-shell .wf-grid[data-aside="closed"] .wf-aside {
+  border-left: none;
+}
+.rune-shell .wf-grid[data-aside="closed"] .wf-aside .wf-insp {
+  display: none;
+}
+
+.rune-shell .wf-aside-toggle {
+  position: absolute;
+  top: 12px;
+  right: 100%;
+  transform: translateX(50%);
+  z-index: 4;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--rune-bg-base);
+  border: 1px solid var(--rune-line);
+  border-radius: 50%;
+  color: var(--rune-fg-mute);
+  cursor: pointer;
+  box-shadow: var(--rune-shadow-sm);
+  transition: color var(--rune-t-fast), background var(--rune-t-fast);
+}
+.rune-shell .wf-aside-toggle:hover {
+  color: var(--rune-fg);
+  background: var(--rune-bg-surface);
+}
+.rune-shell .wf-grid[data-aside="closed"] .wf-aside-toggle {
+  right: 0;
+  transform: translateX(-30%);
+}
+
+.rune-shell .wf-insp {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.rune-shell .wf-insp-head {
+  height: var(--rune-substrip-h);
+  flex: none;
+  display: flex;
+  align-items: center;
+  padding: 0 22px;
+  border-bottom: 1px solid var(--rune-line-faint);
+  gap: 8px;
+}
+.rune-shell .wf-insp-title {
+  font-size: var(--rune-fs-md);
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  color: var(--rune-fg);
+}
+.rune-shell .wf-insp-title small {
+  display: block;
+  font-size: 10px;
+  color: var(--rune-fg-faint);
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 1px;
+}
+.rune-shell .wf-insp-body {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  padding: 8px 0 24px;
+}
+.rune-shell .wf-insp-section {
+  border-bottom: none;
+  padding: 14px 22px;
+}
+.rune-shell .wf-insp-section + .wf-insp-section {
+  border-top: 1px solid var(--rune-line-faint);
+}
+.rune-shell .wf-insp-section-hd {
+  height: auto;
+  padding: 0 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border-bottom: none;
+  font-size: 10px;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--rune-fg-faint);
+  font-weight: 500;
+}
+.rune-shell .wf-insp-section-hint {
+  font-size: 10px;
+  color: var(--rune-fg-faint);
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  margin-left: auto;
+}
+.rune-shell .wf-insp-section-bd {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rune-shell .wf-kv {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  gap: 8px 14px;
+  font-size: var(--rune-fs-sm);
+  align-items: baseline;
+}
+.rune-shell .wf-kv > dt {
+  color: var(--rune-fg-dim);
+  font-size: var(--rune-fs-xs);
+  letter-spacing: 0.02em;
+}
+.rune-shell .wf-kv > dd {
+  color: var(--rune-fg);
+  margin: 0;
+  word-break: break-all;
+}
+
+.rune-shell .wf-arow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  margin: 0 -8px;
+  font-size: var(--rune-fs-sm);
+  width: calc(100% + 16px);
+  border-radius: var(--rune-r-sm);
+  cursor: pointer;
+  text-align: left;
+  background: transparent;
+  transition: background var(--rune-t-fast);
+}
+.rune-shell .wf-arow:hover { background: var(--rune-bg-surface); }
+.rune-shell .wf-arow:hover .wf-arow-model { color: var(--rune-ac-text); }
+.rune-shell .wf-arow + .wf-arow {
+  border-top: 1px solid var(--rune-line-faint);
+}
+.rune-shell .wf-arow-role {
+  font-weight: 500;
+  color: var(--rune-fg);
+}
+.rune-shell .wf-arow-model {
+  color: var(--rune-fg-dim);
+  font-size: 11px;
+  font-family: var(--rune-font-mono);
+  letter-spacing: 0.02em;
+}
+.rune-shell .wf-arow-calls {
+  margin-left: auto;
+  font-size: var(--rune-fs-xs);
+  color: var(--rune-fg-faint);
+  font-variant-numeric: tabular-nums;
+  font-family: var(--rune-font-mono);
+}
+.rune-shell .wf-arow-chev {
+  color: var(--rune-fg-faint);
+  display: inline-flex;
+}
+
+.rune-shell .wf-insp-empty {
+  padding: 24px 22px;
+  font-size: var(--rune-fs-sm);
+  color: var(--rune-fg-faint);
+  font-style: italic;
+}
