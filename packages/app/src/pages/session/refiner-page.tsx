@@ -10,7 +10,7 @@ import {
   Show,
 } from "solid-js"
 import { useNavigate, useParams } from "@solidjs/router"
-import { SessionHeader } from "@/components/session"
+import { UnifiedShell } from "@/components/unified-shell"
 import { useModels } from "@/context/models"
 import { usePlatform } from "@/context/platform"
 import { useSDK } from "@/context/sdk"
@@ -5365,8 +5365,18 @@ export default function RefinerPage() {
   })
 
   return (
+    <UnifiedShell
+      module="knowledge"
+      header={{
+        parent: "Knowledge",
+        title: "Experience library",
+        meta: [
+          { k: "EXP", v: String(overview()?.status.total_experiences ?? 0) },
+          { k: "OBS", v: String(overview()?.status.total_observations ?? 0) },
+        ],
+      }}
+    >
     <div class="refiner-page relative flex size-full min-h-0 flex-col overflow-hidden">
-      <SessionHeader />
 
       <div class="rf-top">
         <div class="rf-brand">
@@ -5847,5 +5857,6 @@ export default function RefinerPage() {
         )}
       </Show>
     </div>
+    </UnifiedShell>
   )
 }

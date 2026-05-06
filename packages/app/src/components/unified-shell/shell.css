@@ -1,0 +1,750 @@
+/*
+ * Unified shell layout + chrome elements (rail / header / substrip / drawer
+ * / tweaks panel). Each block is scoped under `.rune-shell` so this file
+ * doesn't bleed into the rest of the app's pages.
+ *
+ * Layout grid:
+ *   ┌─────┬─────────────────────────────────────────┐
+ *   │     │ HEADER  (56px)                          │
+ *   │RAIL ├─────────────────────────────────────────┤
+ *   │     │ SUBSTRIP (44px, optional per-module)    │
+ *   │     ├─────────────────────────────────────────┤
+ *   │     │                                         │
+ *   │     │ MAIN  (1fr)                             │
+ *   │     │                                         │
+ *   └─────┴─────────────────────────────────────────┘
+ *   + TasksDrawer  (overlays from right edge)
+ *   + TweaksPanel  (popover anchored to top-right gear)
+ *
+ * The `.rune-shell` element drives `display: grid` with the rail as the
+ * left column and the rest stacked. Width of the rail collapses by data
+ * attribute; CSS animates the column width.
+ */
+
+@import "./tokens.css";
+
+/* ─── Root grid ─── */
+.rune-shell {
+  display: grid;
+  grid-template-columns: var(--rune-rail-w) 1fr;
+  grid-template-rows: 100%;
+  height: 100%;
+  width: 100%;
+  background: var(--rune-bg-base);
+  color: var(--rune-fg);
+  font-family: var(--rune-font-sans);
+  font-size: var(--rune-fs-md);
+  line-height: var(--rune-lh);
+  -webkit-font-smoothing: antialiased;
+  letter-spacing: -0.005em;
+  overflow: hidden;
+  position: relative;
+  isolation: isolate;
+  transition: grid-template-columns var(--rune-t-base) ease;
+}
+
+.rune-shell[data-rail="collapsed"] {
+  grid-template-columns: var(--rune-rail-w-collapsed) 1fr;
+}
+
+.rune-shell * { box-sizing: border-box; }
+.rune-shell button {
+  font-family: inherit;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+.rune-shell code,
+.rune-shell .rune-mono { font-family: var(--rune-font-mono); }
+
+.rune-shell ::-webkit-scrollbar { width: 10px; height: 10px; }
+.rune-shell ::-webkit-scrollbar-thumb {
+  background: var(--rune-line);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+  border-radius: 999px;
+}
+.rune-shell ::-webkit-scrollbar-thumb:hover { background-color: var(--rune-line-strong); }
+.rune-shell ::-webkit-scrollbar-track { background: transparent; }
+
+/* ─── Generic atoms ─── */
+.rune-shell .rune-grow { flex: 1; }
+.rune-shell .rune-row { display: flex; align-items: center; }
+.rune-shell .rune-row.rune-gap-2 { gap: var(--rune-u2); }
+.rune-shell .rune-row.rune-gap-3 { gap: var(--rune-u3); }
+
+.rune-shell .rune-kicker {
+  font-family: var(--rune-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--rune-fg-faint);
+}
+
+.rune-shell .rune-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--rune-fg-dim);
+  flex: none;
+}
+.rune-shell .rune-dot[data-st="ok"]   { background: var(--rune-st-ok); }
+.rune-shell .rune-dot[data-st="run"]  { background: var(--rune-st-run); animation: rune-pulse 1.4s ease-in-out infinite; }
+.rune-shell .rune-dot[data-st="warn"] { background: var(--rune-st-warn); }
+.rune-shell .rune-dot[data-st="err"]  { background: var(--rune-st-err); }
+.rune-shell .rune-dot[data-st="idle"] { background: var(--rune-st-idle); }
+
+@keyframes rune-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.4; transform: scale(0.85); }
+}
+
+.rune-shell .rune-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rune-u);
+  height: 20px;
+  padding: 0 var(--rune-u2);
+  border: 1px solid var(--rune-line);
+  border-radius: var(--rune-r-sm);
+  background: var(--rune-bg-surface);
+  color: var(--rune-fg-mute);
+  font-family: var(--rune-font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.rune-shell .rune-chip[data-tone="ac"] {
+  border-color: var(--rune-ac-edge);
+  background: var(--rune-ac-soft);
+  color: var(--rune-ac-text);
+}
+
+.rune-shell .rune-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rune-u);
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--rune-line);
+  border-radius: var(--rune-r);
+  background: var(--rune-bg-raised);
+  color: var(--rune-fg);
+  font-family: var(--rune-font-sans);
+  font-size: var(--rune-fs-sm);
+  white-space: nowrap;
+  transition: background var(--rune-t-fast), border-color var(--rune-t-fast), color var(--rune-t-fast);
+}
+.rune-shell .rune-btn:hover { background: var(--rune-bg-surface); border-color: var(--rune-line-strong); }
+.rune-shell .rune-btn[data-size="xs"] { height: 24px; padding: 0 8px; font-size: var(--rune-fs-xs); }
+.rune-shell .rune-btn[data-size="sm"] { height: 26px; padding: 0 9px; font-size: var(--rune-fs-sm); }
+.rune-shell .rune-btn[data-variant="primary"] {
+  background: var(--rune-ac);
+  border-color: var(--rune-ac);
+  color: light-dark(oklch(1 0 0), oklch(0.145 0.01 245));
+}
+.rune-shell .rune-btn[data-variant="primary"]:hover {
+  filter: brightness(1.08);
+}
+.rune-shell .rune-btn[data-variant="ghost"] {
+  background: transparent;
+  border-color: transparent;
+  color: var(--rune-fg-mute);
+}
+.rune-shell .rune-btn[data-variant="ghost"]:hover {
+  background: var(--rune-bg-surface);
+  color: var(--rune-fg);
+}
+.rune-shell .rune-btn[data-icon="true"] {
+  width: 28px;
+  padding: 0;
+  justify-content: center;
+}
+.rune-shell .rune-btn[data-icon="true"][data-size="xs"] { width: 24px; }
+.rune-shell .rune-btn[data-icon="true"][data-size="sm"] { width: 26px; }
+
+/* ─── Rail (left navigation) ─── */
+.rune-shell .rune-rail {
+  grid-row: 1 / -1;
+  background: var(--rune-bg-surface);
+  border-right: 1px solid var(--rune-line-faint);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+.rune-shell .rune-rail-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--rune-u3);
+  height: var(--rune-header-h);
+  padding: 0 var(--rune-u4);
+  border-bottom: 1px solid var(--rune-line-faint);
+  flex: none;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.rune-shell .rune-rail-brand-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  color: var(--rune-ac);
+  flex: none;
+}
+.rune-shell .rune-rail-brand-name {
+  font-weight: 600;
+  font-size: var(--rune-fs-md);
+  letter-spacing: 0.02em;
+}
+.rune-shell .rune-rail-brand-name b {
+  font-weight: 600;
+  margin: 0 1px;
+  color: var(--rune-ac);
+}
+
+.rune-shell[data-rail="collapsed"] .rune-rail-brand-name { display: none; }
+
+.rune-shell .rune-rail-sec {
+  padding: var(--rune-u4) var(--rune-u4) var(--rune-u);
+}
+.rune-shell[data-rail="collapsed"] .rune-rail-sec { display: none; }
+
+.rune-shell .rune-rail-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 var(--rune-u2);
+}
+.rune-shell .rune-rail-item {
+  display: flex;
+  align-items: center;
+  gap: var(--rune-u3);
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: var(--rune-r-sm);
+  color: var(--rune-fg-mute);
+  text-align: left;
+  transition: background var(--rune-t-fast), color var(--rune-t-fast);
+  position: relative;
+}
+.rune-shell .rune-rail-item:hover { background: var(--rune-bg-inset); color: var(--rune-fg); }
+.rune-shell .rune-rail-item.is-on { background: var(--rune-bg-raised); color: var(--rune-fg); }
+.rune-shell .rune-rail-item.is-on::before {
+  content: "";
+  position: absolute;
+  left: -2px;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: var(--rune-ac);
+}
+
+.rune-shell .rune-rail-item-ic {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  color: currentColor;
+}
+.rune-shell .rune-rail-item-name {
+  flex: 1;
+  text-align: left;
+  font-size: var(--rune-fs-md);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rune-shell .rune-rail-item-badge {
+  font-family: var(--rune-font-mono);
+  font-size: 10.5px;
+  color: var(--rune-fg-faint);
+  background: var(--rune-bg-inset);
+  padding: 1px 6px;
+  border-radius: 10px;
+  flex: none;
+}
+.rune-shell .rune-rail-item.is-on .rune-rail-item-badge {
+  color: var(--rune-ac-text);
+  background: var(--rune-ac-soft);
+}
+.rune-shell .rune-rail-item-caret {
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  color: var(--rune-fg-faint);
+  flex: none;
+  transition: transform var(--rune-t-fast);
+}
+.rune-shell .rune-rail-item-caret.is-open { transform: rotate(180deg); }
+
+.rune-shell[data-rail="collapsed"] .rune-rail-item-name,
+.rune-shell[data-rail="collapsed"] .rune-rail-item-badge,
+.rune-shell[data-rail="collapsed"] .rune-rail-item-caret { display: none; }
+.rune-shell[data-rail="collapsed"] .rune-rail-item { padding: 0; justify-content: center; }
+
+.rune-shell .rune-rail-subs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 0 var(--rune-u2) 32px;
+}
+.rune-shell[data-rail="collapsed"] .rune-rail-subs { display: none; }
+
+.rune-shell .rune-rail-sub {
+  display: flex;
+  align-items: center;
+  gap: var(--rune-u2);
+  width: 100%;
+  min-height: 26px;
+  padding: 4px var(--rune-u2);
+  border-radius: var(--rune-r-sm);
+  color: var(--rune-fg-mute);
+  font-size: var(--rune-fs-sm);
+  text-align: left;
+  transition: background var(--rune-t-fast), color var(--rune-t-fast);
+}
+.rune-shell .rune-rail-sub:hover { background: var(--rune-bg-inset); color: var(--rune-fg); }
+.rune-shell .rune-rail-sub.is-on { background: var(--rune-bg-raised); color: var(--rune-fg); }
+.rune-shell .rune-rail-sub-title {
+  flex: 1;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rune-shell .rune-rail-sub-id {
+  font-family: var(--rune-font-mono);
+  font-size: 10.5px;
+  color: var(--rune-fg-faint);
+  white-space: nowrap;
+  flex: none;
+}
+.rune-shell .rune-rail-sub-n {
+  font-family: var(--rune-font-mono);
+  font-size: 10.5px;
+  color: var(--rune-fg-faint);
+  flex: none;
+}
+
+.rune-shell .rune-rail-foot {
+  margin-top: auto;
+  padding: var(--rune-u3) var(--rune-u4);
+  display: flex;
+  align-items: center;
+  gap: var(--rune-u2);
+  border-top: 1px solid var(--rune-line-faint);
+  flex: none;
+  font-size: var(--rune-fs-xs);
+  color: var(--rune-fg-faint);
+}
+.rune-shell[data-rail="collapsed"] .rune-rail-foot { padding: var(--rune-u3) 0; justify-content: center; }
+.rune-shell[data-rail="collapsed"] .rune-rail-foot-text { display: none; }
+
+/* ─── Main column ─── */
+.rune-shell .rune-main {
+  display: grid;
+  grid-template-rows: var(--rune-header-h) auto 1fr;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ─── Header ─── */
+.rune-shell .rune-head {
+  display: flex;
+  align-items: center;
+  gap: var(--rune-u4);
+  height: var(--rune-header-h);
+  padding: 0 var(--rune-u6);
+  border-bottom: 1px solid var(--rune-line-faint);
+  background: var(--rune-bg-base);
+  min-width: 0;
+}
+.rune-shell .rune-head-crumbs {
+  display: flex;
+  align-items: baseline;
+  gap: var(--rune-u2);
+  min-width: 0;
+  flex: 1;
+  font-size: var(--rune-fs-md);
+  white-space: nowrap;
+}
+.rune-shell .rune-head-crumb-prev {
+  color: var(--rune-fg-faint);
+  font-weight: 500;
+}
+.rune-shell .rune-head-crumb-sep { color: var(--rune-fg-faint); }
+.rune-shell .rune-head-crumb-cur {
+  color: var(--rune-fg);
+  font-weight: 600;
+  font-size: var(--rune-fs-lg);
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rune-shell .rune-head-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--rune-u3);
+  padding-left: var(--rune-u4);
+  border-left: 1px solid var(--rune-line-faint);
+  font-family: var(--rune-font-mono);
+  font-size: var(--rune-fs-xs);
+  color: var(--rune-fg-faint);
+  flex: none;
+}
+.rune-shell .rune-head-meta-item b {
+  font-weight: 500;
+  color: var(--rune-fg-mute);
+  margin-left: 4px;
+}
+.rune-shell .rune-head-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--rune-u2);
+  flex: none;
+}
+
+/* ─── Substrip (sub-tabs + extras) ─── */
+.rune-shell .rune-substrip {
+  display: flex;
+  align-items: center;
+  gap: var(--rune-u3);
+  height: var(--rune-substrip-h);
+  padding: 0 var(--rune-u6);
+  border-bottom: 1px solid var(--rune-line-faint);
+  background: var(--rune-bg-base);
+  min-width: 0;
+}
+.rune-shell .rune-substrip-tabs {
+  display: flex;
+  gap: var(--rune-u);
+  flex: none;
+}
+.rune-shell .rune-substrip-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rune-u);
+  height: 30px;
+  padding: 0 12px;
+  border-radius: var(--rune-r-sm);
+  color: var(--rune-fg-mute);
+  font-size: var(--rune-fs-sm);
+  font-weight: 500;
+  position: relative;
+  transition: color var(--rune-t-fast), background var(--rune-t-fast);
+}
+.rune-shell .rune-substrip-tab:hover { color: var(--rune-fg); background: var(--rune-bg-inset); }
+.rune-shell .rune-substrip-tab.is-on { color: var(--rune-fg); }
+.rune-shell .rune-substrip-tab.is-on::after {
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: -1px;
+  height: 2px;
+  background: var(--rune-ac);
+  border-radius: 2px;
+}
+.rune-shell .rune-substrip-tab-count {
+  font-family: var(--rune-font-mono);
+  font-size: 10px;
+  color: var(--rune-fg-faint);
+}
+
+/* Segmented variant — for binary toggles like List/Graph */
+.rune-shell .rune-seg {
+  display: inline-flex;
+  position: relative;
+  background: var(--rune-bg-inset);
+  border: 1px solid var(--rune-line-faint);
+  border-radius: var(--rune-r);
+  padding: 2px;
+  height: 28px;
+  flex: none;
+}
+.rune-shell .rune-seg-thumb {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 2px;
+  width: calc(50% - 2px);
+  background: var(--rune-bg-raised);
+  border-radius: var(--rune-r-sm);
+  box-shadow: var(--rune-shadow-sm);
+  transition: transform var(--rune-t-base) cubic-bezier(0.2, 0.8, 0.2, 1);
+  pointer-events: none;
+}
+.rune-shell .rune-seg-btn {
+  position: relative;
+  z-index: 1;
+  padding: 0 14px;
+  height: 24px;
+  font-size: var(--rune-fs-sm);
+  font-weight: 500;
+  color: var(--rune-fg-mute);
+  border-radius: var(--rune-r-sm);
+  flex: 1;
+  text-align: center;
+  transition: color var(--rune-t-fast);
+}
+.rune-shell .rune-seg-btn.is-on { color: var(--rune-fg); }
+
+.rune-shell .rune-substrip-right {
+  display: flex;
+  align-items: center;
+  gap: var(--rune-u2);
+  margin-left: auto;
+  flex: none;
+}
+
+/* When the per-module page doesn't render a substrip, the row collapses */
+.rune-shell .rune-substrip-empty {
+  display: none;
+}
+
+/* ─── Main body slot ─── */
+.rune-shell .rune-body {
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--rune-bg-base);
+  position: relative;
+}
+
+/* ─── Tasks toggle button (in header) ─── */
+.rune-shell .rune-tasks-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rune-u);
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--rune-line);
+  border-radius: var(--rune-r);
+  background: var(--rune-bg-raised);
+  color: var(--rune-fg-mute);
+  font-size: var(--rune-fs-sm);
+  font-weight: 500;
+  transition: background var(--rune-t-fast), color var(--rune-t-fast), border-color var(--rune-t-fast);
+}
+.rune-shell .rune-tasks-toggle:hover {
+  background: var(--rune-bg-surface);
+  border-color: var(--rune-line-strong);
+  color: var(--rune-fg);
+}
+.rune-shell .rune-tasks-toggle-count {
+  font-family: var(--rune-font-mono);
+  font-size: 10px;
+  color: var(--rune-fg-faint);
+  margin-left: var(--rune-u);
+}
+.rune-shell .rune-tasks-toggle[data-running="true"] .rune-tasks-toggle-count {
+  color: var(--rune-ac-text);
+}
+
+/* ─── Tasks Drawer ─── */
+.rune-shell .rune-drawer-scrim {
+  position: fixed;
+  inset: 0;
+  background: light-dark(oklch(0 0 0 / 0.30), oklch(0 0 0 / 0.60));
+  backdrop-filter: blur(2px);
+  z-index: 80;
+  animation: rune-fade-in var(--rune-t-base) ease;
+}
+.rune-shell .rune-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 380px;
+  max-width: 90vw;
+  background: var(--rune-bg-base);
+  border-left: 1px solid var(--rune-line);
+  box-shadow: var(--rune-shadow-lg);
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform var(--rune-t-base) cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.rune-shell .rune-drawer.is-on { transform: translateX(0); }
+.rune-shell .rune-drawer-head {
+  display: flex;
+  align-items: center;
+  gap: var(--rune-u2);
+  height: var(--rune-header-h);
+  padding: 0 var(--rune-u4);
+  border-bottom: 1px solid var(--rune-line-faint);
+  flex: none;
+}
+.rune-shell .rune-drawer-mono-meta {
+  font-family: var(--rune-font-mono);
+  font-size: var(--rune-fs-xs);
+  color: var(--rune-fg-faint);
+}
+.rune-shell .rune-drawer-filt {
+  display: flex;
+  gap: var(--rune-u);
+  padding: var(--rune-u3) var(--rune-u4);
+  border-bottom: 1px solid var(--rune-line-faint);
+  flex: none;
+  flex-wrap: wrap;
+}
+.rune-shell .rune-drawer-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--rune-u3) var(--rune-u3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--rune-u2);
+}
+.rune-shell .rune-drawer-foot {
+  border-top: 1px solid var(--rune-line-faint);
+  padding: var(--rune-u3) var(--rune-u4);
+  flex: none;
+}
+
+.rune-shell .rune-tcard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rune-u);
+  padding: var(--rune-u3);
+  border: 1px solid var(--rune-line-faint);
+  border-radius: var(--rune-r);
+  background: var(--rune-bg-base);
+  text-align: left;
+  transition: background var(--rune-t-fast), border-color var(--rune-t-fast);
+}
+.rune-shell .rune-tcard:hover {
+  background: var(--rune-bg-surface);
+  border-color: var(--rune-line);
+}
+.rune-shell .rune-tcard.is-on {
+  background: var(--rune-bg-raised);
+  border-color: var(--rune-ac-edge);
+}
+.rune-shell .rune-tcard-row1 {
+  display: flex;
+  align-items: center;
+  gap: var(--rune-u2);
+  font-size: var(--rune-fs-md);
+  font-weight: 500;
+}
+.rune-shell .rune-tcard-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rune-shell .rune-tcard-id {
+  font-family: var(--rune-font-mono);
+  font-size: 10.5px;
+  color: var(--rune-fg-faint);
+  flex: none;
+}
+.rune-shell .rune-tcard-row2 {
+  display: flex;
+  align-items: center;
+  gap: var(--rune-u);
+  font-family: var(--rune-font-mono);
+  font-size: var(--rune-fs-xs);
+  color: var(--rune-fg-faint);
+}
+.rune-shell .rune-tcard-bar {
+  height: 2px;
+  background: var(--rune-line-faint);
+  border-radius: 1px;
+  overflow: hidden;
+}
+.rune-shell .rune-tcard-bar i {
+  display: block;
+  height: 100%;
+  background: var(--rune-ac);
+  transition: width var(--rune-t-base);
+}
+
+/* ─── Tweaks Panel ─── */
+.rune-shell .rune-tweaks-trigger {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--rune-line);
+  border-radius: var(--rune-r);
+  background: var(--rune-bg-raised);
+  color: var(--rune-fg-mute);
+  z-index: 70;
+  transition: background var(--rune-t-fast), color var(--rune-t-fast);
+}
+.rune-shell .rune-tweaks-trigger:hover {
+  background: var(--rune-bg-surface);
+  color: var(--rune-fg);
+}
+.rune-shell .rune-tweaks-pop {
+  position: fixed;
+  top: 52px;
+  right: 12px;
+  width: 280px;
+  background: var(--rune-bg-raised);
+  border: 1px solid var(--rune-line);
+  border-radius: var(--rune-r-lg);
+  box-shadow: var(--rune-shadow-lg);
+  padding: var(--rune-u4);
+  z-index: 75;
+  display: flex;
+  flex-direction: column;
+  gap: var(--rune-u3);
+  animation: rune-fade-up var(--rune-t-base) ease;
+}
+.rune-shell .rune-tweaks-row {
+  display: flex;
+  align-items: center;
+  gap: var(--rune-u2);
+}
+.rune-shell .rune-tweaks-label {
+  font-size: var(--rune-fs-sm);
+  font-weight: 500;
+  color: var(--rune-fg);
+  flex: 1;
+}
+.rune-shell .rune-tweaks-segment {
+  display: inline-flex;
+  border: 1px solid var(--rune-line-faint);
+  border-radius: var(--rune-r-sm);
+  background: var(--rune-bg-inset);
+  padding: 2px;
+  height: 26px;
+}
+.rune-shell .rune-tweaks-segment-btn {
+  padding: 0 10px;
+  height: 22px;
+  font-size: var(--rune-fs-xs);
+  font-weight: 500;
+  color: var(--rune-fg-mute);
+  border-radius: 3px;
+  transition: background var(--rune-t-fast), color var(--rune-t-fast);
+}
+.rune-shell .rune-tweaks-segment-btn.is-on {
+  background: var(--rune-bg-raised);
+  color: var(--rune-fg);
+  box-shadow: var(--rune-shadow-sm);
+}
+
+/* ─── Animations ─── */
+@keyframes rune-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes rune-fade-up {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to   { opacity: 1; transform: none; }
+}

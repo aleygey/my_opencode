@@ -1,0 +1,99 @@
+/*
+ * Unified shell tokens — SaaS-like, JetBrains Mono + Inter inspired,
+ * pinned under `--rune-*` prefix to avoid collisions with the app's
+ * existing design tokens. Token values pair light/dark via light-dark()
+ * so the entire shell follows the project's existing theme convention.
+ *
+ * The shell is opt-in: only elements inside `.rune-shell` resolve these
+ * tokens. Switching theme is done via `data-theme="dark"` on the root
+ * element OR on `.rune-shell` itself when the user uses the Tweaks panel.
+ */
+
+.rune-shell {
+  /* ─── Type scale ─── */
+  /* Bundled "Inter Variable" and "JetBrains Mono Variable" load from
+   * packages/ui/src/assets/fonts/ via fonts.css. Falls back to the
+   * project's existing tokens (system stack) if loading fails. */
+  --rune-font-sans: "Inter Variable", var(--font-family-sans);
+  --rune-font-mono: "JetBrains Mono Variable", var(--font-family-mono);
+  --rune-fs-xs: 11px;
+  --rune-fs-sm: 12px;
+  --rune-fs-md: 13px;
+  --rune-fs-lg: 15px;
+  --rune-fs-xl: 19px;
+  --rune-fs-2xl: 26px;
+  --rune-lh: 1.55;
+
+  /* ─── 4px spacing grid ─── */
+  --rune-u: 4px;
+  --rune-u2: 8px;
+  --rune-u3: 12px;
+  --rune-u4: 16px;
+  --rune-u5: 20px;
+  --rune-u6: 24px;
+  --rune-u8: 32px;
+
+  /* ─── Layout ─── */
+  --rune-rail-w: 224px;
+  --rune-rail-w-collapsed: 60px;
+  --rune-aside-w: 340px;
+  --rune-header-h: 56px;
+  --rune-substrip-h: 44px;
+
+  /* ─── Radius ─── */
+  --rune-r-sm: 4px;
+  --rune-r: 6px;
+  --rune-r-lg: 10px;
+
+  /* ─── Motion ─── */
+  --rune-t-fast: 100ms;
+  --rune-t-base: 180ms;
+
+  /* ─── Surfaces (light/dark pairs via light-dark) ─── */
+  --rune-bg-base:    light-dark(oklch(1.000 0.000 0),     oklch(0.140 0.010 245));
+  --rune-bg-surface: light-dark(oklch(0.975 0.003 250),   oklch(0.180 0.011 245));
+  --rune-bg-raised:  light-dark(oklch(1.000 0.000 0),     oklch(0.205 0.013 245));
+  --rune-bg-inset:   light-dark(oklch(0.952 0.005 250),   oklch(0.115 0.010 245));
+
+  --rune-line-faint: light-dark(oklch(0.945 0.005 250),   oklch(0.225 0.011 245));
+  --rune-line:       light-dark(oklch(0.910 0.008 250),   oklch(0.265 0.011 245));
+  --rune-line-strong:light-dark(oklch(0.840 0.012 250),   oklch(0.330 0.013 245));
+
+  /* ─── Foreground (4 levels) ─── */
+  --rune-fg:        light-dark(oklch(0.165 0.020 250),    oklch(0.940 0.010 245));
+  --rune-fg-mute:   light-dark(oklch(0.380 0.020 250),    oklch(0.700 0.013 245));
+  --rune-fg-dim:    light-dark(oklch(0.560 0.018 250),    oklch(0.520 0.013 245));
+  --rune-fg-faint:  light-dark(oklch(0.720 0.012 250),    oklch(0.380 0.012 245));
+
+  /* ─── Single accent (cool blue) — reserved for active state, primary CTA ─── */
+  --rune-ac:        light-dark(oklch(0.560 0.180 260),    oklch(0.700 0.150 260));
+  --rune-ac-soft:   light-dark(oklch(0.560 0.180 260 / 0.10), oklch(0.700 0.150 260 / 0.16));
+  --rune-ac-edge:   light-dark(oklch(0.560 0.180 260 / 0.30), oklch(0.700 0.150 260 / 0.36));
+  --rune-ac-text:   light-dark(oklch(0.480 0.180 260),    oklch(0.780 0.140 260));
+
+  /* ─── Status colors (low-saturation, never compete with accent) ─── */
+  --rune-st-ok:    light-dark(oklch(0.580 0.140 150),     oklch(0.760 0.130 150));
+  --rune-st-run:   var(--rune-ac);
+  --rune-st-warn:  light-dark(oklch(0.620 0.150 65),      oklch(0.780 0.140 65));
+  --rune-st-err:   light-dark(oklch(0.560 0.180 25),      oklch(0.760 0.160 25));
+  --rune-st-idle:  var(--rune-fg-dim);
+
+  /* ─── Shadows (subtle by default) ─── */
+  --rune-shadow-sm: light-dark(
+    0 1px 2px oklch(0.20 0.04 250 / 0.04),
+    0 1px 2px oklch(0 0 0 / 0.35)
+  );
+  --rune-shadow:    light-dark(
+    0 4px 12px -2px oklch(0.20 0.04 250 / 0.06),
+    0 8px 24px oklch(0 0 0 / 0.5)
+  );
+  --rune-shadow-lg: light-dark(
+    0 16px 40px -8px oklch(0.20 0.04 250 / 0.18),
+    0 24px 60px oklch(0 0 0 / 0.6)
+  );
+}
+
+/* When user explicitly forces a theme via Tweaks, override the
+   color-scheme — light-dark() responds to color-scheme.   */
+.rune-shell[data-theme="light"] { color-scheme: light; }
+.rune-shell[data-theme="dark"]  { color-scheme: dark; }

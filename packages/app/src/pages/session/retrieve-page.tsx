@@ -24,7 +24,7 @@ import {
   Show,
 } from "solid-js"
 import { useNavigate, useParams } from "@solidjs/router"
-import { SessionHeader } from "@/components/session"
+import { UnifiedShell } from "@/components/unified-shell"
 import { useModels } from "@/context/models"
 import { usePlatform } from "@/context/platform"
 import { useSDK } from "@/context/sdk"
@@ -786,75 +786,93 @@ export default function RetrievePage() {
     sessions().find((s) => s.id === selectedSession()),
   )
 
+  // Build the substrip's right slot — Trace-specific actions: session picker,
+  // model picker, refresh toggle, manual refresh. The session picker stays
+  // here (rather than the unified Header) because it's purely Trace's
+  // concern (which session's audit log to display).
+  const substripRight = () => (
+    <div class="rune-row rune-gap-2">
+      <SessionPicker
+        current={currentSession()}
+        options={sessions()}
+        onPick={(id) => {
+          setSelectedSession(id)
+          setSelectedEntry(null)
+        }}
+        urlSessionId={params.id}
+      />
+      <ModelPicker
+        current={configResource()?.resolved}
+        source={configResource()?.source ?? "none"}
+        busy={configBusy()}
+        onChange={(m) => updateConfig({ model: m })}
+        onReset={() => updateConfig({ model: null })}
+      />
+      <Show when={configError()}>
+        <span class="rt-config-error" title={configError() ?? ""}>
+          ⚠ {configError()}
+        </span>
+      </Show>
+      <button
+        type="button"
+        class="rune-btn"
+        data-size="xs"
+        data-variant="ghost"
+        classList={{ "rt-refresh-on": autoRefresh() }}
+        onClick={() => setAutoRefresh((v) => !v)}
+        title={
+          autoRefresh()
+            ? "30s 自动刷新已开启 — 点击暂停"
+            : "自动刷新已暂停 — 点击恢复 30s 轮询"
+        }
+      >
+        {autoRefresh() ? "● 自动刷新" : "○ 已暂停"}
+      </button>
+      <button
+        type="button"
+        class="rune-btn"
+        data-size="xs"
+        data-variant="ghost"
+        data-icon="true"
+        onClick={() => refetch()}
+        title="立刻刷新一次"
+      >
+        ↻
+      </button>
+    </div>
+  )
+
   return (
-    <div class="rt-page" data-component="retrieve-page">
-      <SessionHeader />
-
-      {/* ─── Topbar ─── */}
-      <div class="rt-topbar">
-        <div class="rt-page-title">Retrieve</div>
-
-        <SessionPicker
-          current={currentSession()}
-          options={sessions()}
-          onPick={(id) => {
-            setSelectedSession(id)
-            setSelectedEntry(null)
-          }}
-          urlSessionId={params.id}
-        />
-
-        <div class="rt-meta-right">
-          <ModelPicker
-            current={configResource()?.resolved}
-            source={configResource()?.source ?? "none"}
-            busy={configBusy()}
-            onChange={(m) => updateConfig({ model: m })}
-            onReset={() => updateConfig({ model: null })}
-          />
-          <Show when={configError()}>
-            <span class="rt-config-error" title={configError() ?? ""}>
-              ⚠ {configError()}
-            </span>
-          </Show>
-          <Show when={currentSession()}>
-            <span class="rt-meta-info">
-              {fmtDate(currentSession()!.lastAt)} · {currentSession()!.recallTurns}/
-              {currentSession()!.totalTurns} 轮命中
-            </span>
-          </Show>
+    <UnifiedShell
+      module="trace"
+      header={{
+        parent: "Trace",
+        title: currentSession()
+          ? `${currentSession()!.recallTurns}/${currentSession()!.totalTurns} 轮命中`
+          : "Recall",
+        meta: currentSession()
+          ? [{ k: "SESS", v: currentSession()!.id.slice(-8) }]
+          : [],
+        actions: (
           <button
             type="button"
-            class="rt-topbar-link rt-refresh-toggle"
-            classList={{ off: !autoRefresh() }}
-            onClick={() => setAutoRefresh((v) => !v)}
-            title={
-              autoRefresh()
-                ? "30s 自动刷新已开启 — 点击暂停"
-                : "自动刷新已暂停 — 点击恢复 30s 轮询"
-            }
-          >
-            {autoRefresh() ? "● 自动刷新" : "○ 已暂停"}
-          </button>
-          <button
-            type="button"
-            class="rt-topbar-link"
-            onClick={() => refetch()}
-            title="立刻刷新一次"
-          >
-            ↻
-          </button>
-          <button
-            type="button"
-            class="rt-topbar-link"
+            class="rune-btn"
+            data-size="xs"
+            data-variant="ghost"
             onClick={() => navigate(`/${params.dir}/session/${params.id}`)}
             title="返回 session"
           >
             ← session
           </button>
-        </div>
-      </div>
-
+        ),
+      }}
+      substrip={{
+        tabs: [{ id: "recall", name: "Recall", count: sessionEntries().length }],
+        active: "recall",
+        right: substripRight(),
+      }}
+    >
+      <div class="rt-page" data-component="retrieve-page">
       {/* ─── Body ─── */}
       <div class="rt-body">
         {/* Timeline */}
@@ -1058,6 +1076,7 @@ export default function RetrievePage() {
           </Show>
         </main>
       </div>
-    </div>
+      </div>
+    </UnifiedShell>
   )
 }

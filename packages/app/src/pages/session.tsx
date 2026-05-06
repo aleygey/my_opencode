@@ -30,6 +30,7 @@ import { showToast } from "@opencode-ai/ui/toast"
 import { base64Encode, checksum } from "@opencode-ai/shared/util/encode"
 import { useNavigate, useSearchParams } from "@solidjs/router"
 import { NewSessionView, SessionHeader } from "@/components/session"
+import { UnifiedShell } from "@/components/unified-shell"
 import { useComments } from "@/context/comments"
 import { getSessionPrefetch, SESSION_PREFETCH_TTL } from "@/context/global-sync/session-prefetch"
 import { useGlobalSync } from "@/context/global-sync"
@@ -1911,8 +1912,18 @@ export default function Page() {
         </div>
       </Match>
       <Match when={true}>
+        <UnifiedShell
+          module="workflow"
+          header={{
+            parent: "Workflow",
+            title: params.id ? "Session" : "New session",
+          }}
+        >
         <div class="relative bg-background-base size-full overflow-hidden flex flex-col">
           {sessionSync() ?? ""}
+          {/* SessionHeader retained as transitional inner toolbar — model
+              picker / agent picker / open-in-editor live here until they
+              are migrated into the shell's substrip/header in a follow-up. */}
           <SessionHeader />
           <div class="flex-1 min-h-0 flex flex-col md:flex-row">
             <Show when={!isDesktop() && !!params.id}>
@@ -2180,6 +2191,7 @@ export default function Page() {
 
           <TerminalPanel />
         </div>
+        </UnifiedShell>
       </Match>
     </Switch>
   )
