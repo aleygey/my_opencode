@@ -11,6 +11,12 @@ import {
 } from "solid-js"
 import { useNavigate, useParams } from "@solidjs/router"
 import { UnifiedShell } from "@/components/unified-shell"
+import {
+  KnowledgeGraph as RuneKnowledgeGraph,
+  KnowledgeList as RuneKnowledgeList,
+  type KnowledgeEdge as RuneKnowledgeEdge,
+  type KnowledgeExp as RuneKnowledgeExp,
+} from "@/components/unified-shell/modules"
 import { useModels } from "@/context/models"
 import { usePlatform } from "@/context/platform"
 import { useSDK } from "@/context/sdk"
@@ -5116,6 +5122,53 @@ export default function RefinerPage() {
     return arr
   })
 
+  // Mapping from Experience → RuneKnowledgeExp for the new design list +
+  // graph components. Each card renders kind chip + title + abstract excerpt
+  // + scope/tags row + obs count + flag (pending/rejected) — same data, just
+  // arranged per the design template.
+  const runeExperiences = createMemo<RuneKnowledgeExp[]>(() => {
+    const ageOf = (e: Experience): string => {
+      if (!e.last_refined_at) return ""
+      const days = Math.max(0, Math.floor((Date.now() - e.last_refined_at) / 86400000))
+      if (days === 0) return "今"
+      if (days < 30) return `${days}d`
+      if (days < 365) return `${Math.floor(days / 30)}mo`
+      return `${Math.floor(days / 365)}y`
+    }
+    const status = (e: Experience): RuneKnowledgeExp["flag"] => {
+      const r = e.review_status
+      if (r === "pending") return "pending"
+      if (r === "rejected") return "rejected"
+      return undefined
+    }
+    return visibleExperiencesFlat().map((e) => ({
+      id: e.id,
+      cat: e.kind,
+      catLabel: kindDisplay(e.kind),
+      title: e.title,
+      body: e.abstract,
+      scope: e.scope,
+      flag: status(e),
+      ago: ageOf(e),
+      obs: e.observations?.length,
+      tags: e.categories ?? [],
+      statement: e.statement,
+    }))
+  })
+
+  // Edges adapted for RuneKnowledgeGraph (radial layout). The chain graph
+  // endpoint is the source of truth; we project it into the simple {a,b,kind}
+  // shape the design's graph expects.
+  const runeGraphEdges = createMemo<RuneKnowledgeEdge[]>(() => {
+    const data = chainGraph.latest
+    if (!data) return []
+    return (data.edges ?? []).map((e) => ({
+      a: e.from,
+      b: e.to,
+      kind: e.kind,
+    }))
+  })
+
   const experiencesByKind = createMemo(() => {
     const map = new Map<Kind, Experience[]>()
     for (const exp of visibleExperiences()) {
@@ -5417,12 +5470,12 @@ export default function RefinerPage() {
           { id: "graph", name: "Graph" },
         ],
         active: viewMode(),
-        onTab: (id) => setViewMode(id as "list" | "graph"),
+        onTab: (id: string) => setViewMode(id as "list" | "graph"),
         variant: "segmented",
       }}
       railSubs={railCategorySubs()}
       activeSubId={activeKind() ?? "__all"}
-      onPickSub={(id) => {
+      onPickSub={(id: string) => {
         if (id === "__all") setActiveKind(undefined)
         else setActiveKind(id as Kind)
       }}
@@ -5600,150 +5653,99 @@ export default function RefinerPage() {
       <div class="rf-stage" data-view={viewMode()}>
         <Show when={viewMode() === "graph"}>
           <div class="rf-main rf-main-graph">
-            <ExperienceGraphView
-              data={chainGraph.latest}
-              // Only show "loading" on the first load; during a poll refetch
-              // we keep the previous graph mounted so the page doesn't flash.
-              loading={chainGraph.loading && !chainGraph.latest}
-              onPick={pickExperienceByID}
-              activeKind={activeKind()}
-              activeCategory={activeCategory()}
-              activeEdgeKinds={graphEdgeKinds()}
-              toggleEdgeKind={toggleGraphEdgeKind}
-              includeArchived={includeArchived()}
-            />
+            <Show
+              when={chainGraph.latest && (chainGraph.latest.experiences?.length ?? 0) > 0}
+              fallback={
+                <div class="rf-list-empty" style={{ padding: "48px 24px" }}>
+                  <h3>{chainGraph.loading ? "Loading graph…" : "暂无图谱数据"}</h3>
+                </div>
+              }
+            >
+              <RuneKnowledgeGraph
+                experiences={runeExperiences()}
+                edges={runeGraphEdges()}
+                pickedId={(() => {
+                  const sel = selection()
+                  if (!sel) return undefined
+                  return sel.id.startsWith("experience:")
+                    ? sel.id.slice("experience:".length)
+                    : sel.id
+                })()}
+                onPick={pickExperienceByID}
+              />
+            </Show>
           </div>
         </Show>
         <Show when={viewMode() === "list"}>
-        <div class="rf-main">
-          <div class="rf-list-view">
-            <div class="rf-list-inner">
-              <div class="rf-list-header">
-                <div class="rf-list-title">
-                  经验列表
-                  <span class="rf-list-title-sub">
-                    {visibleExperiences().length} 条
-                    <Show when={query()}>
-                      {" · 匹配 "}
-                      <em>{`"${query()}"`}</em>
-                    </Show>
-                  </span>
-                </div>
-                <div class="rf-list-controls">
-                  <Show
-                    when={mergeIDs().size > 0}
-                    fallback={
-                      <button
-                        class="rf-topbtn rf-topbtn-ghost"
-                        onClick={() => setAction({ type: "create" })}
-                      >
-                        ＋ 新建
-                      </button>
-                    }
-                  >
-                    <span class="rf-list-selected">{mergeIDs().size} 已选</span>
-                    <button
-                      class="rf-topbtn"
-                      disabled={mergeIDs().size < 2}
-                      onClick={() =>
-                        setAction({
-                          type: "merge",
-                          ids: [...mergeIDs()],
-                        })
-                      }
-                    >
-                      合并 {mergeIDs().size}
-                    </button>
-                    <button
-                      class="rf-topbtn"
-                      onClick={async () => {
-                        for (const id of mergeIDs()) {
-                          await handleArchiveToggle(id, true)
-                        }
-                        clearMergeSelection()
-                      }}
-                    >
-                      归档
-                    </button>
-                    <button
-                      class="rf-topbtn rf-topbtn-ghost"
-                      onClick={clearMergeSelection}
-                    >
-                      取消
-                    </button>
-                  </Show>
-                </div>
-              </div>
-
-              <Show
-                when={visibleExperiences().length > 0}
-                fallback={
-                  <div class="rf-list-empty">
-                    <h3>没有匹配的经验</h3>
-                    <p>试试清空搜索，或者切换其他分类。</p>
-                  </div>
-                }
+          <div class="rf-main">
+            <Show
+              when={mergeIDs().size > 0}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "var(--rune-u2)",
+                  padding: "var(--rune-u2) var(--rune-u4)",
+                  "border-bottom": "1px solid var(--rune-line-faint)",
+                  background: "var(--rune-bg-surface)",
+                }}
               >
-                <Show
-                  when={sortMode() === "kind"}
-                  fallback={
-                    <section class="rf-list-group">
-                      <For each={visibleExperiencesFlat()}>
-                        {(item) => (
-                          <ExperienceRow
-                            item={item}
-                            query={query()}
-                            selected={
-                              selection()?.id === `experience:${item.id}`
-                            }
-                            mergeSel={mergeIDs().has(item.id)}
-                            anySelected={mergeIDs().size > 0}
-                            onOpen={() => pickExperienceByID(item.id)}
-                            onToggleCheck={() => toggleMergeSelect(item.id)}
-                          />
-                        )}
-                      </For>
-                    </section>
+                <span class="rune-kicker">已选 {mergeIDs().size} 条</span>
+                <span class="rune-grow" />
+                <button
+                  type="button"
+                  class="rune-btn"
+                  data-size="xs"
+                  data-variant="primary"
+                  disabled={mergeIDs().size < 2}
+                  onClick={() =>
+                    setAction({
+                      type: "merge",
+                      ids: [...mergeIDs()],
+                    })
                   }
                 >
-                  <For each={experiencesByKind()}>
-                    {([kind, items]) => (
-                      <section class="rf-list-group">
-                        <header
-                          class="rf-list-group-head"
-                          data-palette={paletteFor(kind)}
-                        >
-                          <span class="rf-list-group-bar" />
-                          <span class="rf-list-group-title">
-                            {kindDisplay(kind)}
-                          </span>
-                          <span class="rf-list-group-count">{items.length}</span>
-                        </header>
-                        <For each={items}>
-                          {(item) => (
-                            <ExperienceRow
-                              item={item}
-                              query={query()}
-                              selected={
-                                selection()?.id === `experience:${item.id}`
-                              }
-                              mergeSel={mergeIDs().has(item.id)}
-                              anySelected={mergeIDs().size > 0}
-                              onOpen={() => pickExperienceByID(item.id)}
-                              onToggleCheck={() => toggleMergeSelect(item.id)}
-                            />
-                          )}
-                        </For>
-                      </section>
-                    )}
-                  </For>
-                </Show>
-              </Show>
-            </div>
+                  合并 {mergeIDs().size}
+                </button>
+                <button
+                  type="button"
+                  class="rune-btn"
+                  data-size="xs"
+                  onClick={async () => {
+                    for (const id of mergeIDs()) {
+                      await handleArchiveToggle(id, true)
+                    }
+                    clearMergeSelection()
+                  }}
+                >
+                  归档
+                </button>
+                <button
+                  type="button"
+                  class="rune-btn"
+                  data-size="xs"
+                  data-variant="ghost"
+                  onClick={clearMergeSelection}
+                >
+                  取消
+                </button>
+              </div>
+            </Show>
+            <RuneKnowledgeList
+              experiences={runeExperiences()}
+              pickedId={(() => {
+                const sel = selection()
+                if (!sel) return undefined
+                return sel.id.startsWith("experience:")
+                  ? sel.id.slice("experience:".length)
+                  : sel.id
+              })()}
+              onPick={pickExperienceByID}
+              emptyText="没有匹配的经验。试试清空搜索或切换其他分类。"
+            />
           </div>
-        </div>
         </Show>
-
       </div>
 
       <ExperienceModal
