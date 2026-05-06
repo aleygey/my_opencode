@@ -2,12 +2,12 @@ import type { SerialPort, PortInfo, SerialOpts } from "./serial"
 
 export type { Disp, Exit, PortInfo, SerialOpts, SerialPort } from "./serial"
 
-// serialport is an optional, unshipped native dep — we load it dynamically and
-// silently degrade when it isn't present. Static type-checking is intentionally
-// disabled via `@ts-ignore` on the module specifier.
+// serialport is declared in opencode/package.json as an `optionalDependencies`,
+// so the package may be absent on hosts that couldn't fetch the prebuilt binary
+// (and lack a local toolchain). We load it dynamically and silently degrade
+// rather than crashing the whole runtime in that case.
 export async function listPorts(): Promise<PortInfo[]> {
   try {
-    // @ts-ignore — optional native dependency
     const { SerialPort: SP } = await import("serialport")
     return await SP.list()
   } catch {
@@ -17,9 +17,6 @@ export async function listPorts(): Promise<PortInfo[]> {
 
 export function open(path: string, opts: SerialOpts): SerialPort {
   try {
-    // Bun does not have native serialport bindings;
-    // dynamic import will likely fail, in which case we throw.
-    // @ts-ignore — optional native dependency
     const mod = require("serialport")
     const port = new mod.SerialPort({
       path,
@@ -47,7 +44,10 @@ export function open(path: string, opts: SerialOpts): SerialPort {
         port.close()
       },
     }
-  } catch {
-    throw new Error("serialport is not available on this platform (Bun runtime)")
+  } catch (err) {
+    throw new Error(
+      "serialport native bindings are not available — install `serialport` (or its prebuilds) for this platform.",
+      { cause: err as Error },
+    )
   }
 }

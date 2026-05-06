@@ -1,4 +1,3 @@
-/** @ts-expect-error */
 import * as sp from "serialport"
 import type { SerialPort, PortInfo, SerialOpts } from "./serial"
 

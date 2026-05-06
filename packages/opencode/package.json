@@ -186,5 +186,8 @@
   },
   "overrides": {
     "drizzle-orm": "catalog:"
+  },
+  "optionalDependencies": {
+    "serialport": "13.0.0"
   }
 }
