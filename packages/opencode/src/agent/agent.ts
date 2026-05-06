@@ -9,8 +9,11 @@ import { Auth } from "../auth"
 import { ProviderTransform } from "../provider"
 
 import PROMPT_GENERATE from "./generate.txt"
+import PROMPT_BUILD_FLASH from "./prompt/build-flash.txt"
+import PROMPT_CODING from "./prompt/coding.txt"
 import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_DEBUG from "./prompt/debug.txt"
+import PROMPT_DEPLOY from "./prompt/deploy.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
 import PROMPT_ORCHESTRATOR from "./prompt/orchestrator.txt"
 import PROMPT_REFINER from "./prompt/refiner.txt"
@@ -108,6 +111,23 @@ export const layer = Layer.effect(
         })
 
         const user = Permission.fromConfig(cfg.permission ?? {})
+
+        // Any agent that runs as a workflow node MUST be able to call the
+        // master/slave handshake tools. Hardcoded subagents (debug, explore,
+        // and the bundled coding/build-flash/deploy below) all use a
+        // `*: deny` + explicit allowlist pattern, so without this set the
+        // slave session would launch without `workflow_pull`/`workflow_update`
+        // in its tool list and the master would never hear back from it.
+        // Spread this into every workflow-node agent's permission config —
+        // user .opencode/agent/<name>.md overrides still work via the merge
+        // at the bottom of this function (line ~398).
+        const workflowSlaveAllow = {
+          workflow_pull: "allow" as const,
+          workflow_update: "allow" as const,
+          workflow_read: "allow" as const,
+          workflow_need_fulfill: "allow" as const,
+          workflow_checkpoint_create: "allow" as const,
+        }
 
         const agents: Record<string, Info> = {
           // Orchestrator is listed first so `defaultAgent()` picks it
@@ -228,6 +248,7 @@ export const layer = Layer.effect(
                 serial_write: "allow",
                 serial_read_recent: "allow",
                 serial_close: "allow",
+                ...workflowSlaveAllow,
                 external_directory: {
                   "*": "ask",
                   ...Object.fromEntries(whitelistedDirs.map((dir) => [dir, "allow"])),
@@ -258,6 +279,7 @@ export const layer = Layer.effect(
                 websearch: "allow",
                 codesearch: "allow",
                 read: "allow",
+                ...workflowSlaveAllow,
                 external_directory: {
                   "*": "ask",
                   ...Object.fromEntries(whitelistedDirs.map((dir) => [dir, "allow"])),
@@ -270,6 +292,67 @@ export const layer = Layer.effect(
             options: {},
             mode: "subagent",
             native: true,
+          },
+          // Bundled subagents for the standard workflow node lineup. Previously
+          // these only existed as user-level `.opencode/agent/<name>.md` files,
+          // which meant a fresh install (or any worktree without the user's
+          // dotfiles) had no `coding`/`build-flash`/`deploy` agent at all and
+          // workflow_node_create with those agent names silently fell through
+          // to the catch-all on line ~378 below. Bundling them as native
+          // subagents ensures the orchestrator's plan vocabulary
+          // (`coding | build-flash | debug | deploy`, see orchestrator.txt:101)
+          // always resolves. User .md files still override per-field via the
+          // merge loop further down.
+          coding: {
+            name: "coding",
+            description:
+              "Implement and validate code changes as a workflow node, reporting progress incrementally.",
+            permission: Permission.merge(
+              defaults,
+              Permission.fromConfig({
+                ...workflowSlaveAllow,
+              }),
+              user,
+            ),
+            prompt: PROMPT_CODING,
+            options: {},
+            mode: "subagent",
+            native: true,
+            color: "#2563EB",
+          },
+          "build-flash": {
+            name: "build-flash",
+            description:
+              "Build firmware or software artifacts, flash targets, and report attempt-level execution status.",
+            permission: Permission.merge(
+              defaults,
+              Permission.fromConfig({
+                ...workflowSlaveAllow,
+              }),
+              user,
+            ),
+            prompt: PROMPT_BUILD_FLASH,
+            options: {},
+            mode: "subagent",
+            native: true,
+            color: "#B45309",
+          },
+          deploy: {
+            name: "deploy",
+            description:
+              "Push built artifacts to their target environment (production rollouts, OTA updates, remote-target installation), and run post-deploy smoke checks.",
+            permission: Permission.merge(
+              defaults,
+              Permission.fromConfig({
+                ...workflowSlaveAllow,
+              }),
+              user,
+            ),
+            prompt: PROMPT_DEPLOY,
+            options: {},
+            mode: "subagent",
+            native: true,
+            color: "#0891B2",
           },
           compaction: {
             name: "compaction",
