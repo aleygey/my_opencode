@@ -42,14 +42,18 @@
   --wf-ink-soft: #475569;
   --wf-dim: #94a3b8;
 
-  /* Accents — desaturated for a refined, muted feel */
-  --wf-ok: #4d9e8a;
-  --wf-ok-soft: rgba(77, 158, 138, 0.1);
-  --wf-ok-strong: #3d8573;
-  --wf-warn: #c9943e;
-  --wf-bad: #c55a5a;
-  --wf-accent: #7578c5;
-  --wf-accent-soft: rgba(117, 120, 197, 0.08);
+  /* Accents — design-template aligned: cool indigo/blue primary, with
+   * status colours (ok/warn/bad) kept neutral so they don't compete
+   * with the primary accent for attention. */
+  --wf-ok: #16a34a;
+  --wf-ok-soft: rgba(22, 163, 74, 0.10);
+  --wf-ok-strong: #138a3f;
+  --wf-warn: #d97706;
+  --wf-bad: #dc2626;
+  --wf-accent: #4c6fff;
+  --wf-accent-soft: rgba(76, 111, 255, 0.08);
+  --wf-accent-edge: rgba(76, 111, 255, 0.24);
+  --wf-accent-text: #3a57d8;
 
   /* Sans font — Inter (Google) with local fallback and full CJK support */
   --wf-font-sans:
@@ -92,7 +96,7 @@
   --wf-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.03), 0 2px 8px rgba(15, 23, 42, 0.04);
   --wf-shadow-md: 0 1px 3px rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.06);
   --wf-shadow-lg: 0 4px 12px rgba(15, 23, 42, 0.05), 0 20px 48px rgba(15, 23, 42, 0.08);
-  --wf-shadow-glow: 0 0 0 1px rgba(77, 158, 138, 0.25), 0 0 24px -4px rgba(77, 158, 138, 0.15);
+  --wf-shadow-glow: 0 0 0 1px rgba(76, 111, 255, 0.25), 0 0 24px -4px rgba(76, 111, 255, 0.15);
 
   background: var(--wf-bg);
   color: var(--wf-ink);
@@ -166,21 +170,23 @@
   --wf-ink-soft: #9dabb8;
   --wf-dim: #5d6b7a;
 
-  /* Accents — slightly brighter for dark bg contrast */
-  --wf-ok: #56b3a0;
-  --wf-ok-soft: rgba(86, 179, 160, 0.12);
-  --wf-ok-strong: #6fcab6;
-  --wf-warn: #d4a24a;
-  --wf-bad: #d46a6a;
-  --wf-accent: #8b8ed4;
-  --wf-accent-soft: rgba(139, 142, 212, 0.1);
+  /* Accents — slightly brighter on dark bg, design-template cool blue. */
+  --wf-ok: #34d399;
+  --wf-ok-soft: rgba(52, 211, 153, 0.12);
+  --wf-ok-strong: #4ade80;
+  --wf-warn: #fbbf24;
+  --wf-bad: #f87171;
+  --wf-accent: #7b95ff;
+  --wf-accent-soft: rgba(123, 149, 255, 0.10);
+  --wf-accent-edge: rgba(123, 149, 255, 0.36);
+  --wf-accent-text: #9db0ff;
 
   /* Shadows — glow-based for dark */
   --wf-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.2);
   --wf-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.15), 0 2px 8px rgba(0, 0, 0, 0.2);
   --wf-shadow-md: 0 1px 3px rgba(0, 0, 0, 0.2), 0 8px 24px rgba(0, 0, 0, 0.25);
   --wf-shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.25), 0 20px 48px rgba(0, 0, 0, 0.35);
-  --wf-shadow-glow: 0 0 0 1px rgba(86, 179, 160, 0.2), 0 0 24px -4px rgba(86, 179, 160, 0.12);
+  --wf-shadow-glow: 0 0 0 1px rgba(123, 149, 255, 0.2), 0 0 24px -4px rgba(123, 149, 255, 0.12);
 }
 
 @theme inline {
@@ -203,7 +209,7 @@
   --color-destructive-foreground: #ffffff;
   --color-border: rgba(15, 23, 42, 0.06);
   --color-input: #ffffff;
-  --color-ring: rgba(77, 158, 138, 0.3);
+  --color-ring: rgba(76, 111, 255, 0.3);
 }
 
 /* ─── Base layer ─── */
@@ -436,8 +442,8 @@
   border-radius: inherit;
   background: none;
   box-shadow:
-    0 0 0 1px rgba(77, 158, 138, 0.15),
-    0 0 32px -4px rgba(77, 158, 138, 0.12);
+    0 0 0 1px rgba(76, 111, 255, 0.15),
+    0 0 32px -4px rgba(76, 111, 255, 0.12);
   pointer-events: none;
   /* Static halo: the pulsing infinite animation was redundant with the
    * Spin spinner, LIVE badge, and animated progress bar — it made the
@@ -528,13 +534,13 @@
   0%,
   100% {
     box-shadow:
-      0 0 10px rgba(77, 158, 138, 0.35),
-      0 0 20px rgba(77, 158, 138, 0.12);
+      0 0 10px rgba(76, 111, 255, 0.35),
+      0 0 20px rgba(76, 111, 255, 0.12);
   }
   50% {
     box-shadow:
-      0 0 14px rgba(77, 158, 138, 0.5),
-      0 0 28px rgba(77, 158, 138, 0.18);
+      0 0 14px rgba(76, 111, 255, 0.5),
+      0 0 28px rgba(76, 111, 255, 0.18);
   }
 }
 
@@ -705,19 +711,19 @@
    * so the user can find the live node at a glance, even across a long chain.
    * Runs continuously and composes with the card's own shadow on hover. */
   animation: wf-node-breathe 2.2s ease-in-out infinite;
-  box-shadow: 0 0 0 0 rgba(77, 158, 138, 0.45);
+  box-shadow: 0 0 0 0 rgba(76, 111, 255, 0.45);
 }
 
 @keyframes wf-node-breathe {
   0%, 100% {
     box-shadow:
-      0 0 0 0 rgba(77, 158, 138, 0.45),
-      0 0 10px 0 rgba(77, 158, 138, 0.18);
+      0 0 0 0 rgba(76, 111, 255, 0.45),
+      0 0 10px 0 rgba(76, 111, 255, 0.18);
   }
   50% {
     box-shadow:
-      0 0 0 6px rgba(77, 158, 138, 0),
-      0 0 22px 2px rgba(77, 158, 138, 0.28);
+      0 0 0 6px rgba(76, 111, 255, 0),
+      0 0 22px 2px rgba(76, 111, 255, 0.28);
   }
 }
 
@@ -872,7 +878,7 @@
 }
 
 .workflow-make .wf-topbar-status--running {
-  border-color: rgba(77, 158, 138, 0.2);
+  border-color: rgba(76, 111, 255, 0.2);
   background: var(--wf-ok-soft);
   color: var(--wf-ok-strong);
 }
@@ -881,7 +887,7 @@
   width: 48px;
   height: 3px;
   border-radius: 2px;
-  background: rgba(77, 158, 138, 0.15);
+  background: rgba(76, 111, 255, 0.15);
   overflow: hidden;
 }
 
@@ -3109,7 +3115,7 @@
 
 .workflow-make .wf-plan-btn--run:hover {
   background: var(--wf-ok-strong);
-  box-shadow: 0 2px 8px rgba(77, 158, 138, 0.35);
+  box-shadow: 0 2px 8px rgba(76, 111, 255, 0.35);
 }
 
 /* Agent color accents on node border */
@@ -3701,7 +3707,7 @@
 }
 
 .workflow-make .wf-tool-call-icon--completed {
-  background: rgba(77, 158, 138, 0.08);
+  background: rgba(76, 111, 255, 0.08);
 }
 
 .workflow-make .wf-tool-call-icon--completed svg {
@@ -3835,7 +3841,7 @@
 }
 
 .workflow-make .wf-tool-call--completed .wf-tool-call-output {
-  border-top-color: rgba(77, 158, 138, 0.12);
+  border-top-color: rgba(76, 111, 255, 0.12);
 }
 
 /* ── Reasoning card (distinct from tool calls) ── */
@@ -4153,12 +4159,12 @@
 }
 
 .workflow-make .wf-detail-diff-line:has(.wf-detail-diff-text--added) {
-  background: rgba(77, 158, 138, 0.06);
+  background: rgba(76, 111, 255, 0.06);
   border-left-color: var(--wf-ok);
 }
 
 .workflow-make .wf-detail-diff-line:has(.wf-detail-diff-text--added):hover {
-  background: rgba(77, 158, 138, 0.09);
+  background: rgba(76, 111, 255, 0.09);
 }
 
 .workflow-make .wf-detail-diff-line:has(.wf-detail-diff-text--added) .wf-detail-diff-num {
@@ -4193,7 +4199,7 @@
   padding: 20px 20px 18px;
   border-bottom: 1px solid var(--wf-line);
   background:
-    radial-gradient(ellipse 120% 80% at 10% 20%, rgba(77, 158, 138, 0.04) 0%, transparent 50%),
+    radial-gradient(ellipse 120% 80% at 10% 20%, rgba(76, 111, 255, 0.04) 0%, transparent 50%),
     linear-gradient(180deg, var(--wf-chip) 0%, transparent 100%);
 }
 
@@ -4420,7 +4426,7 @@
 }
 
 .workflow-make .wf-state-log--recent .wf-state-log-num {
-  color: rgba(117, 120, 197, 0.4);
+  color: rgba(76, 111, 255, 0.4);
 }
 
 /* ── JSON state viewer (refined) ── */
@@ -4980,10 +4986,10 @@
   background: linear-gradient(135deg, rgba(22, 27, 34, 0.95) 0%, rgba(14, 17, 23, 0.7) 100%);
 }
 .workflow-make.dark .wf-root-agent-glow {
-  background: radial-gradient(ellipse at 50% 0%, rgba(86, 179, 160, 0.06) 0%, transparent 60%);
+  background: radial-gradient(ellipse at 50% 0%, rgba(123, 149, 255, 0.06) 0%, transparent 60%);
 }
 .workflow-make.dark .wf-root-agent-icon {
-  background: rgba(86, 179, 160, 0.18);
+  background: rgba(123, 149, 255, 0.18);
   box-shadow:
     0 2px 6px rgba(0, 0, 0, 0.3),
     0 0 0 1px rgba(240, 246, 252, 0.05) inset;
@@ -4994,7 +5000,7 @@
   background: var(--wf-card);
 }
 .workflow-make.dark .wf-node-pulse {
-  background: radial-gradient(ellipse at 30% 50%, rgba(86, 179, 160, 0.06) 0%, transparent 60%);
+  background: radial-gradient(ellipse at 30% 50%, rgba(123, 149, 255, 0.06) 0%, transparent 60%);
 }
 
 /* Top bar */
@@ -5002,14 +5008,14 @@
   background: linear-gradient(180deg, var(--wf-card) 0%, var(--wf-bg) 100%);
 }
 .workflow-make.dark .wf-topbar-brand {
-  background: rgba(86, 179, 160, 0.18);
+  background: rgba(123, 149, 255, 0.18);
 }
 .workflow-make.dark .wf-topbar-icon-btn:hover,
 .workflow-make.dark .wf-topbar-text-btn:hover {
   background: var(--wf-chip);
 }
 .workflow-make.dark .wf-topbar-status--running {
-  background: rgba(86, 179, 160, 0.1);
+  background: rgba(123, 149, 255, 0.1);
 }
 
 /* Theme toggle button */
@@ -5050,8 +5056,8 @@
   border-color: var(--wf-line-strong);
 }
 .workflow-make.dark .wf-chat-input-wrap:focus-within {
-  border-color: rgba(86, 179, 160, 0.3);
-  box-shadow: 0 0 0 2px rgba(86, 179, 160, 0.08);
+  border-color: rgba(123, 149, 255, 0.3);
+  box-shadow: 0 0 0 2px rgba(123, 149, 255, 0.08);
 }
 .workflow-make.dark .wf-chat-input {
   color: var(--wf-ink);
@@ -5159,7 +5165,7 @@
   background: var(--wf-line-strong);
 }
 .workflow-make.dark .wf-split-bar:hover::after {
-  background: rgba(86, 179, 160, 0.3);
+  background: rgba(123, 149, 255, 0.3);
 }
 
 /* Canvas controls */
@@ -5633,10 +5639,10 @@
 }
 
 .workflow-make .wf-serial-line--tx {
-  border-left-color: rgba(77, 158, 138, 0.4);
+  border-left-color: rgba(76, 111, 255, 0.4);
 }
 .workflow-make .wf-serial-line--tx:hover {
-  background: rgba(77, 158, 138, 0.04);
+  background: rgba(76, 111, 255, 0.04);
 }
 
 .workflow-make .wf-serial-line--error {
@@ -5678,7 +5684,7 @@
 }
 
 .workflow-make .wf-serial-badge--tx {
-  background: rgba(77, 158, 138, 0.12);
+  background: rgba(76, 111, 255, 0.12);
   color: var(--wf-ok);
 }
 
@@ -5761,13 +5767,13 @@
 }
 
 .workflow-make .wf-serial-btn--connect {
-  background: rgba(77, 158, 138, 0.12);
+  background: rgba(76, 111, 255, 0.12);
   color: var(--wf-ok);
-  border-color: rgba(77, 158, 138, 0.3);
+  border-color: rgba(76, 111, 255, 0.3);
 }
 
 .workflow-make .wf-serial-btn--connect:hover:not(:disabled) {
-  background: rgba(77, 158, 138, 0.2);
+  background: rgba(76, 111, 255, 0.2);
 }
 
 .workflow-make .wf-serial-btn--disconnect {
@@ -5841,7 +5847,7 @@
 }
 
 .workflow-make .wf-exec-status--running {
-  background: rgba(77, 158, 138, 0.1);
+  background: rgba(76, 111, 255, 0.1);
   color: var(--wf-ok);
 }
 
@@ -5977,13 +5983,13 @@
 }
 
 .workflow-make .wf-exec-btn--start {
-  background: rgba(77, 158, 138, 0.12);
+  background: rgba(76, 111, 255, 0.12);
   color: var(--wf-ok);
-  border-color: rgba(77, 158, 138, 0.3);
+  border-color: rgba(76, 111, 255, 0.3);
 }
 
 .workflow-make .wf-exec-btn--start:hover {
-  background: rgba(77, 158, 138, 0.2);
+  background: rgba(76, 111, 255, 0.2);
 }
 
 .workflow-make .wf-exec-btn--pause {
@@ -6111,7 +6117,7 @@
 }
 
 .workflow-make .wf-plan-step-icon--running {
-  background: rgba(77, 158, 138, 0.1);
+  background: rgba(76, 111, 255, 0.1);
 }
 
 .workflow-make .wf-plan-step-name {
@@ -6200,7 +6206,7 @@
 }
 
 .workflow-make.dark .wf-serial-line--tx {
-  border-left-color: rgba(77, 158, 138, 0.5);
+  border-left-color: rgba(76, 111, 255, 0.5);
 }
 
 .workflow-make.dark .wf-serial-btn {

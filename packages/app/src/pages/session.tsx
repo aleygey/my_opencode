@@ -30,7 +30,6 @@ import { showToast } from "@opencode-ai/ui/toast"
 import { base64Encode, checksum } from "@opencode-ai/shared/util/encode"
 import { useNavigate, useSearchParams } from "@solidjs/router"
 import { NewSessionView, SessionHeader } from "@/components/session"
-import { UnifiedShell } from "@/components/unified-shell"
 import { useComments } from "@/context/comments"
 import { getSessionPrefetch, SESSION_PREFETCH_TTL } from "@/context/global-sync/session-prefetch"
 import { useGlobalSync } from "@/context/global-sync"
@@ -1912,52 +1911,9 @@ export default function Page() {
         </div>
       </Match>
       <Match when={true}>
-        <UnifiedShell
-          module="workflow"
-          header={{
-            parent: "Workflow",
-            title: info()?.title ?? (params.id ? "Session" : "New session"),
-          }}
-          tasks={(() => {
-            // Tasks Drawer = root sessions (master agents) under the
-            // current dir, sorted newest first. The shell renders this
-            // list in the right-edge slide-in drawer with a "+ New task"
-            // button at the bottom.
-            const all = sync.data.session ?? []
-            return all
-              .filter((s) => !s.parentID && !s.time?.archived)
-              .sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0))
-              .slice(0, 60)
-              .map((s) => ({
-                id: s.id,
-                title: s.title || "Untitled",
-                state: "idle" as const,
-                time: s.time?.updated
-                  ? new Date(s.time.updated).toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })
-                  : undefined,
-              }))
-          })()}
-          activeTaskId={params.id}
-          onPickTask={(id) => {
-            const dir = params.dir ?? base64Encode(sdk.directory)
-            navigate(`/${dir}/session/${id}`)
-          }}
-          onCreateTask={() => void newWorkflowTask()}
-        >
         <div class="relative bg-background-base size-full overflow-hidden flex flex-col">
           {sessionSync() ?? ""}
-          {/* SessionHeader is hidden when running inside the UnifiedShell.
-              The shell's Header + Substrip take over its layout role.
-              Migration of its specific features (model picker, agent picker,
-              open-in-editor, sync status) into shell substrip is a
-              follow-up; for now the legacy header is kept mounted so all
-              its handlers / refs / focus state survive — CSS hides it. */}
-          <div style={{ display: "none" }}>
-            <SessionHeader />
-          </div>
+          <SessionHeader />
           <div class="flex-1 min-h-0 flex flex-col md:flex-row">
             <Show when={!isDesktop() && !!params.id}>
               <Tabs value={store.mobileTab} class="h-auto">
@@ -2224,7 +2180,6 @@ export default function Page() {
 
           <TerminalPanel />
         </div>
-        </UnifiedShell>
       </Match>
     </Switch>
   )

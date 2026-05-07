@@ -5653,27 +5653,16 @@ export default function RefinerPage() {
       <div class="rf-stage" data-view={viewMode()}>
         <Show when={viewMode() === "graph"}>
           <div class="rf-main rf-main-graph">
-            <Show
-              when={chainGraph.latest && (chainGraph.latest.experiences?.length ?? 0) > 0}
-              fallback={
-                <div class="rf-list-empty" style={{ padding: "48px 24px" }}>
-                  <h3>{chainGraph.loading ? "Loading graph…" : "暂无图谱数据"}</h3>
-                </div>
-              }
-            >
-              <RuneKnowledgeGraph
-                experiences={runeExperiences()}
-                edges={runeGraphEdges()}
-                pickedId={(() => {
-                  const sel = selection()
-                  if (!sel) return undefined
-                  return sel.id.startsWith("experience:")
-                    ? sel.id.slice("experience:".length)
-                    : sel.id
-                })()}
-                onPick={pickExperienceByID}
-              />
-            </Show>
+            <ExperienceGraphView
+              data={chainGraph.latest}
+              loading={chainGraph.loading && !chainGraph.latest}
+              onPick={pickExperienceByID}
+              activeKind={activeKind()}
+              activeCategory={activeCategory()}
+              activeEdgeKinds={graphEdgeKinds()}
+              toggleEdgeKind={toggleGraphEdgeKind}
+              includeArchived={includeArchived()}
+            />
           </div>
         </Show>
         <Show when={viewMode() === "list"}>
