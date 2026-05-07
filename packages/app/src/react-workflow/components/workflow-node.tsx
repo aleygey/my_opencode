@@ -42,18 +42,19 @@ const statusAccent: Record<NodeStatus, string> = {
   paused:    'var(--wf-warn)',
 }
 
-export function WorkflowNode({ title, type, status, progress, summary, stale, isSelected, onClick, onDoubleClick, onArrowClick }: WorkflowNodeProps) {
+export function WorkflowNode({ title, type, status, progress, stale, isSelected, onClick, onDoubleClick, onArrowClick }: WorkflowNodeProps) {
+  // Slimmed per design: only essentials — type icon, single-line title,
+  // status dot, optional progress bar. Summary chips and inline status
+  // text are removed (they pushed the card into a 3-row, 80+px tall
+  // shape; the design wants a compact single-row card).
   const run = status === 'running'
-  const done = status === 'completed'
-  const fail = status === 'failed'
-  const pause = status === 'paused'
   const cfg = typeConfig[type]
   const TypeIcon = cfg.icon
 
   return (
     <button
       data-wf-card=""
-      className="group w-full text-left wf-node"
+      className="group text-left wf-node wf-node-compact"
       style={{
         borderLeftColor: statusAccent[status],
         borderLeftWidth: 3,
@@ -68,8 +69,8 @@ export function WorkflowNode({ title, type, status, progress, summary, stale, is
       {/* Running pulse overlay */}
       {run && <div className="wf-node-pulse" />}
 
-      <div className="flex items-center gap-2.5">
-        {/* Type icon (compact, color-coded) */}
+      <div className="flex items-center gap-2.5 min-w-0">
+        {/* Type icon (compact, colour-coded) */}
         <div
           className="wf-node-icon"
           style={{ background: `${cfg.color}0d`, color: cfg.color }}
@@ -77,29 +78,20 @@ export function WorkflowNode({ title, type, status, progress, summary, stale, is
           <TypeIcon className="h-3 w-3" strokeWidth={1.8} />
         </div>
 
-        {/* Content */}
+        {/* Title + meta — title single-line, truncated. */}
         <div className="min-w-0 flex-1">
-          <div className="flex items-start gap-2">
-            <h3
-              title={title}
-              className="text-[13px] font-semibold leading-5 tracking-[-0.01em] text-[var(--wf-ink)] min-w-0 flex-1"
-              style={{
-                // Allow up to 2 lines for long titles instead of single-line
-                // truncation that lopped off the most informative tail of LLM-
-                // generated names like "Run integration test suite for new …".
-                display: '-webkit-box',
-                WebkitLineClamp: 2,
-                WebkitBoxOrient: 'vertical',
-                overflow: 'hidden',
-                wordBreak: 'break-word',
-              }}
-            >
-              {title}
-            </h3>
+          <h3
+            title={title}
+            className="text-[12.5px] font-semibold leading-tight tracking-[-0.005em] text-[var(--wf-ink)] truncate"
+          >
+            {title}
+          </h3>
+          <div className="mt-[1px] flex items-center gap-1.5 text-[10px] text-[var(--wf-dim)]">
+            <span style={{ color: cfg.color, fontWeight: 500 }}>{cfg.label}</span>
             {stale && (
               <span
                 title="Graph was edited after this node started — its inputs may be out of date."
-                className="inline-flex flex-shrink-0 items-center rounded-full px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide"
+                className="inline-flex items-center rounded-sm px-1 text-[8.5px] font-semibold uppercase tracking-wider"
                 style={{
                   background: 'color-mix(in srgb, var(--wf-warn) 14%, transparent)',
                   color: 'var(--wf-warn)',
@@ -109,86 +101,49 @@ export function WorkflowNode({ title, type, status, progress, summary, stale, is
               </span>
             )}
           </div>
-          <div className="mt-0.5 flex items-center gap-2 text-[10.5px]">
-            <span
-              className="inline-flex items-center gap-1 font-medium"
-              style={{ color: cfg.color }}
-            >
-              {cfg.label}
-            </span>
-            <span className="text-[var(--wf-line-strong)]">&middot;</span>
-            {/* Status with inline indicator */}
-            <span className="inline-flex items-center gap-1.5">
-              {done ? (
-                <Check className="h-2.5 w-2.5 text-[var(--wf-ok)]" strokeWidth={3} />
-              ) : run ? (
-                <Spin size={10} tone="var(--wf-ok)" line={1.5} />
-              ) : fail ? (
-                <X className="h-2.5 w-2.5 text-[var(--wf-bad)]" strokeWidth={3} />
-              ) : pause ? (
-                <Pause className="h-2.5 w-2.5 text-[var(--wf-warn)]" strokeWidth={2.5} />
-              ) : (
-                <div className="h-[5px] w-[5px] rounded-full bg-[var(--wf-dim)] opacity-50" />
-              )}
-              <span className={[
-                'font-medium capitalize',
-                done ? 'text-[var(--wf-ok)]' :
-                run ? 'text-[var(--wf-ink)]' :
-                fail ? 'text-[var(--wf-bad)]' :
-                pause ? 'text-[var(--wf-warn)]' :
-                'text-[var(--wf-dim)]',
-              ].join(' ')}>
-                {status}
-              </span>
-            </span>
-            {summary && summary.length > 0 && (
-              <>
-                <span className="text-[var(--wf-line-strong)]">&middot;</span>
-                <div className="flex min-w-0 flex-wrap items-center gap-1">
-                  {summary.slice(0, 3).map((item) => (
-                    <span
-                      key={item}
-                      className="inline-flex max-w-[140px] truncate rounded-full bg-[var(--wf-chip)] px-2 py-0.5 text-[10px] font-medium text-[var(--wf-ink-soft)]"
-                      title={item}
-                    >
-                      {item}
-                    </span>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
         </div>
 
-        {/* Progress (compact inline) — only when a real progress value is present.
-            Without real data we intentionally show nothing rather than a misleading default. */}
-        {run && typeof progress === 'number' && (
-          <div className="flex items-center gap-2">
-            <div className="wf-node-progress-track">
-              <div
-                className="wf-progress-fill"
-                data-animated=""
-                style={{ width: `${progress}%` }}
-              />
-            </div>
-            <span className="text-[10px] font-semibold tabular-nums text-[var(--wf-ok)]">{progress}%</span>
-          </div>
-        )}
+        {/* Status indicator — minimal, just a coloured dot or spinner. */}
+        <div className="flex-shrink-0">
+          {run ? (
+            <Spin size={10} tone="var(--wf-ok)" line={1.5} />
+          ) : status === 'completed' ? (
+            <Check className="h-2.5 w-2.5 text-[var(--wf-ok)]" strokeWidth={3} />
+          ) : status === 'failed' ? (
+            <X className="h-2.5 w-2.5 text-[var(--wf-bad)]" strokeWidth={3} />
+          ) : status === 'paused' ? (
+            <Pause className="h-2.5 w-2.5 text-[var(--wf-warn)]" strokeWidth={2.5} />
+          ) : (
+            <div className="h-[5px] w-[5px] rounded-full bg-[var(--wf-dim)] opacity-60" />
+          )}
+        </div>
 
-        {/* Arrow — clickable, opens node detail view */}
+        {/* Arrow — opens node detail view, dim until hover. */}
         <div
           role="button"
           tabIndex={0}
           title="Open node detail"
           onClick={(e) => { e.stopPropagation(); onArrowClick?.() }}
           onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onArrowClick?.() } }}
-          className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-md opacity-60 transition group-hover:opacity-100 hover:!bg-[var(--wf-chip)] cursor-pointer"
+          className="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-md opacity-40 transition group-hover:opacity-90 hover:!bg-[var(--wf-chip)] cursor-pointer"
         >
-          <svg className="h-3 w-3 text-[var(--wf-dim)]" viewBox="0 0 16 16" fill="none">
+          <svg className="h-2.5 w-2.5 text-[var(--wf-dim)]" viewBox="0 0 16 16" fill="none">
             <path d="M6 4L10 8L6 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </div>
       </div>
+
+      {/* Progress bar — slim, full-width strip beneath the row, only on running nodes
+          with a real number. Replaces the previous inline progress chip + percent. */}
+      {run && typeof progress === 'number' && (
+        <div className="wf-node-progress-strip">
+          <div
+            className="wf-progress-fill"
+            data-animated=""
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+      )}
     </button>
   )
 }

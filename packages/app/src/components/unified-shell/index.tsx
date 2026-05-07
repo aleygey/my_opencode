@@ -21,7 +21,6 @@
  * so this file's CSS does not leak into other pages.
  */
 
-import { Icon } from "@opencode-ai/ui/icon"
 import { useNavigate, useParams } from "@solidjs/router"
 import {
   createMemo,
@@ -151,15 +150,43 @@ function writePref(key: string, value: string) {
    Rail
    ────────────────────────────────────────────────────── */
 
+/** Inline SVG icons for each module — match the Claude Design template's
+ *  workflow / knowledge / trace shapes (rather than the spritesheet icons,
+ *  which don't carry the same visual language). 16px viewBox, 1.5px stroke,
+ *  rounded line caps. Stays color-currentColor so the rail's hover/active
+ *  states change icon colour with the row. */
+const ICONS: Record<ShellModule, () => JSX.Element> = {
+  workflow: () => (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="3.5" cy="4" r="1.7" />
+      <circle cx="12.5" cy="4" r="1.7" />
+      <circle cx="3.5" cy="12" r="1.7" />
+      <circle cx="12.5" cy="12" r="1.7" />
+      <path d="M5.2 4h5.6M5.2 12h5.6M3.5 5.7v4.6M12.5 5.7v4.6" />
+    </svg>
+  ),
+  knowledge: () => (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 2.5h7.5a2.5 2.5 0 0 1 2.5 2.5v8.5H5.5A2.5 2.5 0 0 1 3 11V2.5z" />
+      <path d="M3 11a2.5 2.5 0 0 1 2.5-2.5H13" />
+      <path d="M6 5h4M6 7.5h4" />
+    </svg>
+  ),
+  trace: () => (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="8" cy="8" r="6" />
+      <path d="M8 4.5V8l2.2 1.8" />
+    </svg>
+  ),
+}
+
 const MODULE_DEFS: Array<{
   id: ShellModule
   label: string
-  /** Spritesheet icon name (must exist in @opencode-ai/ui/icon). */
-  icon: string
 }> = [
-  { id: "workflow", label: "Workflow", icon: "workflow" },
-  { id: "knowledge", label: "Knowledge", icon: "book-text" },
-  { id: "trace", label: "Trace", icon: "activity" },
+  { id: "workflow", label: "Workflow" },
+  { id: "knowledge", label: "Knowledge" },
+  { id: "trace", label: "Trace" },
 ]
 
 function Rail(props: {
@@ -222,9 +249,7 @@ function Rail(props: {
                   classList={{ "is-on": isOn() }}
                   onClick={() => handleClick(def.id, expandable())}
                 >
-                  <span class="rune-rail-item-ic">
-                    <Icon name={def.icon as any} class="size-4" />
-                  </span>
+                  <span class="rune-rail-item-ic">{ICONS[def.id]()}</span>
                   <span class="rune-rail-item-name">{def.label}</span>
                   <Show when={props.badges?.[def.id]}>
                     <span class="rune-rail-item-badge">{props.badges![def.id]}</span>

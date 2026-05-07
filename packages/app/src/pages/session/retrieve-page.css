@@ -163,10 +163,21 @@
   gap: 8px;
   font-weight: 500;
   font-size: 13px;
+  max-width: 220px;
+  overflow: hidden;
 }
 .rt-pop-label code {
   font-family: var(--font-family-mono);
   font-size: 12px;
+}
+/* Title element shown in the trigger and dropdown rows — truncates
+ * gracefully so long session titles never overflow the trigger row. */
+.rt-pop-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 240px;
+  font-weight: 500;
 }
 
 .rt-current-pill {
@@ -201,17 +212,20 @@
   color: var(--rt-accent);
 }
 
+/* Scrim sits below the menu, above the rune-shell isolated stacking
+ * context. Higher z-index (60+) so the dropdown floats free of any
+ * module body that might create its own stacking context. */
 .rt-pop-scrim {
   position: fixed;
   inset: 0;
-  z-index: 40;
+  z-index: 60;
 }
 
 .rt-pop-menu {
   position: absolute;
   top: calc(100% + 8px);
   left: 0;
-  width: 360px;
+  width: 320px;
   max-height: 420px;
   overflow-y: auto;
   background: var(--rt-surface);
@@ -221,8 +235,13 @@
     0 24px 60px -16px light-dark(oklch(0.20 0.04 235 / 0.20), oklch(0 0 0 / 0.55)),
     0 2px 6px light-dark(oklch(0.20 0.04 235 / 0.05), oklch(0 0 0 / 0.30));
   padding: 6px;
-  z-index: 50;
+  z-index: 70;
   animation: rt-pop-in 0.15s ease-out;
+}
+/* Anchor to the right when the trigger sits in the substrip-right slot —
+ * keeps the menu inside the viewport and away from the main hits cards. */
+.rt-pop-wrap:has(.rt-pop-menu) {
+  position: relative;
 }
 .rt-pop-menu-right {
   right: 0;

@@ -31,6 +31,7 @@ import { useModels } from "@/context/models"
 import { usePlatform } from "@/context/platform"
 import { useSDK } from "@/context/sdk"
 import { useServer } from "@/context/server"
+import { useSync } from "@/context/sync"
 import { stableFetcher } from "@/utils/stable-fetch"
 import "./retrieve-page.css"
 
@@ -323,9 +324,19 @@ function ExternalLink() {
 
 type SessionSummary = {
   id: string
+  /** Session title from sync.data.session — falls back to short id if absent. */
+  title: string
   totalTurns: number
   recallTurns: number
   lastAt: number
+}
+
+/** Truncate to N chars with ellipsis. Cheap helper used in the picker
+ *  to keep both the trigger label and dropdown rows on a single line. */
+function truncate(s: string | undefined, n: number): string {
+  if (!s) return ""
+  if (s.length <= n) return s
+  return s.slice(0, n - 1) + "…"
 }
 
 function SessionPicker(props: {
@@ -353,7 +364,7 @@ function SessionPicker(props: {
         <span class="rt-kicker">SESSION</span>
         <span class="rt-pop-label">
           <Show when={props.current} fallback="—">
-            <code>{props.current!.id.slice(-12)}</code>
+            <span class="rt-pop-title">{truncate(props.current!.title, 24)}</span>
             <Show when={props.urlSessionId === props.current!.id}>
               <span class="rt-current-pill">当前</span>
             </Show>
@@ -383,7 +394,7 @@ function SessionPicker(props: {
                     }}
                   >
                     <span class="rt-pop-opt-ttl">
-                      <code>{s.id.slice(-12)}</code>
+                      <span class="rt-pop-title">{truncate(s.title, 36)}</span>
                       <Show when={props.urlSessionId === s.id}>
                         <span class="rt-current-pill">当前</span>
                       </Show>
@@ -620,6 +631,7 @@ export default function RetrievePage() {
   const navigate = useNavigate()
   const sdk = useSDK()
   const server = useServer()
+  const sync = useSync()
   const platform = usePlatform()
 
   // Selected session id. Defaults to the URL's session, but the user can
@@ -725,7 +737,18 @@ export default function RetrievePage() {
   const allEntries = createMemo(() => logResource()?.entries ?? [])
 
   // Sessions list, derived from log entries — newest activity first.
+  // Title is sourced from sync.data.session (the SDK-pushed list of all
+  // sessions in this dir); falls back to the trailing 8 chars of the id
+  // when no Session record is loaded yet (early page mount race).
+  const sessionTitleById = createMemo(() => {
+    const map = new Map<string, string>()
+    for (const s of sync.data.session ?? []) {
+      if (s.title) map.set(s.id, s.title)
+    }
+    return map
+  })
   const sessions = createMemo<SessionSummary[]>(() => {
+    const titles = sessionTitleById()
     const map = new Map<string, SessionSummary>()
     for (const e of allEntries()) {
       const cur = map.get(e.session_id)
@@ -736,6 +759,7 @@ export default function RetrievePage() {
       } else {
         map.set(e.session_id, {
           id: e.session_id,
+          title: titles.get(e.session_id) ?? `…${e.session_id.slice(-8)}`,
           totalTurns: 1,
           recallTurns: e.picked.length > 0 ? 1 : 0,
           lastAt: e.created_at,
@@ -889,7 +913,7 @@ export default function RetrievePage() {
           ? `${currentSession()!.recallTurns}/${currentSession()!.totalTurns} 轮命中`
           : "Recall",
         meta: currentSession()
-          ? [{ k: "SESS", v: currentSession()!.id.slice(-8) }]
+          ? [{ k: "SESS", v: truncate(currentSession()!.title, 24) }]
           : [],
         actions: (
           <button

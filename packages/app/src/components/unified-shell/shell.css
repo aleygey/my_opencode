@@ -293,11 +293,18 @@
 .rune-shell[data-rail="collapsed"] .rune-rail-item-caret { display: none; }
 .rune-shell[data-rail="collapsed"] .rune-rail-item { padding: 0; justify-content: center; }
 
+/* Sub-items live under their expanded module item. Indented further than
+ * the module label so the hierarchy is visually obvious (without the
+ * indent the sub-item title aligned with the module label and looked
+ * like a sibling). The vertical guide on the left replaces the implicit
+ * "tree" feel — a single 1px line aligned with the module icon column. */
 .rune-shell .rune-rail-subs {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 2px 0 var(--rune-u2) 32px;
+  padding: 2px 0 var(--rune-u2) 18px;
+  margin-left: 26px;
+  border-left: 1px solid var(--rune-line-faint);
 }
 .rune-shell[data-rail="collapsed"] .rune-rail-subs { display: none; }
 
@@ -307,13 +314,27 @@
   gap: var(--rune-u2);
   width: 100%;
   min-height: 26px;
-  padding: 4px var(--rune-u2);
+  padding: 4px 10px;
   border-radius: var(--rune-r-sm);
   color: var(--rune-fg-mute);
   font-size: var(--rune-fs-sm);
   text-align: left;
   transition: background var(--rune-t-fast), color var(--rune-t-fast);
+  position: relative;
 }
+/* Subtle dot prefix for each sub-item — replaces missing icon column
+ * and reinforces "this is a child node" feel. */
+.rune-shell .rune-rail-sub::before {
+  content: "";
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--rune-fg-faint);
+  flex: none;
+  margin-right: 2px;
+  transition: background var(--rune-t-fast);
+}
+.rune-shell .rune-rail-sub.is-on::before { background: var(--rune-ac); }
 .rune-shell .rune-rail-sub:hover { background: var(--rune-bg-inset); color: var(--rune-fg); }
 .rune-shell .rune-rail-sub.is-on { background: var(--rune-bg-raised); color: var(--rune-fg); }
 .rune-shell .rune-rail-sub-title {

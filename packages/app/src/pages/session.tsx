@@ -1872,40 +1872,61 @@ export default function Page() {
   })
 
   // Publish Workflow module chrome to the parent UnifiedShell via the
-  // shell bridge — header (session title), tasks drawer (root sessions
-  // in this dir), and the "+ New task" handler. The bridge is set up by
-  // the parent SessionShellRoute; this side only needs to push.
+  // shell bridge — header (session title), Rail sub-list (tasks under
+  // Workflow), Tasks Drawer (same data, fuller card view), badge
+  // (running task count), + "New task" handler.
   const shell = useShellBridge()
+  const rootSessions = createMemo(() => {
+    const all = sync.data.session ?? []
+    return all
+      .filter((s) => !s.parentID && !s.time?.archived)
+      .sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0))
+      .slice(0, 60)
+  })
+  // Heuristic for "running": session updated within the last 60s. We don't
+  // have an explicit running flag on the session record, so freshness is
+  // the proxy. Stable for the rail badge signal.
+  const runningCount = createMemo(() => {
+    const now = Date.now()
+    return rootSessions().filter((s) => (s.time?.updated ?? 0) > now - 60_000).length
+  })
   createEffect(() => {
     shell.setChrome({
       header: {
         parent: "Workflow",
         title: info()?.title ?? (params.id ? "Session" : "New session"),
       },
-      tasks: (() => {
-        const all = sync.data.session ?? []
-        return all
-          .filter((s) => !s.parentID && !s.time?.archived)
-          .sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0))
-          .slice(0, 60)
-          .map((s) => ({
-            id: s.id,
-            title: s.title || "Untitled",
-            state: "idle" as const,
-            time: s.time?.updated
-              ? new Date(s.time.updated).toLocaleTimeString([], {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })
-              : undefined,
-          }))
-      })(),
+      // Tasks live both in the Rail (compact sub-list under Workflow) and
+      // the right-edge Tasks Drawer (richer cards). The user wanted them
+      // in the rail per the design template; the drawer stays as the
+      // "all tasks at a glance" overlay.
+      railSubs: rootSessions().map((s) => ({
+        id: s.id,
+        title: s.title || "Untitled",
+      })),
+      activeSubId: params.id,
+      onPickSub: (id: string) => {
+        const dir = params.dir ?? base64Encode(sdk.directory)
+        navigate(`/${dir}/session/${id}`)
+      },
+      tasks: rootSessions().map((s) => ({
+        id: s.id,
+        title: s.title || "Untitled",
+        state: "idle" as const,
+        time: s.time?.updated
+          ? new Date(s.time.updated).toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            })
+          : undefined,
+      })),
       activeTaskId: params.id,
       onPickTask: (id: string) => {
         const dir = params.dir ?? base64Encode(sdk.directory)
         navigate(`/${dir}/session/${id}`)
       },
       onCreateTask: () => void newWorkflowTask(),
+      railBadges: runningCount() > 0 ? { workflow: runningCount() } : undefined,
     })
   })
   onCleanup(() => shell.setChrome({}))

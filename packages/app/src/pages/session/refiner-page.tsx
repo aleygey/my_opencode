@@ -5457,6 +5457,13 @@ export default function RefinerPage() {
   // The parent shell consumes this reactively without remounting on rail
   // navigation — the visual effect is in-page module switching.
   const shell = useShellBridge()
+  // Knowledge rail badge = experiences awaiting review (review_status =
+  // "pending"). The badge appears next to "Knowledge" in the rail to
+  // signal "stuff needs your attention".
+  const pendingReviewCount = createMemo(() => {
+    const exps = overview()?.experiences ?? []
+    return exps.filter((e) => (e.review_status ?? "approved") === "pending").length
+  })
   createEffect(() => {
     shell.setChrome({
       header: {
@@ -5482,6 +5489,7 @@ export default function RefinerPage() {
         if (id === "__all") setActiveKind(undefined)
         else setActiveKind(id as Kind)
       },
+      railBadges: pendingReviewCount() > 0 ? { knowledge: pendingReviewCount() } : undefined,
     })
   })
   // Reset chrome when this page unmounts so a stale config doesn't bleed

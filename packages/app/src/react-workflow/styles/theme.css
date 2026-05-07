@@ -702,6 +702,31 @@
   overflow: hidden;
 }
 
+/* Compact node card — used by the design-aligned WorkflowNode. Tighter
+ * padding, capped width so cards stay 240px regardless of available
+ * column width, single-line title. */
+.workflow-make .wf-node-compact {
+  padding: 6px 10px;
+  width: 100%;
+  max-width: 240px;
+  background: var(--wf-card);
+  border: 1px solid var(--wf-line);
+  border-radius: 8px;
+  transition: border-color 140ms ease, box-shadow 180ms ease, transform 140ms ease;
+}
+.workflow-make .wf-node-compact:hover {
+  border-color: var(--wf-line-strong);
+}
+
+/* Slim progress strip below the node row — full width, 2px height. */
+.workflow-make .wf-node-progress-strip {
+  margin-top: 6px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--wf-chip-strong);
+  overflow: hidden;
+}
+
 .workflow-make .wf-node-pulse {
   position: absolute;
   inset: -1px;
