@@ -30,6 +30,7 @@ import { showToast } from "@opencode-ai/ui/toast"
 import { base64Encode, checksum } from "@opencode-ai/shared/util/encode"
 import { useNavigate, useSearchParams } from "@solidjs/router"
 import { NewSessionView, SessionHeader } from "@/components/session"
+import { useShellBridge } from "@/components/unified-shell/shell-bridge"
 import { useComments } from "@/context/comments"
 import { getSessionPrefetch, SESSION_PREFETCH_TTL } from "@/context/global-sync/session-prefetch"
 import { useGlobalSync } from "@/context/global-sync"
@@ -1869,6 +1870,45 @@ export default function Page() {
     if (scrollStateFrame !== undefined) cancelAnimationFrame(scrollStateFrame)
     if (fillFrame !== undefined) cancelAnimationFrame(fillFrame)
   })
+
+  // Publish Workflow module chrome to the parent UnifiedShell via the
+  // shell bridge — header (session title), tasks drawer (root sessions
+  // in this dir), and the "+ New task" handler. The bridge is set up by
+  // the parent SessionShellRoute; this side only needs to push.
+  const shell = useShellBridge()
+  createEffect(() => {
+    shell.setChrome({
+      header: {
+        parent: "Workflow",
+        title: info()?.title ?? (params.id ? "Session" : "New session"),
+      },
+      tasks: (() => {
+        const all = sync.data.session ?? []
+        return all
+          .filter((s) => !s.parentID && !s.time?.archived)
+          .sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0))
+          .slice(0, 60)
+          .map((s) => ({
+            id: s.id,
+            title: s.title || "Untitled",
+            state: "idle" as const,
+            time: s.time?.updated
+              ? new Date(s.time.updated).toLocaleTimeString([], {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })
+              : undefined,
+          }))
+      })(),
+      activeTaskId: params.id,
+      onPickTask: (id: string) => {
+        const dir = params.dir ?? base64Encode(sdk.directory)
+        navigate(`/${dir}/session/${id}`)
+      },
+      onCreateTask: () => void newWorkflowTask(),
+    })
+  })
+  onCleanup(() => shell.setChrome({}))
 
   return (
     <Switch>

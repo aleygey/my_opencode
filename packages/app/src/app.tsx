@@ -9,7 +9,9 @@ import { Font } from "@opencode-ai/ui/font"
 import { Splash } from "@opencode-ai/ui/logo"
 import { ThemeProvider } from "@opencode-ai/ui/theme/context"
 import { MetaProvider } from "@solidjs/meta"
-import { type BaseRouterProps, Navigate, Route, Router } from "@solidjs/router"
+import { type BaseRouterProps, Navigate, Route, Router, useLocation } from "@solidjs/router"
+import { UnifiedShell } from "@/components/unified-shell"
+import { ShellBridgeProvider, useShellBridge } from "@/components/unified-shell/shell-bridge"
 import { QueryClient, QueryClientProvider } from "@tanstack/solid-query"
 import type { PermissionRequest, Session } from "@opencode-ai/sdk/v2/client"
 import { Effect } from "effect"
@@ -81,23 +83,62 @@ if (typeof location === "object" && /\/session(?:\/|$)/.test(location.pathname))
   if (/\/retrieve(?:\/|$)/.test(location.pathname)) void loadRetrievePage()
 }
 
-const SessionRoute = () => (
+/**
+ * SessionShellRoute — parent route under /:dir/session/:id that mounts
+ * SessionProviders + UnifiedShell + ShellBridgeProvider exactly once.
+ *
+ * The three child routes (workflow / refiner / retrieve) render only
+ * their body via `props.children` — the shell stays mounted across rail
+ * navigation, so switching modules feels like in-page tab switching
+ * rather than a page jump. Each child publishes its chrome (header /
+ * substrip / rail subs / tasks) through useShellBridge() into the
+ * ShellBridgeProvider, which the shell consumes via reactive memos.
+ */
+const SessionShellRoute = (props: ParentProps) => (
   <SessionProviders>
-    <Session />
+    <ShellBridgeProvider>
+      <SessionShellMount>{props.children}</SessionShellMount>
+    </ShellBridgeProvider>
   </SessionProviders>
 )
 
-const RefinerRoute = () => (
-  <SessionProviders>
-    <RefinerPage />
-  </SessionProviders>
-)
+const SessionRoute = () => <Session />
+const RefinerRoute = () => <RefinerPage />
+const RetrieveRoute = () => <RetrievePage />
 
-const RetrieveRoute = () => (
-  <SessionProviders>
-    <RetrievePage />
-  </SessionProviders>
-)
+/** Renders the UnifiedShell with chrome props sourced from the shell-bridge.
+ *  The bridge holds a signal updated by each child page; the shell reads
+ *  reactively. The shell mounts ONCE and stays mounted across child route
+ *  changes — the user sees an in-page tab switch instead of a full
+ *  page transition. */
+function SessionShellMount(props: ParentProps) {
+  const bridge = useShellBridge()
+  const location = useLocation()
+  const moduleId = createMemo<"workflow" | "knowledge" | "trace">(() => {
+    const p = location.pathname
+    if (p.endsWith("/refiner")) return "knowledge"
+    if (p.endsWith("/retrieve")) return "trace"
+    return "workflow"
+  })
+  const chrome = bridge.chrome
+  return (
+    <UnifiedShell
+      module={moduleId()}
+      header={chrome().header}
+      substrip={chrome().substrip}
+      railSubs={chrome().railSubs}
+      activeSubId={chrome().activeSubId}
+      onPickSub={chrome().onPickSub}
+      railBadges={chrome().railBadges}
+      tasks={chrome().tasks}
+      activeTaskId={chrome().activeTaskId}
+      onPickTask={chrome().onPickTask}
+      onCreateTask={chrome().onCreateTask}
+    >
+      {props.children}
+    </UnifiedShell>
+  )
+}
 
 const SessionIndexRoute = () => <Navigate href="session" />
 
@@ -881,9 +922,11 @@ export function AppInterface(props: {
                   <Route path="/" component={HomeRoute} />
                   <Route path="/:dir" component={DirectoryLayout}>
                     <Route path="/" component={SessionIndexRoute} />
-                    <Route path="/session/:id/refiner" component={RefinerRoute} />
-                    <Route path="/session/:id/retrieve" component={RetrieveRoute} />
-                    <Route path="/session/:id?" component={SessionRoute} />
+                    <Route path="/session/:id?" component={SessionShellRoute}>
+                      <Route path="/" component={SessionRoute} />
+                      <Route path="/refiner" component={RefinerRoute} />
+                      <Route path="/retrieve" component={RetrieveRoute} />
+                    </Route>
                   </Route>
                 </Dynamic>
               </GlobalSyncProvider>
@@ -909,9 +952,11 @@ export function WorkflowInterface(props: {
               <GlobalSyncProvider>
                 <Router root={(routerProps) => <WorkflowShellProviders>{routerProps.children}</WorkflowShellProviders>}>
                   <Route path="/:dir" component={DirectoryLayout}>
-                    <Route path="/session/:id/refiner" component={RefinerRoute} />
-                    <Route path="/session/:id/retrieve" component={RetrieveRoute} />
-                    <Route path="/session/:id?" component={SessionRoute} />
+                    <Route path="/session/:id?" component={SessionShellRoute}>
+                      <Route path="/" component={SessionRoute} />
+                      <Route path="/refiner" component={RefinerRoute} />
+                      <Route path="/retrieve" component={RetrieveRoute} />
+                    </Route>
                   </Route>
                   <Route path="/*all" component={WorkflowScreen} />
                 </Router>

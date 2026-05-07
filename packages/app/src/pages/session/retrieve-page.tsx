@@ -15,6 +15,7 @@
  */
 
 import {
+  createEffect,
   createMemo,
   createResource,
   createSignal,
@@ -24,7 +25,7 @@ import {
   Show,
 } from "solid-js"
 import { useNavigate, useParams } from "@solidjs/router"
-import { UnifiedShell } from "@/components/unified-shell"
+import { useShellBridge } from "@/components/unified-shell/shell-bridge"
 import { TraceRecall, type TraceRecallEntry } from "@/components/unified-shell/modules"
 import { useModels } from "@/context/models"
 import { usePlatform } from "@/context/platform"
@@ -876,10 +877,13 @@ export default function RetrievePage() {
     </div>
   )
 
-  return (
-    <UnifiedShell
-      module="trace"
-      header={{
+  // Publish chrome config via the shared shell bridge so the parent
+  // UnifiedShell renders our header / substrip / actions without
+  // remounting on rail navigation.
+  const shell = useShellBridge()
+  createEffect(() => {
+    shell.setChrome({
+      header: {
         parent: "Trace",
         title: currentSession()
           ? `${currentSession()!.recallTurns}/${currentSession()!.totalTurns} 轮命中`
@@ -899,19 +903,22 @@ export default function RetrievePage() {
             ← session
           </button>
         ),
-      }}
-      substrip={{
+      },
+      substrip: {
         tabs: [{ id: "recall", name: "Recall", count: sessionEntries().length }],
         active: "recall",
         right: substripRight(),
-      }}
-    >
-      <TraceRecall
-        entries={traceEntries()}
-        activeId={selectedEntry() ?? undefined}
-        onPick={(id) => setSelectedEntry(id)}
-        modelTag={configResource()?.resolved?.modelID}
-      />
-    </UnifiedShell>
+      },
+    })
+  })
+  onCleanup(() => shell.setChrome({}))
+
+  return (
+    <TraceRecall
+      entries={traceEntries()}
+      activeId={selectedEntry() ?? undefined}
+      onPick={(id) => setSelectedEntry(id)}
+      modelTag={configResource()?.resolved?.modelID}
+    />
   )
 }

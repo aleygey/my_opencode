@@ -10,7 +10,7 @@ import {
   Show,
 } from "solid-js"
 import { useNavigate, useParams } from "@solidjs/router"
-import { UnifiedShell } from "@/components/unified-shell"
+import { useShellBridge } from "@/components/unified-shell/shell-bridge"
 import {
   KnowledgeGraph as RuneKnowledgeGraph,
   KnowledgeList as RuneKnowledgeList,
@@ -5453,18 +5453,21 @@ export default function RefinerPage() {
     return items
   })
 
-  return (
-    <UnifiedShell
-      module="knowledge"
-      header={{
+  // Publish chrome config to the parent UnifiedShell via the shell bridge.
+  // The parent shell consumes this reactively without remounting on rail
+  // navigation — the visual effect is in-page module switching.
+  const shell = useShellBridge()
+  createEffect(() => {
+    shell.setChrome({
+      header: {
         parent: "Knowledge",
         title: "Experience library",
         meta: [
           { k: "EXP", v: String(overview()?.status.total_experiences ?? 0) },
           { k: "OBS", v: String(overview()?.status.total_observations ?? 0) },
         ],
-      }}
-      substrip={{
+      },
+      substrip: {
         tabs: [
           { id: "list", name: "List" },
           { id: "graph", name: "Graph" },
@@ -5472,14 +5475,20 @@ export default function RefinerPage() {
         active: viewMode(),
         onTab: (id: string) => setViewMode(id as "list" | "graph"),
         variant: "segmented",
-      }}
-      railSubs={railCategorySubs()}
-      activeSubId={activeKind() ?? "__all"}
-      onPickSub={(id: string) => {
+      },
+      railSubs: railCategorySubs(),
+      activeSubId: activeKind() ?? "__all",
+      onPickSub: (id: string) => {
         if (id === "__all") setActiveKind(undefined)
         else setActiveKind(id as Kind)
-      }}
-    >
+      },
+    })
+  })
+  // Reset chrome when this page unmounts so a stale config doesn't bleed
+  // into the next module that mounts.
+  onCleanup(() => shell.setChrome({}))
+
+  return (
     <div class="refiner-page relative flex size-full min-h-0 flex-col overflow-hidden" data-rune-shell-knowledge="true">
 
       {/* Legacy rf-top toolbar — hidden when running inside UnifiedShell.
@@ -5904,6 +5913,5 @@ export default function RefinerPage() {
         )}
       </Show>
     </div>
-    </UnifiedShell>
   )
 }
