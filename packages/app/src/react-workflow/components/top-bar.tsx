@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import { useCallback, useEffect, useState } from 'react'
-import { Layers3, Moon, PanelLeftOpen, Settings2, Square, Sun, Play, Pause, RotateCcw, Zap, Gauge } from 'lucide-react'
+import { Layers3, Moon, Settings2, Square, Sun, Play, Pause, RotateCcw, Zap, Gauge } from 'lucide-react'
 import { Spin } from './spin'
 import type { TokenStats } from '../app'
 
@@ -101,6 +101,8 @@ interface TopBarProps {
   environment: string
   nodeProgress?: { done: number; total: number }
   tokenStats?: TokenStats
+  /** Deprecated: retained for prop-shape compatibility but no longer used —
+   *  the legacy task drawer was removed; tasks live in the unified shell rail. */
   onTaskSidebarToggle?: () => void
   // Detail / Session buttons removed in favour of clicking the card arrow
   // (which now opens the per-node session view in-place). They were redundant
@@ -131,7 +133,6 @@ export function TopBar({
   environment,
   nodeProgress,
   tokenStats,
-  onTaskSidebarToggle,
   onModelClick,
   onRefinerClick,
   onRetrieveClick,
@@ -159,18 +160,7 @@ export function TopBar({
 
       {/* Left cluster */}
       <div className="flex items-center gap-2">
-        {onTaskSidebarToggle && (
-          <>
-            <button
-              onClick={onTaskSidebarToggle}
-              className="wf-topbar-icon-btn"
-              aria-label="Toggle sidebar"
-            >
-              <PanelLeftOpen className="h-4 w-4" strokeWidth={1.6} />
-            </button>
-            <div className="wf-topbar-sep" />
-          </>
-        )}
+        {/* (Sidebar toggle removed — tasks live in the unified shell rail.) */}
 
         {/* Brand mark + title */}
         <div className="flex items-center gap-3">

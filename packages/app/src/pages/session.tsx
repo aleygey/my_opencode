@@ -31,6 +31,9 @@ import { base64Encode, checksum } from "@opencode-ai/shared/util/encode"
 import { useNavigate, useSearchParams } from "@solidjs/router"
 import { NewSessionView, SessionHeader } from "@/components/session"
 import { useShellBridge } from "@/components/unified-shell/shell-bridge"
+import { RuneModelPicker } from "@/components/unified-shell/model-picker"
+import { getSessionContextMetrics } from "@/components/session/session-context-metrics"
+import { useProviders } from "@/hooks/use-providers"
 import { useComments } from "@/context/comments"
 import { getSessionPrefetch, SESSION_PREFETCH_TTL } from "@/context/global-sync/session-prefetch"
 import { useGlobalSync } from "@/context/global-sync"
@@ -324,6 +327,7 @@ export default function Page() {
   const prompt = usePrompt()
   const comments = useComments()
   const terminal = useTerminal()
+  const providers = useProviders()
   const [searchParams, setSearchParams] = useSearchParams<{ prompt?: string }>()
   const { params, sessionKey, tabs, view } = useSessionLayout()
   const workflowRuntime = createWorkflowRuntime()
@@ -576,6 +580,38 @@ export default function Page() {
   // workflow root session in the current directory and jump to it, keeping
   // the user inside the react-workflow graph view instead of dropping them
   // into the legacy NewSessionView composer.
+  /* Delete a workflow root session (and its workflow). Called from the
+   * Rail sub-item × button or the Tasks drawer × button; the shell
+   * already prompts the user for confirm before invoking this so we
+   * just dispatch the delete and clean up navigation when the deleted
+   * task was the active one. */
+  const deleteWorkflowTask = async (sessionId: string) => {
+    try {
+      // The workflow service exposes DELETE /workflow/session/:id which
+      // tears down the workflow + root session in one call. SDK doesn't
+      // expose a typed binding for it, so we hit the route directly.
+      const url = new URL(`/workflow/session/${sessionId}`, location.origin)
+      const res = await fetch(url, { method: "DELETE" })
+      if (!res.ok) throw new Error(`DELETE failed: ${res.status}`)
+    } catch (err) {
+      console.error("delete task failed", err)
+      return
+    }
+    // Force a sync tick so the deleted session disappears from
+    // sync.data.session immediately rather than waiting for the next
+    // background poll.
+    void sync.session.sync(sessionId, { force: true }).catch(() => undefined)
+    // If the deleted task was the active one, navigate to the next
+    // remaining root session (or the project's default).
+    if (params.id === sessionId) {
+      const remaining = (sync.data.session ?? []).find(
+        (s) => !s.parentID && s.id !== sessionId,
+      )
+      const slug = params.dir ?? base64Encode(sdk.directory)
+      navigate(remaining ? `/${slug}/session/${remaining.id}` : `/${slug}`)
+    }
+  }
+
   const newWorkflowTask = async () => {
     try {
       const session = await sdk.client.session.create({ title: "Workflow" }).then((res) => res.data)
@@ -670,6 +706,17 @@ export default function Page() {
     mobileTab: "session" as "session" | "changes",
     changes: "session" as "session" | "turn",
     workflow: "graph" as "graph" | "session",
+    /* Design-spec: Workflow module body switches between Canvas / Chat
+     * / Events + dynamically-added node / sand-table tabs (substrip).
+     * Default to Canvas.
+     *   - "canvas" / "chat" / "events" — fixed tabs
+     *   - "node:<id>"                  — opened from canvas node click
+     *   - "sand:<id>"                  — opened from sand-table node click
+     */
+    workflowTab: "canvas" as string,
+    /** Set of currently-opened node/sand-table tab ids. Each id encodes
+     *  its kind via the prefix ("node:" / "sand:"). Order = insertion. */
+    workflowOpenTabs: [] as Array<{ id: string; kind: "node" | "sand"; title: string }>,
     newSessionWorktree: "main",
     deferRender: false,
   })
@@ -1876,6 +1923,52 @@ export default function Page() {
   // Workflow), Tasks Drawer (same data, fuller card view), badge
   // (running task count), + "New task" handler.
   const shell = useShellBridge()
+
+  // Listen for "open node in tab" events fired from the React workflow
+  // canvas (when the user clicks a node's drill-in arrow). We push the
+  // node into `workflowOpenTabs` (so the substrip renders a closable
+  // tab card for it) and switch the active tab to that node. Idempotent:
+  // re-opening an already-open node just reactivates its tab.
+  onMount(() => {
+    const onOpen = (ev: Event) => {
+      const ce = ev as CustomEvent<{ id: string; kind: "node" | "sand"; title: string }>
+      const d = ce.detail
+      if (!d?.id) return
+      const tabId = `${d.kind}:${d.id}`
+      const existing = store.workflowOpenTabs.find((t) => t.id === d.id && t.kind === d.kind)
+      if (!existing) {
+        setStore("workflowOpenTabs", (prev) => [...prev, { id: d.id, kind: d.kind, title: d.title }])
+      }
+      setStore("workflowTab", tabId)
+    }
+    window.addEventListener("rune:wf:open-node", onOpen as EventListener)
+    onCleanup(() => window.removeEventListener("rune:wf:open-node", onOpen as EventListener))
+  })
+
+  /* Bridge the unified-shell substrip tab choice (`store.workflowTab`)
+   * onto the legacy `store.workflow` view ("graph" | "session"). The
+   * existing Match conditions at the bottom of this component still key
+   * off `store.workflow`; this keeps both values in lockstep so clicking
+   * "Chat" / "Canvas" in the shell drives the body switch.
+   *
+   * Also: if a session lacks a workflow snapshot (TUI-created session,
+   * orchestrator pre-plan), force the active tab to "chat" — Canvas /
+   * Events have nothing meaningful to render in that case, so leaving
+   * the user stuck on "Canvas" with an empty body was confusing. */
+  createEffect(() => {
+    const tab = store.workflowTab
+    if (tab === "chat") setStore("workflow", "session")
+    else if (tab === "canvas" || tab === "events" || tab.startsWith("node:") || tab.startsWith("sand:")) {
+      setStore("workflow", "graph")
+    }
+  })
+  createEffect(() => {
+    if (!params.id) return
+    if (workflowReady() && !workflowSnapshot()) {
+      const t = store.workflowTab
+      if (t === "canvas" || t === "events") setStore("workflowTab", "chat")
+    }
+  })
   const rootSessions = createMemo(() => {
     const all = sync.data.session ?? []
     return all
@@ -1891,10 +1984,161 @@ export default function Page() {
     return rootSessions().filter((s) => (s.time?.updated ?? 0) > now - 60_000).length
   })
   createEffect(() => {
+    const snap = workflowSnapshot()
+    const tone = snap?.workflow.status?.toLowerCase() ?? ""
+    const isRunning = tone.includes("run")
+    const isPaused = tone.includes("pause") || tone.includes("wait")
+    const totalNodes = snap?.nodes?.length ?? 0
+    const doneNodes =
+      snap?.nodes?.filter((n) => /(done|complete|success)/i.test(n.status)).length ?? 0
+    const stageLabel = snap?.runtime?.phase ?? snap?.workflow.status ?? "idle"
     shell.setChrome({
       header: {
         parent: "Workflow",
         title: info()?.title ?? (params.id ? "Session" : "New session"),
+        // Design-spec: STAGE / NODES meta after the breadcrumb.
+        meta: [
+          { k: "STAGE", v: String(stageLabel) },
+          { k: "NODES", v: `${doneNodes}/${totalNodes}` },
+          ...(() => {
+            // Master-session token usage — same metric the per-session
+            // Context tab uses, surfaced here so the user can watch
+            // context fill up at a glance without leaving the workflow.
+            try {
+              const msgs = sync.data.message[params.id ?? ""] ?? []
+              if (msgs.length === 0) return []
+              const metrics = getSessionContextMetrics(msgs, providers.all() as never)
+              const ctx = metrics.context
+              if (!ctx) return []
+              const fmt = (n: number) =>
+                n >= 1_000_000 ? `${(n / 1_000_000).toFixed(2)}M`
+                : n >= 1_000 ? `${(n / 1_000).toFixed(1)}K`
+                : String(n)
+              const items: Array<{ k: string; v: string }> = []
+              items.push({ k: "CTX", v: ctx.limit ? `${fmt(ctx.total)}/${fmt(ctx.limit)}` : fmt(ctx.total) })
+              if (ctx.input != null) items.push({ k: "IN", v: fmt(ctx.input) })
+              if (ctx.output != null) items.push({ k: "OUT", v: fmt(ctx.output) })
+              return items
+            } catch {
+              return []
+            }
+          })(),
+        ],
+        // Design-spec: Replay + Pause/Run buttons before the Tasks toggle.
+        // The runtime panel exposes these via the workflow runtime; we
+        // dispatch via a global event the WorkflowRuntimePanel listens for,
+        // since session.tsx doesn't directly hold the run handlers.
+        actions: (
+          <>
+            <button
+              type="button"
+              class="rune-btn"
+              data-size="sm"
+              onClick={() =>
+                window.dispatchEvent(new CustomEvent("rune:wf:replay"))
+              }
+              title="Replay workflow from start"
+            >
+              ↻ Replay
+            </button>
+            <Show
+              when={isRunning}
+              fallback={
+                <button
+                  type="button"
+                  class="rune-btn"
+                  data-size="sm"
+                  data-variant="primary"
+                  onClick={() =>
+                    window.dispatchEvent(new CustomEvent("rune:wf:run"))
+                  }
+                  title={isPaused ? "Resume workflow" : "Run workflow"}
+                >
+                  ▶ {isPaused ? "Resume" : "Run"}
+                </button>
+              }
+            >
+              <button
+                type="button"
+                class="rune-btn"
+                data-size="sm"
+                data-variant="primary"
+                onClick={() =>
+                  window.dispatchEvent(new CustomEvent("rune:wf:pause"))
+                }
+                title="Pause workflow"
+              >
+                ⏸ Pause
+              </button>
+            </Show>
+          </>
+        ),
+      },
+      // Design-spec: Canvas / Chat / Events fixed tabs + browser-tab-style
+      // dynamic tabs for each opened node / sand-table session. Click ×
+      // on a dynamic tab to close it; the body switches back to the
+      // previous fixed tab (canvas) when the active tab is closed.
+      //
+      // For TUI / master pre-plan sessions (no workflow snapshot yet),
+      // only the Chat tab is meaningful — Canvas / Events would render
+      // an empty body. Hide them in that case so the substrip stays
+      // honest about what the session can show.
+      substrip: {
+        tabs: [
+          ...(snap ? [{ id: "canvas", name: "Canvas" }] : []),
+          { id: "chat", name: "Chat" },
+          ...(snap ? [{ id: "events", name: "Events", count: snap?.events?.length }] : []),
+          ...store.workflowOpenTabs.map((t) => ({
+            id: `${t.kind}:${t.id}`,
+            name: t.title.length > 18 ? `${t.title.slice(0, 16)}…` : t.title,
+            onClose: () => {
+              setStore(
+                "workflowOpenTabs",
+                store.workflowOpenTabs.filter((x) => x.id !== t.id),
+              )
+              if (store.workflowTab === `${t.kind}:${t.id}`) {
+                setStore("workflowTab", snap ? "canvas" : "chat")
+              }
+            },
+          })),
+        ],
+        active: store.workflowTab,
+        onTab: (id: string) => setStore("workflowTab", id),
+        // Design-spec right cluster: search input (200px) + model picker
+        // chip (state dot + label + chevron) + theme toggle. Search is a
+        // pass-through that dispatches a global event for now; downstream
+        // can listen and apply a filter. Model picker re-uses the unified
+        // RuneModelPicker so it matches the refiner / retrieve modules.
+        right: (
+          <div class="rune-row rune-gap-2">
+            <div class="rune-search-input">
+              <span class="rune-search-icon" aria-hidden>
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="7" cy="7" r="4.5" />
+                  <path d="M11 11l3 3" />
+                </svg>
+              </span>
+              <input
+                type="text"
+                placeholder="search…"
+                onInput={(e) =>
+                  window.dispatchEvent(
+                    new CustomEvent("rune:wf:search", { detail: e.currentTarget.value }),
+                  )
+                }
+              />
+            </div>
+            <RuneModelPicker
+              current={(() => {
+                const m = local.model.current()
+                return m ? { providerID: m.providerID, modelID: m.id } : undefined
+              })()}
+              onChange={(m) => {
+                local.model.set({ providerID: m.providerID, modelID: m.modelID } as never)
+              }}
+            />
+          </div>
+        ),
       },
       // Tasks live both in the Rail (compact sub-list under Workflow) and
       // the right-edge Tasks Drawer (richer cards). The user wanted them
@@ -1903,6 +2147,7 @@ export default function Page() {
       railSubs: rootSessions().map((s) => ({
         id: s.id,
         title: s.title || "Untitled",
+        onDelete: () => void deleteWorkflowTask(s.id),
       })),
       activeSubId: params.id,
       onPickSub: (id: string) => {
@@ -1927,6 +2172,27 @@ export default function Page() {
       },
       onCreateTask: () => void newWorkflowTask(),
       railBadges: runningCount() > 0 ? { workflow: runningCount() } : undefined,
+      // Bottom status bar — design spec puts the live-state pill here
+      // (READY/RUNNING) along with session id, model, ctx and graph rev.
+      status: (() => {
+        const snap = workflowSnapshot()
+        const tone = snap?.workflow.status?.toLowerCase() ?? ""
+        const state: "ready" | "running" | "paused" | "failed" = tone.includes("run")
+          ? "running"
+          : tone.includes("pause") || tone.includes("wait")
+            ? "paused"
+            : tone.includes("fail")
+              ? "failed"
+              : "ready"
+        const m = local.model.current()
+        const modelLabel = m ? `${m.providerID}/${m.id}` : undefined
+        return {
+          state,
+          sessionId: params.id,
+          model: modelLabel,
+          rev: snap?.workflow.graph_rev,
+        }
+      })(),
     })
   })
   onCleanup(() => shell.setChrome({}))
@@ -1968,6 +2234,7 @@ export default function Page() {
             onSelectRootView={selectWorkflowRoot}
             onNewTask={() => void newWorkflowTask()}
             onWorkspaceClick={pickWorkspace}
+            workflowTab={store.workflowTab}
           />
         </div>
       </Match>
@@ -2082,6 +2349,24 @@ export default function Page() {
                             />
                           </Match>
                         </Switch>
+                      </Match>
+                      <Match when={workflowSnapshot() && store.workflowTab !== "chat"}>
+                        {/* Child node session (or non-root view) under a
+                         * workflow — when the user picks Canvas / Events
+                         * (or a dynamic node:/sand: tab) from the substrip,
+                         * render the workflow runtime panel inside the
+                         * standard layout (composer stays at the bottom).
+                         * Without this branch the user was stuck on the
+                         * legacy MessageTimeline regardless of tab choice. */}
+                        <WorkflowRuntimePanel
+                          snapshot={workflowSnapshot()!}
+                          currentSessionID={params.id}
+                          onSelectSession={selectWorkflowSession}
+                          onSelectRootView={selectWorkflowRoot}
+                          onNewTask={() => void newWorkflowTask()}
+                          onWorkspaceClick={pickWorkspace}
+                          workflowTab={store.workflowTab}
+                        />
                       </Match>
                       <Match when={true}>
                         <Show when={lastUserMessage()}>

@@ -10,7 +10,8 @@ interface WorkflowNodeProps {
   title: string
   type: NodeType
   status: NodeStatus
-  session: string
+  /** Session id once node has started (undefined for unstarted nodes). */
+  session?: string
   progress?: number
   summary?: string[]
   /**
@@ -19,6 +20,10 @@ interface WorkflowNodeProps {
    * inputs. Surfaced as a small "stale" badge.
    */
   stale?: boolean
+  /** Live slave-agent status — most recent reasoning / tool / event line.
+   *  Renders as a marquee-scrolling footer on running nodes so the user
+   *  can watch what the agent is doing without opening its session. */
+  liveStatus?: string
   isSelected: boolean
   onClick: () => void
   onDoubleClick?: () => void
@@ -42,108 +47,110 @@ const statusAccent: Record<NodeStatus, string> = {
   paused:    'var(--wf-warn)',
 }
 
-export function WorkflowNode({ title, type, status, progress, stale, isSelected, onClick, onDoubleClick, onArrowClick }: WorkflowNodeProps) {
-  // Slimmed per design: only essentials — type icon, single-line title,
-  // status dot, optional progress bar. Summary chips and inline status
-  // text are removed (they pushed the card into a 3-row, 80+px tall
-  // shape; the design wants a compact single-row card).
+export function WorkflowNode({ id, title, type, status, summary, stale, liveStatus, isSelected, onClick, onDoubleClick, onArrowClick }: WorkflowNodeProps) {
+  /* Compact design-spec node card:
+   *   Header: status dot + kind icon + KIND chip (no session id; the user
+   *           said the long uuid was visual noise)
+   *   Body  : title (truncated, single line)
+   *   Footer: scrolling marquee of the node's CURRENT activity — for
+   *           sand-table this is "plan ..." / "evaluate ..."; for coding
+   *           it's "read ..." / "edit ..."; otherwise the workflow status.
+   *           Always rendered (even on idle) so users always know what
+   *           the node is doing or waiting for.
+   */
   const run = status === 'running'
   const cfg = typeConfig[type]
   const TypeIcon = cfg.icon
-
+  const stateClass =
+    status === 'completed' ? 'is-done'
+    : status === 'failed' ? 'is-err'
+    : status === 'paused' ? 'is-warn'
+    : run ? 'is-running'
+    : ''
+  // Status line shown in the bottom marquee. Priority:
+  //   1. live event line forwarded by workflow-panel.tsx (latest agent
+  //      reasoning / tool call)
+  //   2. first summary line (e.g. command for shell nodes)
+  //   3. workflow status verb (running / completed / pending / …)
+  const statusLine =
+    liveStatus
+    ?? summary?.[0]
+    ?? (run ? `running · ${cfg.label.toLowerCase()}`
+       : status === 'completed' ? `completed · ${cfg.label.toLowerCase()}`
+       : status === 'failed' ? `failed · ${cfg.label.toLowerCase()}`
+       : status === 'paused' ? `paused · ${cfg.label.toLowerCase()}`
+       : `pending · ${cfg.label.toLowerCase()}`)
+  // Avoid suppressing id usage warning — id is intentionally not rendered.
+  void id
   return (
     <button
       data-wf-card=""
-      className="group text-left wf-node wf-node-compact"
-      style={{
-        borderLeftColor: statusAccent[status],
-        borderLeftWidth: 3,
-        boxShadow: isSelected
-          ? (run ? 'var(--wf-shadow-glow)' : 'var(--wf-shadow-md)')
-          : undefined,
-        transform: isSelected ? 'translateY(-1px)' : undefined,
-      }}
+      className={`wf-node ${stateClass} ${isSelected ? 'is-on' : ''}`}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
     >
-      {/* Running pulse overlay */}
-      {run && <div className="wf-node-pulse" />}
-
-      <div className="flex items-center gap-2.5 min-w-0">
-        {/* Type icon (compact, colour-coded) */}
-        <div
-          className="wf-node-icon"
-          style={{ background: `${cfg.color}0d`, color: cfg.color }}
-        >
-          <TypeIcon className="h-3 w-3" strokeWidth={1.8} />
-        </div>
-
-        {/* Title + meta — title single-line, truncated. */}
-        <div className="min-w-0 flex-1">
-          <h3
-            title={title}
-            className="text-[12.5px] font-semibold leading-tight tracking-[-0.005em] text-[var(--wf-ink)] truncate"
-          >
-            {title}
-          </h3>
-          <div className="mt-[1px] flex items-center gap-1.5 text-[10px] text-[var(--wf-dim)]">
-            <span style={{ color: cfg.color, fontWeight: 500 }}>{cfg.label}</span>
-            {stale && (
-              <span
-                title="Graph was edited after this node started — its inputs may be out of date."
-                className="inline-flex items-center rounded-sm px-1 text-[8.5px] font-semibold uppercase tracking-wider"
-                style={{
-                  background: 'color-mix(in srgb, var(--wf-warn) 14%, transparent)',
-                  color: 'var(--wf-warn)',
-                }}
-              >
-                stale
-              </span>
-            )}
-          </div>
-        </div>
-
-        {/* Status indicator — minimal, just a coloured dot or spinner. */}
-        <div className="flex-shrink-0">
-          {run ? (
-            <Spin size={10} tone="var(--wf-ok)" line={1.5} />
-          ) : status === 'completed' ? (
-            <Check className="h-2.5 w-2.5 text-[var(--wf-ok)]" strokeWidth={3} />
-          ) : status === 'failed' ? (
-            <X className="h-2.5 w-2.5 text-[var(--wf-bad)]" strokeWidth={3} />
-          ) : status === 'paused' ? (
-            <Pause className="h-2.5 w-2.5 text-[var(--wf-warn)]" strokeWidth={2.5} />
-          ) : (
-            <div className="h-[5px] w-[5px] rounded-full bg-[var(--wf-dim)] opacity-60" />
-          )}
-        </div>
-
-        {/* Arrow — opens node detail view, dim until hover. */}
-        <div
-          role="button"
-          tabIndex={0}
-          title="Open node detail"
-          onClick={(e) => { e.stopPropagation(); onArrowClick?.() }}
-          onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onArrowClick?.() } }}
-          className="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-md opacity-40 transition group-hover:opacity-90 hover:!bg-[var(--wf-chip)] cursor-pointer"
-        >
-          <svg className="h-2.5 w-2.5 text-[var(--wf-dim)]" viewBox="0 0 16 16" fill="none">
-            <path d="M6 4L10 8L6 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </div>
+      <div className="wf-node-hd">
+        <span
+          className="wf-node-hd-dot"
+          data-tone={
+            status === 'completed' ? 'ok'
+            : status === 'failed' ? 'err'
+            : status === 'paused' ? 'warn'
+            : run ? 'run'
+            : 'idle'
+          }
+          aria-hidden
+        />
+        <TypeIcon className="wf-node-hd-icon" strokeWidth={1.6} />
+        <span className="wf-node-hd-kind">{cfg.label}</span>
       </div>
-
-      {/* Progress bar — slim, full-width strip beneath the row, only on running nodes
-          with a real number. Replaces the previous inline progress chip + percent. */}
-      {run && typeof progress === 'number' && (
-        <div className="wf-node-progress-strip">
-          <div
-            className="wf-progress-fill"
-            data-animated=""
-            style={{ width: `${progress}%` }}
-          />
-        </div>
+      <div className="wf-node-bd">
+        <div className="wf-node-name" title={title}>{title}</div>
+      </div>
+      {stale && (
+        <span className="wf-node-stale" title="Graph was edited after this node started — inputs may be out of date.">stale</span>
       )}
+      {/* Drill-in arrow — opens this node's session in a substrip tab. */}
+      <button
+        type="button"
+        className="wf-node-open"
+        title="Open node session"
+        aria-label="Open node session"
+        onClick={(e) => { e.stopPropagation(); onArrowClick?.() }}
+      >
+        <svg width="11" height="11" viewBox="0 0 16 16" fill="none">
+          <path d="M6 4L10 8L6 12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+      {/* Status icon, top-right corner overlay (only when not idle). */}
+      {(status === 'completed' || status === 'failed' || status === 'paused') && (
+        <span className="wf-node-status-icon">
+          {status === 'completed' && <Check className="h-3 w-3" strokeWidth={2.5} />}
+          {status === 'failed' && <X className="h-3 w-3" strokeWidth={2.5} />}
+          {status === 'paused' && <Pause className="h-3 w-3" strokeWidth={2} />}
+        </span>
+      )}
+      {run && (
+        <span className="wf-node-spin">
+          <Spin size={10} tone="var(--wf-ok)" line={1.5} />
+        </span>
+      )}
+      {/* Always-visible scrolling status footer. The text duplicates so
+        * the marquee loops seamlessly; CSS handles the wrap-around. */}
+      <div className="wf-node-live" data-tone={
+        status === 'completed' ? 'ok'
+        : status === 'failed' ? 'err'
+        : status === 'paused' ? 'warn'
+        : run ? 'run'
+        : 'idle'
+      } aria-live="polite">
+        <span className="wf-node-live-marquee" data-text={statusLine}>
+          <span className="wf-node-live-track">{statusLine}　·　{statusLine}　·　</span>
+        </span>
+      </div>
+      {/* Edge dot ports (for edge connection rendering). */}
+      <span className="wf-node-port wf-node-port-left" aria-hidden />
+      <span className="wf-node-port wf-node-port-right" aria-hidden />
     </button>
   )
 }

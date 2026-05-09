@@ -60,6 +60,16 @@ type Props = {
   onBack: () => void
   onStop?: () => void
   onSend: (text: string) => void
+  /** Per-role inner-session messages — the planner/evaluator agents
+   *  each run their own inner session with reasoning + tool calls
+   *  before posting back to the sand-table thread. The bottom-left
+   *  stream pane renders these live so the user can watch the
+   *  current agent think. Keyed by role; missing key means no
+   *  inner session yet. */
+  innerMessages?: {
+    planner?: Array<{ id: string; role: string; text?: string; tool?: string; out?: string; t?: string; dur?: string; stream?: boolean }>
+    evaluator?: Array<{ id: string; role: string; text?: string; tool?: string; out?: string; t?: string; dur?: string; stream?: boolean }>
+  }
 }
 
 const roleTitle: Record<Role, string> = {
@@ -132,6 +142,160 @@ function RoundsIndicator({ round, max }: { round: number; max: number }) {
         {round}
         <span className="text-[var(--wf-dim)]">/{max}</span>
       </span>
+    </div>
+  )
+}
+
+/* ── Inner-session live stream pane (bottom-left) ──
+ * Shows the current planner or evaluator agent's INNER session in
+ * real time — including reasoning, tool calls, and streamed text — so
+ * the user can watch the agent think before its output lands in the
+ * main discussion thread. Switches between planner / evaluator via
+ * a two-button segmented bar at the top. */
+function InnerStreamPane({
+  participants,
+  innerMessages,
+  activeRole,
+}: {
+  participants: {
+    planner?: { sessionID: string; model: string }
+    evaluator?: { sessionID: string; model: string }
+  }
+  innerMessages?: Props["innerMessages"]
+  activeRole: "planner" | "evaluator"
+}) {
+  const [role, setRole] = useState<"planner" | "evaluator">(activeRole)
+  // Auto-follow: when the externally-active role changes (e.g. evaluator
+  // takes over from planner mid-round), switch the stream view to it
+  // so the user always sees the freshest agent.
+  const lastActive = useRef(activeRole)
+  useEffect(() => {
+    if (activeRole !== lastActive.current) {
+      setRole(activeRole)
+      lastActive.current = activeRole
+    }
+  }, [activeRole])
+  const messages = role === "planner"
+    ? (innerMessages?.planner ?? [])
+    : (innerMessages?.evaluator ?? [])
+  const part = participants[role]
+  const tone = roleTone[role]
+  const RoleIcon = tone.icon
+  const end = useRef<HTMLDivElement>(null)
+  // Auto-scroll on new messages.
+  useEffect(() => {
+    end.current?.scrollIntoView({ behavior: "smooth", block: "end" })
+  }, [messages.length, role])
+
+  return (
+    <div className="wf-sand-inner-stream">
+      <div className="wf-sand-inner-stream-tabs" role="tablist">
+        {(["planner", "evaluator"] as const).map((r) => {
+          const p = participants[r]
+          if (!p) return null
+          const t = roleTone[r]
+          const Icon = t.icon
+          return (
+            <button
+              key={r}
+              type="button"
+              role="tab"
+              aria-selected={role === r}
+              className="wf-sand-inner-stream-tab"
+              data-active={role === r ? "true" : "false"}
+              onClick={() => setRole(r)}
+            >
+              <span
+                className="flex h-4 w-4 items-center justify-center rounded-md"
+                style={{ background: t.bg, color: t.text }}
+              >
+                <Icon className="h-2.5 w-2.5" strokeWidth={1.8} />
+              </span>
+              {roleTitle[r]}
+            </button>
+          )
+        })}
+      </div>
+      <div className="wf-sand-inner-stream-meta" title={part?.sessionID}>
+        <RoleIcon className="h-3 w-3" strokeWidth={1.8} style={{ color: tone.text }} />
+        <span className="font-mono">{part?.model ?? "—"}</span>
+        <span className="ml-auto font-mono text-[10px]">
+          {part ? `${part.sessionID.slice(0, 8)}…` : "—"}
+        </span>
+      </div>
+      <div className="wf-sand-inner-stream-body">
+        {messages.length === 0 ? (
+          <div className="wf-sand-inner-stream-empty">
+            <Spin size={11} line={1.6} tone={tone.text} />
+            <span>Waiting for {roleTitle[role].toLowerCase()} to start thinking…</span>
+          </div>
+        ) : (
+          <>
+            {messages.map((m) => (
+              <InnerStreamMessage key={m.id} m={m} tone={tone} />
+            ))}
+            <div ref={end} />
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+type InnerMsg = {
+  id: string
+  role: string
+  text?: string
+  tool?: string
+  out?: string
+  t?: string
+  dur?: string
+  stream?: boolean
+}
+
+function InnerStreamMessage({
+  m,
+  tone,
+}: {
+  m: InnerMsg
+  tone: { text: string; bubble: string; bubbleBorder: string }
+}) {
+  if (m.role === "tool") {
+    return (
+      <div className="wf-sand-inner-row">
+        <span className="wf-sand-inner-role wf-sand-inner-role-tool">tool</span>
+        <span className="wf-sand-inner-tool-cmd">{m.tool ?? "(?)"}</span>
+        {m.dur && <span className="wf-sand-inner-meta">{m.dur}</span>}
+        {m.t && <span className="wf-sand-inner-meta">{m.t}</span>}
+        {m.out && (
+          <pre className="wf-sand-inner-tool-out">{m.out.slice(0, 300)}</pre>
+        )}
+      </div>
+    )
+  }
+  if (m.role === "reason" || m.role === "thinking") {
+    return (
+      <div className="wf-sand-inner-row">
+        <span className="wf-sand-inner-role wf-sand-inner-role-reason">thinking</span>
+        {m.dur && <span className="wf-sand-inner-meta">{m.dur}</span>}
+        <div className="wf-sand-inner-reason">{m.text}</div>
+      </div>
+    )
+  }
+  // agent / system / default
+  return (
+    <div className="wf-sand-inner-row">
+      <span
+        className="wf-sand-inner-role wf-sand-inner-role-agent"
+        style={{ color: tone.text }}
+      >
+        {m.role === "system" ? "system" : "agent"}
+      </span>
+      {m.t && <span className="wf-sand-inner-meta">{m.t}</span>}
+      <div className="wf-sand-inner-agent">
+        {m.text}
+        {m.stream && <span className="wf-sand-inner-caret" />}
+      </div>
     </div>
   )
 }
@@ -462,30 +626,26 @@ export function SandTableSessionView(props: Props) {
               )}
             </div>
 
-            {/* Participants footer */}
+            {/* Inner-session live stream — replaces the static participants
+              * footer. Switches between planner / evaluator inner sessions
+              * via two-tab segmented; renders reasoning, agent text and
+              * tool calls inline so the user can watch the current agent
+              * think in real time. */}
             {(participantsByRole.planner || participantsByRole.evaluator) && (
-              <div className="wf-sand-participants-footer">
-                {(["planner", "evaluator"] as const).map((role) => {
-                  const p = participantsByRole[role]
-                  if (!p) return null
-                  const tone = roleTone[role]
-                  const Icon = tone.icon
-                  return (
-                    <div key={role} className="wf-sand-participant-row">
-                      <div
-                        className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-md"
-                        style={{ background: tone.bg, color: tone.text }}
-                      >
-                        <Icon className="h-2.5 w-2.5" strokeWidth={1.8} />
-                      </div>
-                      <span className="text-[10.5px] font-semibold text-[var(--wf-ink)]">{roleTitle[role]}</span>
-                      <span className="ml-auto truncate font-mono text-[10px] text-[var(--wf-dim)]" title={p.sessionID}>
-                        {p.sessionID.slice(0, 8)}…
-                      </span>
-                    </div>
-                  )
-                })}
-              </div>
+              <InnerStreamPane
+                participants={{
+                  planner: participantsByRole.planner ? {
+                    sessionID: participantsByRole.planner.sessionID,
+                    model: `${participantsByRole.planner.model.providerID}/${participantsByRole.planner.model.modelID}`,
+                  } : undefined,
+                  evaluator: participantsByRole.evaluator ? {
+                    sessionID: participantsByRole.evaluator.sessionID,
+                    model: `${participantsByRole.evaluator.model.providerID}/${participantsByRole.evaluator.model.modelID}`,
+                  } : undefined,
+                }}
+                innerMessages={props.innerMessages}
+                activeRole={thinkingRole === "evaluator" ? "evaluator" : "planner"}
+              />
             )}
           </div>
 

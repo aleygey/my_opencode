@@ -9,7 +9,8 @@ interface Node {
   title: string
   type: NodeType
   status: NodeStatus
-  session: string
+  session?: string
+  liveStatus?: string
   progress?: number
   summary?: string[]
   stale?: boolean
@@ -117,9 +118,18 @@ function useCanvas() {
     setTimeout(() => setAnimating(false), 500)
   }, [])
 
+  // Discrete zoom in/out buttons — design template has explicit
+  // controls. Step is 0.1 with the same min/max as the wheel handler.
+  const zoomIn = useCallback(() => {
+    setZoom(prev => Math.min(1.5, prev + 0.1))
+  }, [])
+  const zoomOut = useCallback(() => {
+    setZoom(prev => Math.max(0.5, prev - 0.1))
+  }, [])
+
   const isPanned = offset.x !== 0 || offset.y !== 0 || zoom !== 1
 
-  return { offset, zoom, animating, isPanned, moved, onPointerDown, onPointerMove, onPointerUp, onWheel, reset }
+  return { offset, zoom, animating, isPanned, moved, onPointerDown, onPointerMove, onPointerUp, onWheel, reset, zoomIn, zoomOut }
 }
 
 /* ── Animated edge line (subtle S-curve bezier, vertical) ──
@@ -131,41 +141,53 @@ function useCanvas() {
  * is inactive (not yet reached), we draw the same path dashed.
  */
 function EdgeLine({ active, flowing, height = 32, glow = false }: { active: boolean; flowing: boolean; height?: number; glow?: boolean }) {
-  const sw = active ? 2 : 1
-  // Straight vertical line between two cards in a single chain. We used to
-  // draw a subtle S-curve here (cubic bezier with control points pulled off
-  // axis), but the curve made the connector look unstable and — when paired
-  // with the animateMotion particles — rendered the travelling dots visibly
-  // off-centre, giving the impression of a stray floating node beside the
-  // card. Branch topology (multiple children) is handled by `BranchConnector`
-  // below with orthogonal straight lines; curves are not needed here.
-  const cx = 3
-  const path = `M${cx},0 L${cx},${height}`
+  // Soft S-curve cubic bezier between two cards. The path enters axis-
+  // aligned at both endpoints (so it "docks" into the cards cleanly) but
+  // gently bows in the middle, giving the canvas a more organic, designed
+  // feel than a stiff straight rule. Control points are placed at 1/3
+  // and 2/3 of the height with the same x as the endpoints — matching
+  // design template's `.flow` path style. Active edges get an extended
+  // dasharray that animates as a flowing pulse, plus a soft glow halo.
+  const W = 16
+  const cx = W / 2
+  const c1y = height / 3
+  const c2y = (height * 2) / 3
+  const path = `M${cx},0 C${cx},${c1y} ${cx},${c2y} ${cx},${height}`
 
   return (
-    <div className="wf-edge" style={{ height }}>
-      <svg width="6" height="100%" viewBox={`0 0 6 ${height}`} preserveAspectRatio="none" fill="none">
+    <div className="wf-edge" style={{ height, width: W }}>
+      <svg width={W} height={height} viewBox={`0 0 ${W} ${height}`} preserveAspectRatio="none" fill="none">
         {active && glow && (
-          <path d={path} stroke="var(--wf-ok)" strokeWidth="4" opacity="0.08" fill="none" />
+          <path d={path} stroke="var(--rune-ac, var(--wf-ok))" strokeWidth={5} opacity={0.10} fill="none" strokeLinecap="round" />
         )}
-        <path d={path}
-          stroke={active ? 'var(--wf-ok)' : 'var(--wf-line-strong)'}
-          strokeWidth={sw}
-          strokeDasharray={active ? 'none' : '4 5'}
+        <path
+          d={path}
+          stroke={active ? 'var(--rune-ac, var(--wf-ok))' : 'var(--rune-line, var(--wf-line-strong))'}
+          strokeWidth={active ? 1.5 : 1}
+          strokeDasharray={active ? '0' : '3 4'}
           strokeLinecap="round"
-          fill="none" />
+          fill="none"
+        />
+        {flowing && (
+          <>
+            {/* Flowing dash overlay — animates along the active edge to
+              * convey direction of execution without spawning floating
+              * particles (which jittered visually). */}
+            <path
+              d={path}
+              stroke="var(--rune-ac, var(--wf-ok))"
+              strokeWidth={1.5}
+              strokeLinecap="round"
+              fill="none"
+              strokeDasharray="6 12"
+              className="wf-edge-flow"
+            />
+            <circle r="2" fill="var(--rune-ac, var(--wf-ok))" opacity={0.95}>
+              <animateMotion dur="1.6s" repeatCount="indefinite" path={path} />
+            </circle>
+          </>
+        )}
       </svg>
-      {flowing && (
-        <svg className="absolute inset-0 pointer-events-none" width="6" height="100%" viewBox={`0 0 6 ${height}`} preserveAspectRatio="none" fill="none">
-          <path d={path} stroke="var(--wf-ok)" strokeWidth="6" opacity="0.06" fill="none" />
-          <circle r="2.5" fill="var(--wf-ok)" opacity="0.9">
-            <animateMotion dur="1.2s" repeatCount="indefinite" path={path} />
-          </circle>
-          <circle r="5" fill="var(--wf-ok)" opacity="0.15">
-            <animateMotion dur="1.2s" repeatCount="indefinite" path={path} />
-          </circle>
-        </svg>
-      )}
     </div>
   )
 }
@@ -786,18 +808,43 @@ export function WorkflowCanvas({ root, chains, tail, selectedNodeId, onNodeSelec
         </div>
       </div>
 
-      {/* Canvas controls — always visible */}
+      {/* Canvas controls — design template positioning (top-right):
+        * [−] [percent] [+] [⊡fit/locate]. The wheel + ctrl/cmd zoom
+        * still works for power users; these buttons give a discoverable
+        * UI for everyone else. */}
       <div className="wf-canvas-controls">
-        {/* Zoom level */}
-        <span className="text-[10px] font-bold tabular-nums text-[var(--wf-dim)]">{zoomPct}%</span>
-
-        {/* Reset / Locate root button */}
+        <button
+          onClick={(e) => { e.stopPropagation(); canvas.zoomOut() }}
+          className="wf-canvas-zoom-btn"
+          title="Zoom out"
+          aria-label="Zoom out"
+        >
+          −
+        </button>
+        <span
+          className="wf-canvas-zoom-pct"
+          onClick={(e) => { e.stopPropagation(); canvas.reset() }}
+          title="Click to reset zoom to 100%"
+          role="button"
+          tabIndex={0}
+        >
+          {zoomPct}%
+        </span>
+        <button
+          onClick={(e) => { e.stopPropagation(); canvas.zoomIn() }}
+          className="wf-canvas-zoom-btn"
+          title="Zoom in"
+          aria-label="Zoom in"
+        >
+          +
+        </button>
         <button
           onClick={(e) => { e.stopPropagation(); canvas.reset() }}
-          className={`wf-canvas-locate-btn ${canvas.isPanned ? 'wf-canvas-locate-btn--active' : ''}`}
-          title="Center on root agent"
+          className={`wf-canvas-zoom-btn ${canvas.isPanned ? 'wf-canvas-zoom-btn--active' : ''}`}
+          title="Fit / center on root"
+          aria-label="Fit"
         >
-          <Locate className="h-3.5 w-3.5" strokeWidth={1.8} />
+          <Locate className="h-3 w-3" strokeWidth={1.8} />
         </button>
       </div>
     </div>

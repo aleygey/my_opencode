@@ -80,6 +80,9 @@ export type TraceHit = {
   code?: string
   title: string
   body?: string
+  /** Similarity score in [0, 1]. When set, renders a right-side score
+   * column (number + bar), matching the design template. */
+  score?: number
 }
 
 export type TraceRecallEntry = {
@@ -165,27 +168,43 @@ export function TraceRecall(props: {
                   when={entry().hits.length > 0}
                   fallback={<div class="rt-hit-empty">该轮未触发 retrieve</div>}
                 >
-                  <For each={entry().hits}>
-                    {(h) => (
-                      <button type="button" class="rt-hit">
-                        <span class="rt-hit-i">{h.index}</span>
-                        <div class="rt-hit-main">
-                          <div class="rt-hit-row1">
-                            <Show when={h.cat}>
-                              <span class="rt-hit-cat">{h.catLabel ?? h.cat}</span>
-                            </Show>
-                            <span class="rt-hit-title">{h.title}</span>
-                            <Show when={h.code}>
-                              <span class="rt-hit-code">{h.code}</span>
+                  <div class="rt-hits">
+                    <For each={entry().hits}>
+                      {(h) => (
+                        <button
+                          type="button"
+                          class="rt-hit"
+                          data-has-score={h.score !== undefined ? "true" : "false"}
+                        >
+                          <span class="rt-hit-i">{h.index}</span>
+                          <div class="rt-hit-main">
+                            <div class="rt-hit-row1">
+                              <Show when={h.cat}>
+                                <span class="rt-hit-cat">{h.catLabel ?? h.cat}</span>
+                              </Show>
+                              <span class="rt-hit-title">{h.title}</span>
+                              <Show when={h.code}>
+                                <span class="rt-hit-code">{h.code}</span>
+                              </Show>
+                            </div>
+                            <Show when={h.body}>
+                              <div class="rt-hit-body">{h.body}</div>
                             </Show>
                           </div>
-                          <Show when={h.body}>
-                            <div class="rt-hit-body">{h.body}</div>
+                          <Show when={h.score !== undefined}>
+                            <div class="rt-hit-score">
+                              <span class="rt-hit-score-num">
+                                {(h.score! * 100).toFixed(0)}
+                              </span>
+                              <span class="rt-hit-score-bar" aria-hidden>
+                                <i style={{ width: `${Math.min(100, Math.max(0, h.score! * 100))}%` }} />
+                              </span>
+                            </div>
                           </Show>
-                        </div>
-                      </button>
-                    )}
-                  </For>
+                        </button>
+                      )}
+                    </For>
+                  </div>
                 </Show>
               </div>
             </div>
@@ -218,11 +237,18 @@ export function TraceRecall(props: {
                     <span class="rune-grow" />
                     <span class="rt-rsess-ms">{r.durationMs}ms</span>
                   </div>
-                  <div class="rt-rsess-q">
-                    <Show when={r.query} fallback={<em style={{ color: "var(--rune-fg-faint)" }}>(no query)</em>}>
-                      {r.query}
-                    </Show>
-                  </div>
+                  <Show when={r.query}>
+                    <div class="rt-rsess-msg rt-rsess-msg-user">
+                      <span class="rt-rsess-msg-role">user</span>
+                      <span class="rt-rsess-msg-text">{r.query}</span>
+                    </div>
+                  </Show>
+                  <Show when={r.intent}>
+                    <div class="rt-rsess-msg rt-rsess-msg-agent">
+                      <span class="rt-rsess-msg-role">agent</span>
+                      <span class="rt-rsess-msg-text">{r.intent}</span>
+                    </div>
+                  </Show>
                   <div class="rt-rsess-foot">
                     <span class="rt-rsess-chip">{r.hitCount} hits</span>
                     <Show when={r.source}>
@@ -271,7 +297,17 @@ export type KnowledgeExp = {
 export function KnowledgeList(props: {
   experiences: KnowledgeExp[]
   pickedId?: string
-  onPick: (id: string) => void
+  /** Click handler. Receives modifier-key state so the caller can
+   *  implement multi-select for the merge action (shift-click /
+   *  cmd-click). Without modifiers, it's a normal "open detail". */
+  onPick: (id: string, modifiers?: { shift?: boolean; meta?: boolean }) => void
+  /** Click a #tag chip on a card to filter the list to that tag. */
+  onPickTag?: (tag: string) => void
+  /** Currently active tag filter — bolds the matching chip on cards. */
+  activeTag?: string
+  /** Set of currently multi-selected ids — used to highlight selected
+   *  rows differently from the single "open" row. */
+  selectedIds?: Set<string>
   emptyText?: string
 }) {
   return (
@@ -287,11 +323,18 @@ export function KnowledgeList(props: {
                 <button
                   type="button"
                   class="kw-exp"
-                  classList={{ "is-on": e.id === props.pickedId }}
-                  onClick={() => props.onPick(e.id)}
+                  classList={{
+                    "is-on": e.id === props.pickedId,
+                    "is-selected": props.selectedIds?.has(e.id),
+                  }}
+                  data-flag={e.flag ?? ""}
+                  onClick={(ev) => props.onPick(e.id, { shift: ev.shiftKey, meta: ev.metaKey || ev.ctrlKey })}
                 >
+                  <Show when={e.flag === "pending"}>
+                    <span class="kw-exp-pending-pulse" aria-hidden />
+                  </Show>
                   <div class="kw-exp-row1">
-                    <span class="kw-exp-cat">{e.catLabel ?? e.cat}</span>
+                    <span class="kw-exp-cat" data-kind={e.cat}>{e.catLabel ?? e.cat}</span>
                     <span class="kw-exp-title">{e.title}</span>
                     <Show when={e.ago}>
                       <span class="kw-exp-ago">{e.ago}</span>
@@ -303,7 +346,20 @@ export function KnowledgeList(props: {
                       <span class="rune-chip">{e.scope}</span>
                     </Show>
                     <Show when={e.tags && e.tags.length > 0}>
-                      <For each={e.tags!.slice(0, 2)}>{(t) => <span class="rune-chip">#{t}</span>}</For>
+                      <For each={e.tags!.slice(0, 4)}>{(t) => (
+                        <button
+                          type="button"
+                          class="rune-chip kw-tag-chip"
+                          classList={{ "is-active": t === props.activeTag }}
+                          onClick={(ev) => {
+                            ev.stopPropagation()
+                            props.onPickTag?.(t)
+                          }}
+                          title={`Filter by #${t}`}
+                        >
+                          #{t}
+                        </button>
+                      )}</For>
                     </Show>
                     <Show when={e.flag}>
                       <span class="kw-exp-flag" classList={{ [`f-${e.flag}`]: true }}>
@@ -443,7 +499,7 @@ export function ExpDetailModal(props: {
         <div class="kw-modal" onClick={props.onClose}>
           <div class="kw-modal-panel" onClick={(e) => e.stopPropagation()}>
             <header class="kw-modal-hd">
-              <span class="kw-exp-cat">{exp().catLabel ?? exp().cat}</span>
+              <span class="kw-exp-cat" data-kind={exp().cat}>{exp().catLabel ?? exp().cat}</span>
               <span
                 class="rune-mono"
                 style={{ "font-size": "var(--rune-fs-xs)", color: "var(--rune-fg-faint)" }}

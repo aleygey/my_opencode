@@ -581,6 +581,27 @@ export function ChatPanel(props: Props) {
     el.style.height = `${Math.min(el.scrollHeight, 120)}px`
   }, [])
 
+  /* Re-run autoResize ONLY when the textarea's parent WIDTH changes
+   * (the inspector splitbar drag changes width; the canvas/chat splitbar
+   * drag changes height — height changes must not trigger autoResize
+   * because that creates a feedback loop where the composer appears to
+   * "lift" / bounce. Watching the parent (not the textarea itself) avoids
+   * the self-triggered loop. */
+  useEffect(() => {
+    const el = textareaRef.current
+    const parent = el?.parentElement?.parentElement // .composer__field → .composer
+    if (!el || !parent || typeof ResizeObserver === 'undefined') return
+    let lastWidth = parent.clientWidth
+    const ro = new ResizeObserver(() => {
+      const w = parent.clientWidth
+      if (w === lastWidth) return // height-only change → ignore
+      lastWidth = w
+      autoResize()
+    })
+    ro.observe(parent)
+    return () => ro.disconnect()
+  }, [autoResize])
+
   // Scroll: instant on first render or bulk load, smooth on incremental new messages
   // Only trigger when message count actually changes (not on reference changes)
   useEffect(() => {
@@ -955,7 +976,26 @@ export function ChatPanel(props: Props) {
         ref={messagesRef}
       >
         {(() => {
-          const allGroups = groupMessages(props.messages)
+          // Hide internal orchestration prompts from the chat. These are
+          // long JSON+prompt blobs that workflow-panel.tsx generates when
+          // the user clicks "Create graph", "Run", or approves a plan —
+          // they're necessary instructions to the LLM but render as
+          // confusing user text in chat. We detect them by the canonical
+          // first-line markers used by `runApprovedPlan` / `executeWorkflow`
+          // / `revisePlanWithContext` (workflow-panel.tsx). Add a new
+          // marker here when a new internal-send call is added.
+          const INTERNAL_PROMPT_MARKERS = [
+            'The user approved this workflow plan',
+            'Create the workflow graph from the latest approved plan',
+            'Execution routing is confirmed for workflow node',
+            'Revise the current workflow plan using this additional context',
+          ]
+          const visibleMessages = props.messages.filter((m) => {
+            if (m.role !== 'user') return true
+            const head = (m.content ?? '').split('\n', 1)[0] ?? ''
+            return !INTERNAL_PROMPT_MARKERS.some((p) => head.startsWith(p))
+          })
+          const allGroups = groupMessages(visibleMessages)
           const truncated = allGroups.length > visibleCount
           const groups = truncated ? allGroups.slice(-visibleCount) : allGroups
           // The button serves two staged purposes:
@@ -1246,6 +1286,42 @@ export function ChatPanel(props: Props) {
 
       {/* Input */}
       <div className="wf-chat-input-bar">
+        {/* Composer chips — real built-in slash commands surfaced as
+          * one-click chips so the user doesn't need to type `/`. Each
+          * chip inserts its trigger into the textarea and focuses it;
+          * the existing slash-command popover handles resolution from
+          * there.
+          *
+          * The design template's prototype chips were /plan, /retrieve,
+          * /tool, attach — those weren't backed by real commands in this
+          * runtime. We now show the actual server-registered commands
+          * (compact / fork / new / model / undo / redo) plus /notrack
+          * as the privacy opt-out, capped to 4 to keep the row tidy. */}
+        <div className="wf-chat-chips" aria-label="Quick commands">
+          {(['compact', 'fork', 'notrack', 'model'] as const).map((cmd) => (
+            <button
+              key={cmd}
+              type="button"
+              className="wf-chat-chip"
+              onClick={() => {
+                setMsg('/' + cmd + ' ')
+                if (textareaRef.current) {
+                  textareaRef.current.focus()
+                  textareaRef.current.style.height = 'auto'
+                  textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 120)}px`
+                }
+              }}
+              title={
+                cmd === 'compact' ? 'Compact: summarise + compress this conversation'
+                : cmd === 'fork' ? 'Fork this session into a new branch'
+                : cmd === 'notrack' ? 'Send this turn without recording it to the experience library'
+                : 'Open the model picker'
+              }
+            >
+              /{cmd}
+            </button>
+          ))}
+        </div>
         <div className="wf-chat-input-wrap" style={{ position: 'relative' }}>
           {/* Slash popover — floats above the input bar */}
           <SlashPopover

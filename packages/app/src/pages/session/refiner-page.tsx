@@ -17,7 +17,7 @@ import {
   type KnowledgeEdge as RuneKnowledgeEdge,
   type KnowledgeExp as RuneKnowledgeExp,
 } from "@/components/unified-shell/modules"
-import { useModels } from "@/context/models"
+import { RuneModelPicker } from "@/components/unified-shell/model-picker"
 import { usePlatform } from "@/context/platform"
 import { useSDK } from "@/context/sdk"
 import { useServer } from "@/context/server"
@@ -314,9 +314,6 @@ const hhmm = (ts: number): string => {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`
 }
 
-const modelLabel = (model?: { providerID: string; modelID: string }) =>
-  model ? `${model.providerID}/${model.modelID}` : "—"
-
 function buildHeaders(input: {
   directory: string
   username?: string
@@ -475,13 +472,6 @@ async function putConfig(input: {
   })
   if (!res.ok) throw new Error(`Failed to update refiner config (${res.status})`)
   return readJsonOrThrow<RefinerConfig>(res, "Refiner config update")
-}
-
-const SOURCE_LABEL: Record<ConfigSource, string> = {
-  override: "override",
-  agent: "agent config",
-  default: "default",
-  none: "—",
 }
 
 /* ──────────────────────────────────────────────────────
@@ -845,122 +835,10 @@ const SCOPE_LABEL: Record<Scope, string> = {
 
 
 /* ──────────────────────────────────────────────────────
-   Model picker — unchanged UX
+   (Old per-page ModelPicker removed — replaced by the shared
+   `RuneModelPicker` from `@/components/unified-shell/model-picker`
+   so all three runtime modules share a single visual treatment.)
    ────────────────────────────────────────────────────── */
-
-function ModelPicker(props: {
-  current?: { providerID: string; modelID: string }
-  source?: ConfigSource
-  onChange: (model: { providerID: string; modelID: string }) => void
-  onReset?: () => void
-}) {
-  const models = useModels()
-  const [open, setOpen] = createSignal(false)
-  let root: HTMLDivElement | undefined
-
-  onMount(() => {
-    const handler = (e: MouseEvent) => {
-      if (!root) return
-      if (!root.contains(e.target as Node)) setOpen(false)
-    }
-    document.addEventListener("mousedown", handler)
-    onCleanup(() => document.removeEventListener("mousedown", handler))
-  })
-
-  const list = createMemo(() => {
-    try {
-      return models
-        .list()
-        .filter((m) => models.visible({ providerID: m.provider.id, modelID: m.id }))
-    } catch {
-      return []
-    }
-  })
-
-  const grouped = createMemo(() => {
-    const map = new Map<string, Array<{ providerID: string; modelID: string; name: string }>>()
-    for (const m of list()) {
-      const key = m.provider.name ?? m.provider.id
-      const arr = map.get(key) ?? []
-      arr.push({ providerID: m.provider.id, modelID: m.id, name: m.name })
-      map.set(key, arr)
-    }
-    return [...map.entries()]
-  })
-
-  return (
-    <div class="rf-model" ref={(el) => (root = el)}>
-      <button
-        type="button"
-        class="rf-model-trigger"
-        aria-expanded={open() ? "true" : "false"}
-        onClick={() => setOpen((v) => !v)}
-        title={props.source ? `source: ${SOURCE_LABEL[props.source]}` : undefined}
-      >
-        <span class="rf-dot" />
-        <span>{modelLabel(props.current)}</span>
-        <Show when={props.source && props.source !== "none"}>
-          <span class="rf-model-source" data-source={props.source}>
-            {SOURCE_LABEL[props.source!]}
-          </span>
-        </Show>
-        <span class="rf-model-caret">▾</span>
-      </button>
-      <Show when={open()}>
-        <div class="rf-model-menu">
-          <Show when={props.source === "override" && props.onReset}>
-            <button
-              type="button"
-              class="rf-model-item rf-model-reset"
-              onClick={() => {
-                props.onReset?.()
-                setOpen(false)
-              }}
-            >
-              ⟲ 恢复默认（agent 默认模型）
-            </button>
-            <div class="rf-model-sep" />
-          </Show>
-          <Show
-            when={grouped().length > 0}
-            fallback={<div class="rf-model-group">暂无可用模型</div>}
-          >
-            <For each={grouped()}>
-              {([providerName, items]) => (
-                <>
-                  <div class="rf-model-group">{providerName}</div>
-                  <For each={items}>
-                    {(item) => {
-                      const active = () =>
-                        props.current?.providerID === item.providerID &&
-                        props.current?.modelID === item.modelID
-                      return (
-                        <button
-                          type="button"
-                          class="rf-model-item"
-                          data-active={active() ? "true" : "false"}
-                          onClick={() => {
-                            props.onChange({
-                              providerID: item.providerID,
-                              modelID: item.modelID,
-                            })
-                            setOpen(false)
-                          }}
-                        >
-                          {item.name}
-                        </button>
-                      )
-                    }}
-                  </For>
-                </>
-              )}
-            </For>
-          </Show>
-        </div>
-      </Show>
-    </div>
-  )
-}
 
 /* ──────────────────────────────────────────────────────
    Overflow "More" menu — consolidates secondary actions
@@ -3310,10 +3188,15 @@ function ExperiencePeek(props: ExperiencePeekProps) {
           </section>
       </div>
 
+      {/* Restored full action set: Add obs / Edit / Re-refine / Undo /
+        * Archive / Approve / Reject / Re-queue / Delete. Earlier these
+        * were cut to align with the design template's "single Refine
+        * button" but the user wants the full power-user toolkit back. */}
       <div class="rf-peek-foot">
         <button
           type="button"
-          class="rf-actbtn"
+          class="rune-btn"
+          data-size="sm"
           disabled={!!acting() || exp().archived}
           onClick={() => props.onAction({ type: "augment", experience: exp() })}
           title="追加一条 observation 并触发 re-refine"
@@ -3322,7 +3205,8 @@ function ExperiencePeek(props: ExperiencePeekProps) {
         </button>
         <button
           type="button"
-          class="rf-actbtn"
+          class="rune-btn"
+          data-size="sm"
           disabled={!!acting()}
           onClick={() => props.onAction({ type: "edit", experience: exp() })}
           title="手动编辑字段（不调用 LLM）"
@@ -3331,10 +3215,9 @@ function ExperiencePeek(props: ExperiencePeekProps) {
         </button>
         <button
           type="button"
-          class="rf-actbtn"
-          disabled={
-            !!acting() || exp().observations.length === 0 || exp().archived
-          }
+          class="rune-btn"
+          data-size="sm"
+          disabled={!!acting() || exp().observations.length === 0 || exp().archived}
           onClick={() => void run("refine", () => props.onReRefine())}
           title="基于当前 observations 重新运行 refiner 模型"
         >
@@ -3342,7 +3225,8 @@ function ExperiencePeek(props: ExperiencePeekProps) {
         </button>
         <button
           type="button"
-          class="rf-actbtn"
+          class="rune-btn"
+          data-size="sm"
           disabled={!!acting() || !undoable()}
           onClick={() => void run("undo", () => props.onUndo())}
           title={undoable() ? "回滚到上一次快照" : "没有可回滚的快照"}
@@ -3351,20 +3235,20 @@ function ExperiencePeek(props: ExperiencePeekProps) {
         </button>
         <button
           type="button"
-          class="rf-actbtn"
+          class="rune-btn"
+          data-size="sm"
           disabled={!!acting()}
           onClick={() => void run("archive", () => props.onArchiveToggle())}
           title={exp().archived ? "取消归档" : "归档（从概览中隐藏）"}
         >
           {exp().archived ? "⬒ Unarchive" : "⬓ Archive"}
         </button>
-        {/* Review-queue actions — only meaningful when review_status is set
-            non-default. Approve becomes the prominent positive action when an
-            experience is freshly auto-routed (status=pending). */}
         <Show when={(exp().review_status ?? "approved") === "pending"}>
           <button
             type="button"
-            class="rf-actbtn rf-actbtn-primary"
+            class="rune-btn"
+            data-size="sm"
+            data-variant="primary"
             disabled={!!acting()}
             onClick={() => void run("approve", () => props.onReview("approved"))}
             title="通过审核 — 此 experience 进入正式知识库"
@@ -3373,7 +3257,8 @@ function ExperiencePeek(props: ExperiencePeekProps) {
           </button>
           <button
             type="button"
-            class="rf-actbtn"
+            class="rune-btn"
+            data-size="sm"
             disabled={!!acting()}
             onClick={() => void run("reject", () => props.onReview("rejected"))}
             title="拒绝 — 软删除，文件保留作审计"
@@ -3384,7 +3269,8 @@ function ExperiencePeek(props: ExperiencePeekProps) {
         <Show when={(exp().review_status ?? "approved") === "rejected"}>
           <button
             type="button"
-            class="rf-actbtn"
+            class="rune-btn"
+            data-size="sm"
             disabled={!!acting()}
             onClick={() => void run("requeue", () => props.onReview("pending"))}
             title="重新加入待审核队列"
@@ -3392,13 +3278,15 @@ function ExperiencePeek(props: ExperiencePeekProps) {
             {acting() === "requeue" ? "⟳ Re-queueing…" : "↻ Re-queue"}
           </button>
         </Show>
-        <span class="rf-actspacer" />
+        <span class="rune-grow" />
         <button
           type="button"
-          class="rf-actbtn rf-actbtn-danger"
+          class="rune-btn"
+          data-size="sm"
           disabled={!!acting()}
           onClick={() => props.onAction({ type: "delete", experience: exp() })}
           title="删除（保留审计）"
+          style={{ color: "var(--rune-st-err)" }}
         >
           ✕ Delete
         </button>
@@ -4851,7 +4739,16 @@ export default function RefinerPage() {
 
   const [selection, setSelection] = createSignal<Selection>()
   const [action, setAction] = createSignal<ActionKind | undefined>()
+  /* Multi-select for "Merge" — populated when the user shift-clicks /
+   * cmd-clicks experience cards. Empty by default. The Merge button in
+   * the header is disabled when fewer than 2 are selected. */
+  const [selectedIds, setSelectedIds] = createSignal<string[]>([])
   const [activeCategory, setActiveCategory] = createSignal<string | undefined>()
+  /* Active tag filter — separate from `activeCategory`. Tags are the
+   * granular labels each experience carries (categories[]). Clicking a
+   * #tag chip on a card sets this; the experience list shows only ones
+   * containing that tag. Toggling the same tag clears the filter. */
+  const [activeTag, setActiveTag] = createSignal<string | undefined>()
   const [activeKind, setActiveKind] = createSignal<Kind | undefined>()
   const [query, setQuery] = createSignal<string>("")
   const [sortMode, setSortMode] = createSignal<"kind" | "recent" | "newest">("kind")
@@ -4942,15 +4839,11 @@ export default function RefinerPage() {
     ),
   )
 
-  // Auto-open the most recent experience ONCE on first data load.
-  // Guarded with a flag so that refetch polls won't re-open it after the
-  // user closes the modal.
-  //
-  // Hash deeplink: when the URL has `#<experience_id>` (e.g. linked from the
-  // retrieve page's exp chip), open THAT experience instead of the latest.
-  // We also listen for hash changes so navigating to a different exp from
-  // outside (or via History API) re-opens the correct card.
-  let autoOpened = false
+  // Hash deeplink only: when the URL has `#<experience_id>` (e.g. linked from
+  // the retrieve page's exp chip), open THAT experience. We do NOT auto-open
+  // the most recent experience anymore — users found that intrusive. They land
+  // on the page and can browse / pick on their own.
+  let hashOpened = false
   const openExpFromHash = (data: NonNullable<ReturnType<typeof overview>>): boolean => {
     if (typeof window === "undefined") return false
     const hash = window.location.hash.replace(/^#/, "").trim()
@@ -4962,11 +4855,10 @@ export default function RefinerPage() {
   }
   createEffect(() => {
     const data = overview()
-    if (!data || autoOpened || selection()) return
-    autoOpened = true
-    if (openExpFromHash(data)) return
-    const latest = data.experiences[0]
-    if (latest) setSelection({ kind: "experience", id: `experience:${latest.id}` })
+    if (!data || hashOpened || selection()) return
+    if (openExpFromHash(data)) {
+      hashOpened = true
+    }
   })
 
   // Re-act to hashchange so deeplinks fired AFTER initial load (e.g. user
@@ -5085,10 +4977,12 @@ export default function RefinerPage() {
     const archivedOk = includeArchived()
     const cat = activeCategory()
     const kind = activeKind()
+    const tag = activeTag()
     const q = query().trim().toLowerCase()
     return all.filter((e) => {
       if (!archivedOk && e.archived) return false
       if (cat && !(e.categories ?? []).includes(cat)) return false
+      if (tag && !(e.categories ?? []).includes(tag)) return false
       if (kind && e.kind !== kind) return false
       if (q) {
         const hay = [
@@ -5188,7 +5082,17 @@ export default function RefinerPage() {
     return map
   })
 
-  const pickExperienceByID = (id: string) => {
+  const pickExperienceByID = (id: string, modifiers?: { shift?: boolean; meta?: boolean }) => {
+    // Shift / Cmd / Ctrl-click → toggle multi-select for Merge.
+    if (modifiers?.shift || modifiers?.meta) {
+      setSelectedIds((prev) => {
+        if (prev.includes(id)) return prev.filter((x) => x !== id)
+        return [...prev, id]
+      })
+      return
+    }
+    // Plain click → clear multi-select and open detail.
+    setSelectedIds([])
     setSelection({ kind: "experience", id: `experience:${id}` })
   }
 
@@ -5473,7 +5377,90 @@ export default function RefinerPage() {
           { k: "EXP", v: String(overview()?.status.total_experiences ?? 0) },
           { k: "OBS", v: String(overview()?.status.total_observations ?? 0) },
         ],
+        // Action cluster: refresh / merge selected / import / new / export.
+        // Re-index was renamed to ↻ "刷新" because users found "Re-index"
+        // ambiguous (it suggested rebuilding embeddings; in fact it just
+        // re-fetches the overview + taxonomy from disk, which the page
+        // already polls automatically every 5 minutes).
+        actions: (
+          <>
+            <button
+              type="button"
+              class="rune-btn"
+              data-size="sm"
+              onClick={() => void refreshAll()}
+              title="重新拉取 overview 与 taxonomy 缓存"
+            >
+              ↻ 刷新
+            </button>
+            <button
+              type="button"
+              class="rune-btn"
+              data-size="sm"
+              disabled={selectedIds().length < 2}
+              onClick={() => setAction({ type: "merge", ids: selectedIds() })}
+              title="将多条选中的 experience 合并为一条（保留全部 observation）"
+            >
+              ⥁ Merge
+              <Show when={selectedIds().length >= 2}>
+                <span style={{ "margin-left": "4px", "font-variant-numeric": "tabular-nums" }}>
+                  ·{selectedIds().length}
+                </span>
+              </Show>
+            </button>
+            <button
+              type="button"
+              class="rune-btn"
+              data-size="sm"
+              onClick={() => setAction({ type: "ingest", sessionID: params.id ?? "" })}
+              title="从历史会话中挑选 user query 手动归纳为 experience"
+              disabled={!params.id}
+            >
+              ⇅ From history
+            </button>
+            <button
+              type="button"
+              class="rune-btn"
+              data-size="sm"
+              onClick={() => setAction({ type: "import" })}
+              title="导入 JSON 包（合并或替换）"
+            >
+              ⤴ Import
+            </button>
+            <button
+              type="button"
+              class="rune-btn"
+              data-size="sm"
+              onClick={() => {
+                const data = overview()?.experiences ?? []
+                if (data.length === 0) return
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })
+                const url = URL.createObjectURL(blob)
+                const a = document.createElement("a")
+                a.href = url
+                a.download = `experiences-${new Date().toISOString().slice(0, 10)}.json`
+                a.click()
+                URL.revokeObjectURL(url)
+              }}
+              title="导出 experience 库为 JSON"
+            >
+              ⤵ Export
+            </button>
+            <button
+              type="button"
+              class="rune-btn"
+              data-size="sm"
+              data-variant="primary"
+              onClick={() => setAction({ type: "create" })}
+              title="手动新建 experience"
+            >
+              ＋ New
+            </button>
+          </>
+        ),
       },
+      // Design's Knowledge ships both List and Graph views (segmented
+      // toggle in the design — sliding pill rather than text-link tabs).
       substrip: {
         tabs: [
           { id: "list", name: "List" },
@@ -5520,9 +5507,10 @@ export default function RefinerPage() {
           </span>
         </div>
 
-        <ModelPicker
+        <RuneModelPicker
           current={config()?.resolved ?? overview()?.model}
           source={config()?.source}
+          kicker="MODEL"
           onChange={updateModel}
           onReset={resetModel}
         />
@@ -5648,20 +5636,10 @@ export default function RefinerPage() {
         </Button>
       </div>
 
-      <Filterbar
-        taxonomy={taxonomy()}
-        countsByKind={kindCounts()}
-        categories={categoriesData()?.categories ?? []}
-        totalCount={overview()?.experiences.length ?? 0}
-        activeKind={activeKind()}
-        setActiveKind={setActiveKind}
-        activeCategory={activeCategory()}
-        setActiveCategory={setActiveCategory}
-        query={query()}
-        setQuery={setQuery}
-        sort={sortMode()}
-        setSort={setSortMode}
-      />
+      {/* Plan B: kind/category filtering is in the unified shell rail
+          (left sub-list under Knowledge). The legacy Filterbar overlapped
+          with rail subs and is no longer rendered. Its component is kept
+          defined in case any debugging path mounts it directly. */}
 
       <Show when={banner()}>
         <div class="rf-banner">{banner()}</div>
@@ -5684,62 +5662,24 @@ export default function RefinerPage() {
         </Show>
         <Show when={viewMode() === "list"}>
           <div class="rf-main">
-            <Show
-              when={mergeIDs().size > 0}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  "align-items": "center",
-                  gap: "var(--rune-u2)",
-                  padding: "var(--rune-u2) var(--rune-u4)",
-                  "border-bottom": "1px solid var(--rune-line-faint)",
-                  background: "var(--rune-bg-surface)",
-                }}
-              >
-                <span class="rune-kicker">已选 {mergeIDs().size} 条</span>
-                <span class="rune-grow" />
+            <Show when={activeTag()}>
+              <div class="rf-tag-filter-bar">
+                <span class="rf-tag-filter-label">已按 tag 筛选:</span>
                 <button
                   type="button"
-                  class="rune-btn"
-                  data-size="xs"
-                  data-variant="primary"
-                  disabled={mergeIDs().size < 2}
-                  onClick={() =>
-                    setAction({
-                      type: "merge",
-                      ids: [...mergeIDs()],
-                    })
-                  }
+                  class="rune-chip kw-tag-chip is-active"
+                  onClick={() => setActiveTag(undefined)}
+                  title="点击清除筛选"
                 >
-                  合并 {mergeIDs().size}
-                </button>
-                <button
-                  type="button"
-                  class="rune-btn"
-                  data-size="xs"
-                  onClick={async () => {
-                    for (const id of mergeIDs()) {
-                      await handleArchiveToggle(id, true)
-                    }
-                    clearMergeSelection()
-                  }}
-                >
-                  归档
-                </button>
-                <button
-                  type="button"
-                  class="rune-btn"
-                  data-size="xs"
-                  data-variant="ghost"
-                  onClick={clearMergeSelection}
-                >
-                  取消
+                  #{activeTag()} ×
                 </button>
               </div>
             </Show>
             <RuneKnowledgeList
               experiences={runeExperiences()}
+              selectedIds={new Set(selectedIds())}
+              activeTag={activeTag()}
+              onPickTag={(t) => setActiveTag(activeTag() === t ? undefined : t)}
               pickedId={(() => {
                 const sel = selection()
                 if (!sel) return undefined

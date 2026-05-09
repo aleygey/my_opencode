@@ -29,6 +29,7 @@ import {
 import type {
   ShellHeaderConfig,
   ShellRailSubItem,
+  ShellStatusConfig,
   ShellSubstripConfig,
   ShellTask,
 } from "."
@@ -44,6 +45,7 @@ export type ShellChromeConfig = {
   activeTaskId?: string
   onPickTask?: (id: string) => void
   onCreateTask?: () => void
+  status?: ShellStatusConfig
   /** Optional ad-hoc body slot below the standard chrome. */
   bodyOverlay?: JSX.Element
 }

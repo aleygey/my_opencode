@@ -426,6 +426,23 @@
   overflow: hidden;
 }
 
+/* Active tag filter banner — appears above the list when a #tag chip
+ * was clicked. The pill itself doubles as the clear button. */
+.refiner-page .rf-tag-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 24px;
+  font-size: 12px;
+  color: var(--rune-fg-mute);
+  border-bottom: 1px solid var(--rune-line-faint);
+  background: var(--rune-bg-surface);
+  flex: none;
+}
+.refiner-page .rf-tag-filter-label {
+  color: var(--rune-fg-dim);
+}
+
 
 .refiner-page .rf-empty-center {
   position: absolute;

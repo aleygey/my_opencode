@@ -386,12 +386,17 @@
 }
 
 .workflow-make .wf-canvas-grid {
-  background-image:
-    linear-gradient(var(--wf-line) 1px, transparent 1px), linear-gradient(90deg, var(--wf-line) 1px, transparent 1px);
-  background-size: 48px 48px;
-  opacity: 0.5;
-  mask-image: radial-gradient(ellipse 80% 70% at 50% 40%, black 30%, transparent 80%);
-  -webkit-mask-image: radial-gradient(ellipse 80% 70% at 50% 40%, black 30%, transparent 80%);
+  /* Design-spec: 28px dot grid (radial dots, NOT line grid). Subtle and
+     reads as "infinite plane" without competing with node content. */
+  background-image: radial-gradient(circle, var(--rune-line-faint, var(--wf-line)) 1px, transparent 1px);
+  background-size: 28px 28px;
+  background-position: 0 0;
+  opacity: 1;
+  mask-image: none;
+  -webkit-mask-image: none;
+}
+.rune-shell .workflow-make .wf-canvas {
+  background: var(--rune-bg-surface);
 }
 
 .workflow-make .wf-canvas-row {
@@ -521,6 +526,17 @@
   overflow: visible;
 }
 
+/* Flowing dash animation on active edges — moves the dash pattern along
+ * the path to indicate direction of execution. The negative dashoffset
+ * scrolls the dashes downstream. */
+.workflow-make .wf-edge-flow {
+  animation: wf-edge-flow 1.6s linear infinite;
+}
+@keyframes wf-edge-flow {
+  0%   { stroke-dashoffset: 0; }
+  100% { stroke-dashoffset: -18; }
+}
+
 /* ── Branch system (root → lanes) ── */
 .workflow-make .wf-branch-system {
   width: 100%;
@@ -647,24 +663,263 @@
   cursor: grabbing;
 }
 
-/* Zoom badge (bottom-right floating) */
-/* Canvas controls — bottom-right floating */
+/* Canvas zoom controls — design-spec: top-right of the canvas with the
+ * zoom level + locate button. Originally bottom-right; moved to align
+ * with the design template's zoom-controls positioning. */
 .workflow-make .wf-canvas-controls {
   position: absolute;
-  bottom: 16px;
+  top: 16px;
   right: 16px;
   z-index: 5;
   display: flex;
   align-items: center;
-  gap: 6px;
-  height: 32px;
-  padding: 0 4px 0 10px;
-  border-radius: 9px;
-  border: 1px solid var(--wf-line);
-  background: color-mix(in srgb, var(--wf-card) 90%, transparent);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  box-shadow: var(--wf-shadow-sm);
+  gap: 4px;
+  height: 28px;
+  padding: 0 6px;
+  border-radius: var(--rune-r, 6px);
+  border: 1px solid var(--rune-line-faint, var(--wf-line));
+  background: var(--rune-bg-base, var(--wf-card));
+  font-family: var(--rune-font-sans, var(--wf-font-sans));
+  font-size: var(--rune-fs-xs, 11px);
+  color: var(--rune-fg-dim, var(--wf-dim));
+  font-variant-numeric: tabular-nums;
+}
+/* ── Node card (design-spec 160px shell-style) ──
+ * Header: status dot + kind icon + KIND chip + node id (mono right)
+ * Body: name + meta (mono command)
+ * States: hover line, .is-on accent edge + glow, .is-running pulse
+ *         .is-done / .is-err / .is-warn left-strip color
+ */
+.workflow-make .wf-node {
+  position: relative;
+  width: 160px;
+  min-width: 160px;
+  max-width: 160px;
+  flex: 0 0 160px;
+  box-sizing: border-box;
+  background: var(--rune-bg-raised, var(--wf-card));
+  border: 1px solid var(--rune-line-faint, var(--wf-line));
+  border-radius: var(--rune-r, 6px);
+  display: flex;
+  flex-direction: column;
+  cursor: pointer;
+  text-align: left;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  transition: border-color 140ms ease, box-shadow 180ms ease, transform 140ms ease;
+  box-shadow: var(--rune-shadow-sm, 0 1px 2px rgba(15,23,42,0.04));
+  overflow: hidden;
+}
+.workflow-make .wf-node:hover {
+  border-color: var(--rune-line, var(--wf-line-strong));
+}
+.workflow-make .wf-node.is-on {
+  border-color: var(--rune-ac-edge, var(--wf-accent-edge));
+  box-shadow: 0 0 0 1px var(--rune-ac-edge, var(--wf-accent-edge)),
+              0 8px 24px -8px rgba(76,111,255,0.4);
+}
+.workflow-make .wf-node.is-running {
+  border-color: var(--rune-ac-edge, var(--wf-accent-edge));
+  animation: wf-node-design-pulse 1.8s ease-in-out infinite;
+}
+@keyframes wf-node-design-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--rune-ac-edge, rgba(76,111,255,0.32)); }
+  50%      { box-shadow: 0 0 0 4px transparent; }
+}
+.workflow-make .wf-node.is-done { border-left: 3px solid var(--rune-st-ok, var(--wf-ok)); }
+.workflow-make .wf-node.is-err  { border-left: 3px solid var(--rune-st-err, var(--wf-bad)); }
+.workflow-make .wf-node.is-warn { border-left: 3px solid var(--rune-st-warn, var(--wf-warn)); }
+
+.workflow-make .wf-node-hd {
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 10px;
+  font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--rune-fg-faint, var(--wf-dim)); font-weight: 500;
+}
+.workflow-make .wf-node-hd-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--rune-fg-dim, var(--wf-dim)); flex: none;
+}
+.workflow-make .wf-node-hd-dot[data-tone="ok"] { background: var(--rune-st-ok, var(--wf-ok)); }
+.workflow-make .wf-node-hd-dot[data-tone="err"] { background: var(--rune-st-err, var(--wf-bad)); }
+.workflow-make .wf-node-hd-dot[data-tone="warn"] { background: var(--rune-st-warn, var(--wf-warn)); }
+.workflow-make .wf-node-hd-dot[data-tone="run"] {
+  background: var(--rune-ac, var(--wf-accent));
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--rune-ac, #4C6FFF) 28%, transparent);
+}
+.workflow-make .wf-node-hd-icon { width: 11px; height: 11px; color: currentColor; flex: none; }
+.workflow-make .wf-node-hd-kind { flex: none; }
+.workflow-make .wf-node-hd-id {
+  margin-left: auto;
+  color: var(--rune-fg-faint, var(--wf-dim));
+  font-size: 9px; font-family: var(--rune-font-mono, var(--wf-font-mono));
+  text-transform: none; letter-spacing: 0;
+}
+
+.workflow-make .wf-node-bd {
+  padding: 0 10px 10px;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.workflow-make .wf-node-name {
+  font-size: var(--rune-fs-md, 13px); font-weight: 500;
+  color: var(--rune-fg, var(--wf-ink)); letter-spacing: -0.005em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.workflow-make .wf-node-meta {
+  font-size: 11px; color: var(--rune-fg-dim, var(--wf-dim));
+  font-family: var(--rune-font-mono, var(--wf-font-mono));
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.workflow-make .wf-node-stale {
+  position: absolute; top: 6px; right: 6px;
+  font-size: 8.5px; font-weight: 600;
+  letter-spacing: 0.05em; text-transform: uppercase;
+  padding: 1px 4px; border-radius: 2px;
+  background: color-mix(in oklab, var(--rune-st-warn, var(--wf-warn)) 14%, transparent);
+  color: var(--rune-st-warn, var(--wf-warn));
+}
+.workflow-make .wf-node-open {
+  position: absolute; bottom: 6px; right: 6px;
+  width: 18px; height: 18px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: 0; border-radius: 4px;
+  color: var(--rune-fg-faint, var(--wf-dim));
+  cursor: pointer; opacity: 0;
+  transition: opacity 140ms ease, background 100ms ease;
+}
+.workflow-make .wf-node:hover .wf-node-open,
+.workflow-make .wf-node.is-on .wf-node-open { opacity: 1; }
+.workflow-make .wf-node-open:hover {
+  background: var(--rune-bg-surface, var(--wf-chip));
+  color: var(--rune-fg, var(--wf-ink));
+}
+.workflow-make .wf-node-status-icon {
+  position: absolute; top: 6px; right: 28px;
+  width: 14px; height: 14px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--rune-fg-dim, var(--wf-dim));
+}
+.workflow-make .wf-node.is-done .wf-node-status-icon { color: var(--rune-st-ok, var(--wf-ok)); }
+.workflow-make .wf-node.is-err  .wf-node-status-icon { color: var(--rune-st-err, var(--wf-bad)); }
+.workflow-make .wf-node.is-warn .wf-node-status-icon { color: var(--rune-st-warn, var(--wf-warn)); }
+.workflow-make .wf-node-spin { position: absolute; top: 6px; right: 28px; }
+
+/* Always-visible scrolling status footer at the bottom of every node
+ * card. Tone-coloured by status (run = accent, ok = green, err = red,
+ * warn = orange, idle = neutral gray). Duplicated text inside the
+ * track loops seamlessly; gradient masks at left/right hide the
+ * wrap-around seam. */
+.workflow-make .wf-node-live {
+  position: relative;
+  height: 18px;
+  margin-top: auto;
+  border-top: 1px solid var(--rune-line-faint, var(--wf-line));
+  background: var(--rune-bg-inset, var(--wf-chip));
+  overflow: hidden;
+  font-family: var(--rune-font-mono, var(--wf-font-mono));
+  font-size: 10px;
+  color: var(--rune-fg-mute, var(--wf-ink-soft));
+}
+.workflow-make .wf-node-live[data-tone="run"] {
+  background: color-mix(in oklab, var(--rune-ac, #4C6FFF) 8%, var(--rune-bg-raised, var(--wf-card)));
+  color: var(--rune-ac-text, var(--wf-accent-text));
+}
+.workflow-make .wf-node-live[data-tone="ok"] {
+  background: color-mix(in oklab, var(--rune-st-ok, var(--wf-ok)) 8%, var(--rune-bg-raised, var(--wf-card)));
+  color: var(--rune-st-ok, var(--wf-ok));
+}
+.workflow-make .wf-node-live[data-tone="err"] {
+  background: color-mix(in oklab, var(--rune-st-err, var(--wf-bad)) 8%, var(--rune-bg-raised, var(--wf-card)));
+  color: var(--rune-st-err, var(--wf-bad));
+}
+.workflow-make .wf-node-live[data-tone="warn"] {
+  background: color-mix(in oklab, var(--rune-st-warn, var(--wf-warn)) 8%, var(--rune-bg-raised, var(--wf-card)));
+  color: var(--rune-st-warn, var(--wf-warn));
+}
+.workflow-make .wf-node-live::before,
+.workflow-make .wf-node-live::after {
+  content: ""; position: absolute; top: 0; bottom: 0; width: 12px; z-index: 2; pointer-events: none;
+}
+.workflow-make .wf-node-live::before {
+  left: 0;
+  background: linear-gradient(to right, var(--rune-bg-inset, var(--wf-chip)), transparent);
+}
+.workflow-make .wf-node-live::after {
+  right: 0;
+  background: linear-gradient(to left, var(--rune-bg-inset, var(--wf-chip)), transparent);
+}
+.workflow-make .wf-node-live-marquee { display: block; height: 100%; white-space: nowrap; position: relative; }
+.workflow-make .wf-node-live-track {
+  display: inline-block;
+  padding: 3px 8px;
+  white-space: nowrap;
+  animation: wf-node-marquee 14s linear infinite;
+}
+.workflow-make .wf-node:not(.is-running) .wf-node-live-track {
+  /* Slow marquee for non-running cards so it doesn't feel restless. */
+  animation-duration: 24s;
+}
+@keyframes wf-node-marquee {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+.workflow-make .wf-node-port {
+  position: absolute; top: 50%; transform: translateY(-50%);
+  width: 6px; height: 6px;
+  background: var(--rune-bg-raised, var(--wf-card));
+  border: 1.5px solid var(--rune-line, var(--wf-line-strong));
+  border-radius: 50%; z-index: 1;
+}
+.workflow-make .wf-node-port-left { left: -4px; }
+.workflow-make .wf-node-port-right { right: -4px; }
+.workflow-make .wf-node.is-on .wf-node-port,
+.workflow-make .wf-node.is-running .wf-node-port {
+  border-color: var(--rune-ac, var(--wf-accent));
+}
+
+/* Design-spec zoom buttons (−/percent/+/fit) — top-right of canvas. */
+.workflow-make .wf-canvas-zoom-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--rune-r-sm, 4px);
+  color: var(--rune-fg-dim, var(--wf-dim));
+  cursor: pointer;
+  transition: background 100ms ease, color 100ms ease;
+  font-size: 14px;
+  font-weight: 500;
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+.workflow-make .wf-canvas-zoom-btn:hover {
+  background: var(--rune-bg-surface, var(--wf-chip));
+  color: var(--rune-fg, var(--wf-ink));
+}
+.workflow-make .wf-canvas-zoom-btn--active {
+  color: var(--rune-ac, var(--wf-ok));
+}
+.workflow-make .wf-canvas-zoom-pct {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 38px;
+  height: 24px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--rune-fg-mute, var(--wf-ink-soft));
+  cursor: pointer;
+  border-radius: var(--rune-r-sm, 4px);
+  font-weight: 500;
+  user-select: none;
+  padding: 0 6px;
+}
+.workflow-make .wf-canvas-zoom-pct:hover {
+  background: var(--rune-bg-surface, var(--wf-chip));
 }
 
 .workflow-make .wf-canvas-locate-btn {
@@ -690,33 +945,6 @@
   color: var(--wf-ok-strong);
 }
 
-/* ── Node card ── */
-
-.workflow-make .wf-node {
-  position: relative;
-  /* Slightly more vertical padding so 1-line titles still feel anchored and
-   * 2-line titles (now allowed via line-clamp in workflow-node.tsx) don't
-   * crowd the type/status row beneath. */
-  padding: 10px 12px;
-  border-radius: 10px;
-  overflow: hidden;
-}
-
-/* Compact node card — used by the design-aligned WorkflowNode. Tighter
- * padding, capped width so cards stay 240px regardless of available
- * column width, single-line title. */
-.workflow-make .wf-node-compact {
-  padding: 6px 10px;
-  width: 100%;
-  max-width: 240px;
-  background: var(--wf-card);
-  border: 1px solid var(--wf-line);
-  border-radius: 8px;
-  transition: border-color 140ms ease, box-shadow 180ms ease, transform 140ms ease;
-}
-.workflow-make .wf-node-compact:hover {
-  border-color: var(--wf-line-strong);
-}
 
 /* Slim progress strip below the node row — full width, 2px height. */
 .workflow-make .wf-node-progress-strip {
@@ -1777,6 +2005,148 @@
   background: color-mix(in srgb, var(--wf-card) 40%, transparent);
 }
 
+/* Inner-session live stream pane (bottom-left of sand-table view) */
+.workflow-make .wf-sand-inner-stream {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  border-top: 1px solid var(--rune-line-faint, var(--wf-line));
+  background: var(--rune-bg-base, var(--wf-card));
+}
+.workflow-make .wf-sand-inner-stream-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 10px 6px;
+  border-bottom: 1px solid var(--rune-line-faint, var(--wf-line));
+  flex: none;
+}
+.workflow-make .wf-sand-inner-stream-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--rune-r-sm, 4px);
+  background: transparent;
+  color: var(--rune-fg-mute, var(--wf-ink-soft));
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 100ms ease, color 100ms ease;
+}
+.workflow-make .wf-sand-inner-stream-tab:hover {
+  background: var(--rune-bg-surface, var(--wf-chip));
+  color: var(--rune-fg, var(--wf-ink));
+}
+.workflow-make .wf-sand-inner-stream-tab[data-active="true"] {
+  background: var(--rune-bg-surface, var(--wf-chip));
+  color: var(--rune-fg, var(--wf-ink));
+  border-color: var(--rune-line, var(--wf-line-strong));
+}
+.workflow-make .wf-sand-inner-stream-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-bottom: 1px dashed var(--rune-line-faint, var(--wf-line));
+  font-size: 10.5px;
+  color: var(--rune-fg-dim, var(--wf-dim));
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+.workflow-make .wf-sand-inner-stream-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.workflow-make .wf-sand-inner-stream-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: center;
+  padding: 32px 12px;
+  color: var(--rune-fg-faint, var(--wf-dim));
+  font-size: 11px;
+  font-style: italic;
+}
+.workflow-make .wf-sand-inner-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 0;
+  border-bottom: 1px dashed var(--rune-line-faint, var(--wf-line));
+  font-size: 11px;
+  line-height: 1.5;
+}
+.workflow-make .wf-sand-inner-row:last-child { border-bottom: 0; }
+.workflow-make .wf-sand-inner-role {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-family: var(--rune-font-mono, var(--wf-font-mono));
+  flex: none;
+}
+.workflow-make .wf-sand-inner-role-tool { color: var(--rune-st-warn, var(--wf-warn)); }
+.workflow-make .wf-sand-inner-role-reason { color: var(--rune-fg-dim, var(--wf-dim)); }
+.workflow-make .wf-sand-inner-role-agent { color: var(--rune-st-ok, var(--wf-ok)); }
+.workflow-make .wf-sand-inner-meta {
+  font-size: 10px;
+  color: var(--rune-fg-faint, var(--wf-dim));
+  font-family: var(--rune-font-mono, var(--wf-font-mono));
+  flex: none;
+}
+.workflow-make .wf-sand-inner-tool-cmd {
+  font-family: var(--rune-font-mono, var(--wf-font-mono));
+  color: var(--rune-st-warn, var(--wf-warn));
+  font-weight: 500;
+  font-size: 11px;
+}
+.workflow-make .wf-sand-inner-tool-out {
+  flex-basis: 100%;
+  margin: 4px 0 0;
+  padding: 6px 10px;
+  background: var(--rune-bg-inset, var(--wf-bg-deep));
+  border: 1px solid var(--rune-line-faint, var(--wf-line));
+  border-radius: var(--rune-r-sm, 4px);
+  font-family: var(--rune-font-mono, var(--wf-font-mono));
+  font-size: 10.5px;
+  color: var(--rune-fg-mute, var(--wf-ink-soft));
+  white-space: pre-wrap;
+  max-height: 80px;
+  overflow: auto;
+}
+.workflow-make .wf-sand-inner-reason {
+  flex-basis: 100%;
+  font-style: italic;
+  color: var(--rune-fg-mute, var(--wf-ink-soft));
+}
+.workflow-make .wf-sand-inner-agent {
+  flex: 1 1 100%;
+  color: var(--rune-fg, var(--wf-ink));
+  word-break: break-word;
+}
+.workflow-make .wf-sand-inner-caret::after {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 12px;
+  background: var(--rune-ac, var(--wf-accent));
+  margin-left: 3px;
+  vertical-align: text-bottom;
+  animation: wf-caret-blink 1s steps(2) infinite;
+}
+@keyframes wf-caret-blink {
+  50% { opacity: 0; }
+}
+
 .workflow-make .wf-sand-tab {
   display: inline-flex;
   align-items: center;
@@ -2142,13 +2512,17 @@
 
 .workflow-make .wf-chat-root {
   position: relative;
-  /* Isolate internal stacking (header dropdown etc.) from app-level portals
-     like DialogSelectModel (z-index: 50 on body) — without this, the header's
-     z-index bleeds up to the root stacking context and covers global dialogs. */
   isolation: isolate;
   display: flex;
   flex-direction: column;
   height: 100%;
+  /* Initially-empty chat (no messages yet) was rendering at min-content
+   * width because the chat panel sits inside a row-flex wrapper with no
+   * width hint. Force the panel to fill its row-flex parent so it has
+   * the right width on first paint, before any message is sent. */
+  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
   border-top: 1px solid var(--wf-line);
   background: linear-gradient(180deg, var(--wf-card) 0%, var(--wf-bg) 100%);
   overflow: hidden;
@@ -2261,45 +2635,51 @@
   tabular-nums: true;
 }
 
-/* Bubble base */
+/* Bubble base — design-spec bubble-row pattern. Use border + bg combo
+ * (NOT solid fills) so messages read like document blocks rather than
+ * chat-app speech bubbles. */
 .workflow-make .wf-msg-bubble {
-  border-radius: 12px;
+  border-radius: 10px;
   padding: 9px 13px;
-  font-size: 13.5px;
-  line-height: 1.65;
+  font-size: var(--rune-fs-md, 13px);
+  line-height: 1.6;
+  border: 1px solid var(--rune-line, var(--wf-line));
+  background: var(--rune-bg-raised, var(--wf-card));
+  color: var(--rune-fg, var(--wf-ink));
+  word-break: break-word;
+  display: inline-block;
+  max-width: 100%;
 }
+.workflow-make .wf-msg-bubble p { margin: 0; color: inherit; }
 
-.workflow-make .wf-msg-bubble p {
-  margin: 0;
-  color: inherit;
-}
-
-/* Agent bubble — left, subtle background */
+/* Agent bubble — left, neutral surface, asymmetric corner pinches the
+ * bottom-left to give a subtle "speech tail" without an actual tail. */
 .workflow-make .wf-msg-bubble--agent {
-  background: var(--wf-chip);
-  color: var(--wf-ink-soft);
-  border-top-left-radius: 4px;
-  display: inline-block;
-  max-width: 100%;
+  background: var(--rune-bg-raised, var(--wf-card));
+  border-color: var(--rune-line, var(--wf-line));
+  color: var(--rune-fg, var(--wf-ink));
+  border-bottom-left-radius: 3px;
 }
 
-/* System bubble */
+/* System bubble — separator-style label, no fill. */
 .workflow-make .wf-msg-bubble--system {
-  background: var(--wf-accent-soft);
-  color: var(--wf-accent);
-  font-size: 12px;
-  display: inline-block;
-  max-width: 100%;
+  background: transparent;
+  border: none;
+  color: var(--rune-fg-faint, var(--wf-dim));
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  font-weight: 600;
+  padding: 0;
 }
 
-/* User bubble — right, accent filled */
+/* User bubble — right, accent-tinted (NOT solid fill). Reads as
+ * "user voice" without overpowering the dialog. */
 .workflow-make .wf-msg-bubble--user {
-  background: var(--wf-ok);
-  color: #fff;
-  border-top-right-radius: 4px;
-  font-size: 13.5px;
-  display: inline-block;
-  max-width: 100%;
+  background: var(--rune-ac-soft, var(--wf-accent-soft));
+  border-color: var(--rune-ac-edge, var(--wf-accent-edge));
+  color: var(--rune-ac-text, var(--wf-accent-text));
+  border-bottom-right-radius: 3px;
 }
 
 /* ── Input bar ── */
@@ -2307,8 +2687,44 @@
 .workflow-make .wf-chat-input-bar {
   flex-shrink: 0;
   padding: 12px 16px 14px;
-  border-top: 1px solid var(--wf-line);
-  background: var(--wf-bg);
+  border-top: 1px solid var(--rune-line, var(--wf-line));
+  background: var(--rune-bg-surface, var(--wf-bg));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Composer chips — design-spec /plan /retrieve /tool /attach row. */
+.workflow-make .wf-chat-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.workflow-make .wf-chat-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 10px;
+  background: transparent;
+  border: 1px solid var(--rune-line-faint, var(--wf-line));
+  border-radius: 999px;
+  color: var(--rune-fg-mute, var(--wf-ink-soft));
+  font-family: var(--rune-font-mono, var(--wf-font-mono));
+  font-size: 11px;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: background 100ms ease, border-color 100ms ease, color 100ms ease;
+}
+.workflow-make .wf-chat-chip:hover:not(:disabled) {
+  background: var(--rune-bg-base, var(--wf-card));
+  border-color: var(--rune-line, var(--wf-line-strong));
+  color: var(--rune-fg, var(--wf-ink));
+}
+.workflow-make .wf-chat-chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* ── Workflow monitor (shown above the input in input-only mode) ──
@@ -2428,8 +2844,8 @@
 }
 
 .workflow-make .wf-chat-input-wrap:focus-within {
-  border-color: var(--wf-ok);
-  box-shadow: 0 0 0 3px var(--wf-ok-soft);
+  border-color: var(--rune-ac, var(--wf-accent));
+  box-shadow: none;
 }
 
 .workflow-make .wf-chat-input {
@@ -2501,42 +2917,37 @@
 
 /* ── Chat input accessories ── */
 
-/* Model chip trigger (left of input) */
+/* Model / agent chip — exact-match clone of the SolidJS `RuneModelPicker`
+ * trigger styles so refiner / retrieve / workflow all read the same.
+ * Pixel-for-pixel parity with `.rune-model-trigger` in
+ * `packages/app/src/components/unified-shell/model-picker.css`. */
 .workflow-make .wf-chat-model-chip {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 5px;
-  height: 28px;
-  padding: 0 10px 0 8px;
-  border-radius: 8px;
-  border: 1px solid var(--wf-line);
-  background: var(--wf-bg);
-  font-family: var(--wf-font-mono);
-  font-size: 11px;
-  font-weight: 600;
-  font-feature-settings:
-    "liga" 1,
-    "calt" 1;
-  color: var(--wf-ink-soft);
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  background: transparent;
+  border: 1px solid var(--rune-line-faint, var(--wf-line));
+  border-radius: var(--rune-r, 6px);
+  color: var(--rune-fg, var(--wf-ink));
+  font-family: var(--rune-font-sans, var(--wf-font-sans));
+  font-size: 12px;
+  font-weight: 500;
   cursor: pointer;
   white-space: nowrap;
   flex-shrink: 0;
-  transition:
-    border-color 140ms ease,
-    background-color 140ms ease,
-    box-shadow 140ms ease;
+  transition: background 100ms ease, border-color 100ms ease, color 100ms ease;
 }
-
 .workflow-make .wf-chat-model-chip:hover {
-  border-color: var(--wf-line-strong);
-  background: var(--wf-card);
-  box-shadow: var(--wf-shadow-xs);
+  background: var(--rune-bg-surface, var(--wf-chip));
+  border-color: var(--rune-line, var(--wf-line-strong));
+  box-shadow: none;
 }
-
 .workflow-make .wf-chat-model-chip--open {
-  border-color: var(--wf-accent);
-  background: var(--wf-accent-soft);
-  color: var(--wf-accent);
+  background: var(--rune-ac-soft, var(--wf-accent-soft));
+  border-color: var(--rune-ac-edge, var(--wf-accent-edge));
+  color: var(--rune-ac-text, var(--wf-accent-text));
 }
 
 /* Model dropdown (below chip in header) */
@@ -2545,18 +2956,16 @@
   top: 100%;
   left: 0;
   margin-top: 6px;
-  min-width: 220px;
-  max-height: 280px;
+  min-width: 240px;
+  max-height: 320px;
   overflow-y: auto;
-  border-radius: 12px;
-  border: 1px solid var(--wf-line-strong);
-  background: color-mix(in srgb, var(--wf-card) 97%, transparent);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  box-shadow:
-    0 8px 30px -6px rgba(15, 23, 42, 0.12),
-    0 2px 8px rgba(15, 23, 42, 0.06);
-  padding: 6px;
+  border-radius: var(--rune-r-lg, 10px);
+  border: 1px solid var(--rune-line, var(--wf-line-strong));
+  background: var(--rune-bg-raised, var(--wf-card));
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: var(--rune-shadow-lg, 0 16px 40px -8px rgba(15,23,42,0.18), 0 2px 6px rgba(15,23,42,0.06));
+  padding: 4px;
   z-index: 60;
 }
 
@@ -2565,26 +2974,25 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 8px 12px;
-  border-radius: 8px;
-  font-family: var(--wf-font-mono);
+  padding: 7px 10px;
+  border-radius: var(--rune-r-sm, 4px);
+  font-family: var(--rune-font-sans, var(--wf-font-sans));
   font-size: 12px;
+  letter-spacing: 0.01em;
   font-weight: 500;
-  font-feature-settings:
-    "liga" 1,
-    "calt" 1;
-  color: var(--wf-ink);
+  color: var(--rune-fg, var(--wf-ink));
   cursor: pointer;
-  transition: background-color 80ms ease;
+  transition: background-color 100ms ease;
 }
 
 .workflow-make .wf-chat-model-option:hover {
-  background: var(--wf-chip);
+  background: var(--rune-bg-surface, var(--wf-chip));
 }
 
 .workflow-make .wf-chat-model-option--active {
-  background: var(--wf-ok-soft);
-  color: var(--wf-ok-strong);
+  background: var(--rune-ac-soft, var(--wf-ok-soft));
+  color: var(--rune-ac-text, var(--wf-ok-strong));
+  font-weight: 500;
 }
 
 /* ── Slash command popover ── */
@@ -6253,4 +6661,540 @@
 .workflow-make.dark .wf-plan-step-row:hover,
 .workflow-make.dark .wf-exec-step-row:hover {
   background: rgba(255, 255, 255, 0.02);
+}
+
+/* ──────────────────────────────────────────────────────
+   Unified-shell adoption layer
+   ──────────────────────────────────────────────────────
+   When the workflow renders inside the rune unified shell, remap the
+   `--wf-*` tokens onto rune equivalents so the workflow surface adopts
+   the pixel/rune visual language without rewriting every component
+   stylesheet. This is the lever for issue #2 of the redesign feedback:
+   "workflow UI still looks old". Tokens propagate through every existing
+   wf-* component class with no JSX changes required.
+
+   The remap is *additive*: anything not overridden falls back to the
+   light/dark token blocks above. Sharp corners + monospace + neutral
+   surfaces follow from the rune values. Accent stays as the rune
+   accent so emphasis is consistent across modules. */
+.rune-shell .workflow-make {
+  /* Surfaces */
+  --wf-bg: var(--rune-bg-base);
+  --wf-bg-deep: var(--rune-bg-inset);
+  --wf-card: var(--rune-bg-raised);
+  --wf-panel: var(--rune-bg-surface);
+  --wf-chip: var(--rune-bg-surface);
+  --wf-chip-strong: var(--rune-bg-inset);
+
+  /* Borders */
+  --wf-line: var(--rune-line-faint);
+  --wf-line-strong: var(--rune-line);
+
+  /* Typography */
+  --wf-ink: var(--rune-fg);
+  --wf-ink-soft: var(--rune-fg-mute);
+  --wf-dim: var(--rune-fg-dim);
+
+  /* Accent — adopt rune accent for cross-module consistency. */
+  --wf-accent: var(--rune-ac);
+  --wf-accent-soft: var(--rune-ac-soft);
+  --wf-accent-edge: var(--rune-ac-edge);
+  --wf-accent-text: var(--rune-ac-text);
+
+  /* Status */
+  --wf-ok: var(--rune-st-ok, #2f7d4a);
+  --wf-ok-soft: color-mix(in oklab, var(--rune-st-ok, #2f7d4a) 12%, transparent);
+  --wf-ok-strong: var(--rune-st-ok, #2f7d4a);
+  --wf-warn: var(--rune-st-warn, #b07016);
+  --wf-bad: var(--rune-st-err, #b03b1f);
+
+  /* Fonts — match the unified shell so chat + canvas read as one app. */
+  --wf-font-sans: var(--rune-font-sans);
+  --wf-font-mono: var(--rune-font-mono);
+
+  /* Shadows — flatten to the rune pixel/etched style. */
+  --wf-shadow-xs: 0 1px 0 0 var(--rune-line-faint);
+  --wf-shadow-sm: 0 1px 0 0 var(--rune-line-faint);
+  --wf-shadow-md: 0 2px 0 0 var(--rune-line-faint), 0 6px 14px rgba(0, 0, 0, 0.08);
+  --wf-shadow-lg: 0 4px 0 0 var(--rune-line-faint), 0 12px 28px rgba(0, 0, 0, 0.12);
+  --wf-shadow-glow: 0 0 0 1px var(--rune-ac-edge);
+}
+
+/* Focus ring inside the shell — softened from the design's 2px accent
+ * outline, which was too loud on the chat textarea (a wide element gets
+ * a giant blue rectangle). Use 1px accent outline + accent-soft halo
+ * instead, and let inputs use their own border-color: accent inside
+ * `.composer__field` / `.wf-chat-input-wrap`. */
+.rune-shell .workflow-make :focus-visible {
+  outline: 1px solid var(--rune-ac);
+  outline-offset: 1px;
+  box-shadow: none;
+}
+/* Suppress the default focus ring on the chat composer textarea — the
+ * wrapper `.wf-chat-input-wrap` already shifts its border to accent on
+ * `:focus-within`, so a second outline on the textarea is redundant
+ * and reads as a ring within a ring. */
+.rune-shell .workflow-make .wf-chat-input:focus-visible {
+  outline: none;
+}
+
+/* Plan B — hide the legacy wf-topbar entirely when the workflow renders
+   inside the unified shell. The shell's own .rune-head provides the
+   only header (breadcrumb + meta + tasks toggle); per-workflow status,
+   model, ctx and rev now live in the bottom .rune-status bar. */
+.rune-shell .workflow-make .wf-topbar { display: none; }
+
+/* Hide the legacy "root agent" orchestrator card. Per the design template
+ * the canvas only shows actual workflow nodes; the root info now lives
+ * in the breadcrumb (title) + status bar (state/model) + HUD chips
+ * (RUN · stage / graph · N nodes / rev #N). The wf-root-agent + its
+ * outgoing branch connector were redundant chrome. */
+.rune-shell .workflow-make .wf-root-agent { display: none; }
+.rune-shell .workflow-make .wf-branch-connector-wrap { display: none; }
+
+/* Hide the chat-panel header ("Agent Chat" + model chip + agent chip +
+ * workspace path). Design's chat is just messages + composer; the
+ * header info is redundant — model + agent are accessible via the
+ * Inspector's "LLM route" section, workspace via the breadcrumb. */
+.rune-shell .workflow-make .wf-chat-header { display: none; }
+
+/* Events tab pane — vertical timeline of workflow events. */
+.workflow-make .wf-events-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 24px;
+  font-family: var(--rune-font-sans, var(--wf-font-sans));
+  font-size: var(--rune-fs-sm, 12px);
+  font-variant-numeric: tabular-nums;
+}
+.workflow-make .wf-timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.workflow-make .wf-timeline-row {
+  display: grid;
+  grid-template-columns: 80px 16px 1fr;
+  gap: 12px;
+  padding: 8px 0;
+  align-items: start;
+}
+.workflow-make .wf-timeline-time {
+  font-family: var(--rune-font-mono);
+  font-size: 11px;
+  color: var(--rune-fg-faint);
+  padding-top: 2px;
+  text-align: right;
+}
+.workflow-make .wf-timeline-spine {
+  position: relative;
+  width: 16px;
+  align-self: stretch;
+}
+.workflow-make .wf-timeline-spine::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: -16px;
+  width: 1px;
+  background: var(--rune-line-faint);
+  transform: translateX(-50%);
+}
+.workflow-make .wf-timeline-row:last-child .wf-timeline-spine::before {
+  bottom: 8px;
+}
+.workflow-make .wf-timeline-dot {
+  position: absolute;
+  left: 50%;
+  top: 6px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  transform: translateX(-50%);
+  background: var(--rune-fg-dim);
+  box-shadow: 0 0 0 2px var(--rune-bg-base, #fff);
+}
+.workflow-make .wf-timeline-dot--ok { background: var(--rune-st-ok); }
+.workflow-make .wf-timeline-dot--err { background: var(--rune-st-err); }
+.workflow-make .wf-timeline-dot--warn { background: var(--rune-st-warn); }
+.workflow-make .wf-timeline-dot--run {
+  background: var(--rune-ac);
+  animation: wf-timeline-pulse 1.6s ease-in-out infinite;
+}
+@keyframes wf-timeline-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px var(--rune-bg-base, #fff), 0 0 0 0 var(--rune-ac-edge); }
+  50%      { box-shadow: 0 0 0 2px var(--rune-bg-base, #fff), 0 0 0 5px transparent; }
+}
+.workflow-make .wf-timeline-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 1px 0 4px;
+}
+.workflow-make .wf-timeline-headline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.workflow-make .wf-timeline-kind {
+  font-family: var(--rune-font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: var(--rune-r-sm);
+  background: var(--rune-bg-inset);
+  color: var(--rune-fg-dim);
+}
+.workflow-make .wf-timeline-kind--ok { color: var(--rune-st-ok); background: color-mix(in oklab, var(--rune-st-ok) 12%, transparent); }
+.workflow-make .wf-timeline-kind--err { color: var(--rune-st-err); background: color-mix(in oklab, var(--rune-st-err) 12%, transparent); }
+.workflow-make .wf-timeline-kind--warn { color: var(--rune-st-warn); background: color-mix(in oklab, var(--rune-st-warn) 12%, transparent); }
+.workflow-make .wf-timeline-kind--run { color: var(--rune-ac); background: var(--rune-ac-soft); }
+.workflow-make .wf-timeline-source {
+  font-size: 11px;
+  color: var(--rune-fg-mute);
+}
+.workflow-make .wf-timeline-node {
+  margin-left: auto;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  font-size: 11px;
+  color: var(--rune-ac-text);
+  cursor: pointer;
+  padding: 0;
+}
+.workflow-make .wf-timeline-node:hover { text-decoration: underline; }
+.workflow-make .wf-timeline-summary {
+  font-size: 12px;
+  color: var(--rune-fg);
+  line-height: 1.55;
+  word-break: break-word;
+}
+.workflow-make .wf-events-row {
+  display: grid;
+  grid-template-columns: 32px 1fr;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--rune-line-faint, var(--wf-line));
+  align-items: baseline;
+}
+.workflow-make .wf-events-row-i {
+  color: var(--rune-fg-faint, var(--wf-dim));
+  font-size: 10px;
+}
+.workflow-make .wf-events-row-msg {
+  color: var(--rune-fg-mute, var(--wf-ink));
+}
+.workflow-make .wf-events-empty {
+  padding: 64px 24px;
+  color: var(--rune-fg-faint, var(--wf-dim));
+  font-style: italic;
+  text-align: center;
+}
+
+/* Ensure the canvas always has minimum height so the absolute HUD
+ * (top-left), zoom controls (top-right), and run cluster (bottom-right)
+ * never collide visually when there are no nodes. Without this, the
+ * empty state collapsed the canvas to ~80px and the bottom-right run
+ * cluster overlapped the top-right zoom controls. */
+.rune-shell .workflow-make .wf-canvas-host {
+  min-height: 280px;
+}
+
+/* Canvas HUD overlays — design-spec top-left chips + top-right controls. */
+/* Aside (Inspector) toggle button — design template's pill-shaped
+ * collapse handle attached to the boundary between center column and
+ * right aside. Replaces the draggable SplitBar; collapses the aside to
+ * 0 on click. */
+.workflow-make .wf-rcanvas-aside-toggle {
+  position: relative;
+  z-index: 4;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--rune-bg-base, var(--wf-card));
+  border: 1px solid var(--rune-line, var(--wf-line-strong));
+  border-radius: 50%;
+  color: var(--rune-fg-mute, var(--wf-ink-soft));
+  cursor: pointer;
+  margin: 12px -11px 0 -11px;
+  align-self: flex-start;
+  flex: none;
+  font-size: 14px;
+  line-height: 1;
+  font-family: var(--rune-font-sans, var(--wf-font-sans));
+  font-weight: 500;
+  transition: background 100ms ease, color 100ms ease;
+}
+.workflow-make .wf-rcanvas-aside-toggle:hover {
+  background: var(--rune-bg-surface, var(--wf-chip));
+  color: var(--rune-fg, var(--wf-ink));
+}
+.workflow-make .wf-aside-col {
+  transition: width 200ms ease;
+  overflow: hidden;
+}
+.workflow-make .wf-aside-col[data-aside="closed"] > * {
+  visibility: hidden;
+}
+
+/* Inspector collapsible section header. Used by CollapsibleSection
+ * — full-width clickable strip with caret + uppercase label + optional
+ * hint and right-side count. */
+.workflow-make .wf-insp-collapse-hd {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  padding: 4px 0;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  transition: opacity 100ms ease;
+}
+.workflow-make .wf-insp-collapse-hd:hover { opacity: 0.85; }
+.workflow-make .wf-insp-collapse-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  font-size: 10px;
+  color: var(--rune-fg-faint, var(--wf-dim));
+  transition: transform 150ms ease;
+  flex: none;
+}
+.workflow-make .wf-insp-collapse-caret[data-open="false"] { transform: rotate(-90deg); }
+
+/* Inspector section header — design-spec uppercase label, no caret. */
+.workflow-make .wf-insp-sec-hd {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--rune-fg-dim, var(--wf-dim));
+}
+
+/* Inspector edit pencil button (right of header). */
+.workflow-make .wf-insp-edit-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--rune-r-sm, 4px);
+  color: var(--rune-fg-dim, var(--wf-dim));
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  transition: background 100ms ease, color 100ms ease;
+  flex: none;
+}
+.workflow-make .wf-insp-edit-btn:hover {
+  background: var(--rune-bg-surface, var(--wf-chip));
+  color: var(--rune-fg, var(--wf-ink));
+}
+
+/* re-run / logs action chip under SELECTED NODE. */
+.workflow-make .wf-insp-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: var(--rune-r-sm, 4px);
+  background: var(--rune-bg-surface, var(--wf-chip));
+  border: 1px solid var(--rune-line-faint, var(--wf-line));
+  color: var(--rune-fg-mute, var(--wf-ink-soft));
+  font-size: var(--rune-fs-xs, 11px);
+  font-family: var(--rune-font-mono, var(--wf-font-mono));
+  cursor: pointer;
+  transition: background 100ms ease, color 100ms ease, border-color 100ms ease;
+}
+.workflow-make .wf-insp-action:hover {
+  background: var(--rune-bg-base, var(--wf-card));
+  color: var(--rune-fg, var(--wf-ink));
+  border-color: var(--rune-line, var(--wf-line-strong));
+}
+
+/* Inline model link inside Selected Node KV. */
+.workflow-make .wf-insp-model-link {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: var(--rune-fg, var(--wf-ink));
+  font-family: var(--rune-font-mono, var(--wf-font-mono));
+  font-size: 11px;
+  cursor: pointer;
+  text-align: left;
+  text-decoration: none;
+  transition: color 100ms ease;
+}
+.workflow-make .wf-insp-model-link:hover {
+  color: var(--rune-ac-text, var(--wf-accent));
+}
+
+/* Empty state when no node is selected. */
+.workflow-make .wf-insp-empty {
+  padding: 24px 12px;
+  text-align: center;
+  font-size: var(--rune-fs-sm, 12px);
+  color: var(--rune-fg-faint, var(--wf-dim));
+  font-style: italic;
+  border: 1px dashed var(--rune-line-faint, var(--wf-line));
+  border-radius: var(--rune-r, 6px);
+}
+
+/* Inspector key/value list — design-spec dl with 64px term column. */
+.workflow-make .wf-kv {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  gap: 8px 14px;
+  font-size: var(--rune-fs-sm, 12px);
+  align-items: baseline;
+  margin: 0;
+}
+.workflow-make .wf-kv > dt {
+  color: var(--rune-fg-dim, var(--wf-dim));
+  font-size: var(--rune-fs-xs, 11px);
+  letter-spacing: 0.02em;
+  margin: 0;
+}
+.workflow-make .wf-kv > dd {
+  color: var(--rune-fg, var(--wf-ink));
+  margin: 0;
+  word-break: break-all;
+}
+.workflow-make .wf-kv > dd.font-mono {
+  font-family: var(--rune-font-mono, var(--wf-font-mono));
+  font-size: 11.5px;
+}
+
+.workflow-make .wf-canvas-host { position: relative; }
+.workflow-make .wf-canvas-hud {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 4;
+  font-size: 11px;
+  color: var(--rune-fg-dim, var(--wf-dim));
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.workflow-make .wf-canvas-hud-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 8px;
+  background: var(--rune-bg-base, var(--wf-bg));
+  border: 1px solid var(--rune-line-faint, var(--wf-line));
+  border-radius: 4px;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--rune-fg-mute, var(--wf-ink-soft));
+  pointer-events: auto;
+  white-space: nowrap;
+}
+.workflow-make .wf-canvas-hud-chip-mono {
+  font-family: var(--rune-font-mono, var(--wf-font-mono));
+}
+.workflow-make .wf-canvas-hud-chip[data-state="run"] {
+  color: var(--rune-ac-text, var(--wf-accent));
+  border-color: var(--rune-ac-edge, var(--wf-accent-edge));
+  background: var(--rune-ac-soft, var(--wf-accent-soft));
+}
+.workflow-make .wf-canvas-hud-chip[data-state="ok"] {
+  color: var(--rune-st-ok);
+  border-color: rgba(22, 163, 74, 0.28);
+  background: rgba(22, 163, 74, 0.06);
+}
+.workflow-make .wf-canvas-hud-chip[data-state="err"] {
+  color: var(--rune-st-err);
+  border-color: rgba(220, 38, 38, 0.28);
+  background: rgba(220, 38, 38, 0.06);
+}
+.workflow-make .wf-canvas-hud-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+.workflow-make .wf-canvas-hud-chip[data-state="run"] .wf-canvas-hud-dot {
+  animation: rune-pulse 1.6s ease-in-out infinite;
+}
+
+/* Run/Restart/Pause/Stop cluster — bottom-right of canvas. Renamed
+   to wf-canvas-run-cluster (was .wf-canvas-controls) to avoid colliding
+   with the existing zoom-controls block defined in the canvas component
+   itself. These are functional necessities not in the design template;
+   placing them bottom-right keeps them reachable but visually
+   subordinate to the design's top-right zoom cluster. */
+.workflow-make .wf-canvas-run-cluster {
+  position: absolute;
+  bottom: 16px;
+  right: 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  z-index: 4;
+}
+.workflow-make .wf-canvas-run-ctrl {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 12px;
+  background: var(--rune-bg-base, var(--wf-bg));
+  border: 1px solid var(--rune-line-faint, var(--wf-line));
+  border-radius: var(--rune-r, 6px);
+  color: var(--rune-fg, var(--wf-ink));
+  font-family: var(--rune-font-sans, var(--wf-font-sans));
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 100ms ease, border-color 100ms ease, color 100ms ease;
+}
+.workflow-make .wf-canvas-run-ctrl:hover {
+  background: var(--rune-bg-surface, var(--wf-card));
+  border-color: var(--rune-line, var(--wf-line-strong));
+}
+.workflow-make .wf-canvas-run-ctrl-primary {
+  background: var(--rune-ac, var(--wf-accent));
+  color: #fff;
+  border-color: var(--rune-ac, var(--wf-accent));
+}
+.workflow-make .wf-canvas-run-ctrl-primary:hover { filter: brightness(0.95); }
+.workflow-make .wf-canvas-run-ctrl-danger {
+  background: var(--rune-st-err);
+  color: #fff;
+  border-color: var(--rune-st-err);
+}
+.workflow-make .wf-canvas-run-ctrl-danger:hover { filter: brightness(0.95); }
+.workflow-make .wf-canvas-run-ctrl-warn {
+  background: rgba(217, 119, 6, 0.10);
+  color: var(--rune-st-warn);
+  border-color: rgba(217, 119, 6, 0.28);
+}
+.workflow-make .wf-canvas-run-ctrl-warn:hover {
+  background: rgba(217, 119, 6, 0.16);
 }

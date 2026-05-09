@@ -2581,7 +2581,14 @@ export namespace Refiner {
     // we still leverage the full router because it sees existing categories/kinds.
     const existing = (await listExperiences()).map(summarizeExperience)
     const decisions = await routeObservation({ observation, existing })
-    if (!decisions.length) return { ok: false as const, error: "route_failed" }
+    /* If the route LLM call failed (e.g. provider returned `choices: null`),
+     * fall through to the synthesis branch below instead of hard-erroring with
+     * `route_failed`. The user explicitly asked to create an experience —
+     * better to produce one with a fallback kind than to drop their input on
+     * the floor when the routing model is flaky. The synthesis branch will
+     * either run `refineExperience` (if THAT call works) or, if that also
+     * fails, the proposal is built from the user-provided hints + their
+     * raw text. */
 
     // This endpoint's contract is "create one experience from this text".
     // If the router fanned out into multiple decisions, we pick the first
@@ -2619,19 +2626,42 @@ export namespace Refiner {
         last_refined_at: observedAt,
       }
       const refined = await refineExperience({ experience: skeleton, triggerObservation: observation })
-      if (!refined) return { ok: false as const, error: "refine_failed" }
-      proposal = {
-        action: "new",
-        reason: "manual_create",
-        kind: input.kind_hint ?? refined.kind,
-        title: refined.title,
-        abstract: refined.abstract,
-        statement: refined.statement,
-        trigger_condition: refined.trigger_condition,
-        task_type: input.task_type_hint ?? refined.task_type,
-        scope: input.scope_hint ?? refined.scope,
-        categories: refined.categories,
-        conflicts_with: refined.conflicts_with,
+      if (refined) {
+        proposal = {
+          action: "new",
+          reason: "manual_create",
+          kind: input.kind_hint ?? refined.kind,
+          title: refined.title,
+          abstract: refined.abstract,
+          statement: refined.statement,
+          trigger_condition: refined.trigger_condition,
+          task_type: input.task_type_hint ?? refined.task_type,
+          scope: input.scope_hint ?? refined.scope,
+          categories: refined.categories,
+          conflicts_with: refined.conflicts_with,
+        }
+      } else {
+        /* Last-resort fallback: both the route LLM and the refine LLM failed
+         * (provider quirk or transient outage). Build a minimal proposal
+         * straight from the user's input + their hints so the experience
+         * still lands on disk. The user can refine/edit later via the
+         * card's Re-refine / Edit buttons once the model is healthy again. */
+        log.warn("manual create — both route and refine LLM failed; using user-text fallback", {
+          observation_id: observation.id,
+        })
+        proposal = {
+          action: "new",
+          reason: "manual_create_fallback",
+          kind: input.kind_hint ?? "know_how",
+          title: clipText(text, 40),
+          abstract: clipText(text, 200),
+          statement: undefined,
+          trigger_condition: undefined,
+          task_type: input.task_type_hint,
+          scope: input.scope_hint ?? "workspace",
+          categories: [],
+          conflicts_with: [],
+        }
       }
     }
 

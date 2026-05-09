@@ -1595,6 +1595,11 @@ export function WorkflowRuntimePanel(props: {
   tasks?: WorkflowAppProps["tasks"]
   activeTaskId?: string
   onTaskSelect?: (taskID: string) => void
+  /** Design-spec workflow tab from the unified shell substrip:
+   *  canvas / chat / events. Default canvas. Dynamic node / sand-table
+   *  tabs use the form `node:<id>` / `sand:<id>` — those values pass
+   *  through here untouched and are interpreted downstream in WorkflowApp. */
+  workflowTab?: string
 }) {
   const sync = useSync()
   const dialog = useDialog()
@@ -1910,6 +1915,24 @@ export function WorkflowRuntimePanel(props: {
     const plan = sandPlan()
     if (!plan && allNodes.length === 0) return undefined
 
+    // Index events by node_id so each node card can show its latest
+    // slave-agent activity in the bottom marquee. We pick the most
+    // recent event and project a short status string from it.
+    const liveStatusByNode = new Map<string, string>()
+    const allEvents = props.snapshot.events ?? []
+    const sorted = [...allEvents].sort((a, b) => b.time_created - a.time_created)
+    for (const ev of sorted) {
+      if (!ev.node_id) continue
+      if (liveStatusByNode.has(ev.node_id)) continue
+      const p = (ev.payload ?? {}) as Record<string, unknown>
+      const txt =
+        (typeof p["status"] === "string" && (p["status"] as string)) ||
+        (typeof p["message"] === "string" && (p["message"] as string)) ||
+        (typeof p["reason"] === "string" && (p["reason"] as string)) ||
+        ev.kind
+      liveStatusByNode.set(ev.node_id, `${ev.kind} · ${txt}`)
+    }
+
     const renderable = (node: WorkflowNode): ChainNode => {
       const startRev = node.graph_rev_at_start
       const stale =
@@ -1919,7 +1942,14 @@ export function WorkflowRuntimePanel(props: {
         title: node.title,
         type: nodeKind(node) === "build" ? "build-flash" : (nodeKind(node) as "coding" | "debug" | "deploy"),
         status: tone(node.status),
-        session: node.session_id ?? props.snapshot.workflow.session_id,
+        // Don't fall back to the root session id when a node hasn't
+        // started yet — that lookup chain caused NodeSessionView to render
+        // the MASTER session's messages for unstarted child nodes (the
+        // user reported clicking a not-yet-running node and seeing the
+        // orchestrator's chat). When session is undefined, the chat
+        // panel renders an empty state, which is the correct UX.
+        session: node.session_id ?? undefined,
+        liveStatus: liveStatusByNode.get(node.id),
         stale,
       }
     }
@@ -2243,7 +2273,13 @@ export function WorkflowRuntimePanel(props: {
         title: node.title,
         type: nodeKind(node) === "build" ? "build-flash" : (nodeKind(node) as "coding" | "debug" | "deploy"),
         status: tone(node.status),
-        session: node.session_id ?? props.snapshot.workflow.session_id,
+        // Don't fall back to the root session id when a node hasn't
+        // started yet — that lookup chain caused NodeSessionView to render
+        // the MASTER session's messages for unstarted child nodes (the
+        // user reported clicking a not-yet-running node and seeing the
+        // orchestrator's chat). When session is undefined, the chat
+        // panel renders an empty state, which is the correct UX.
+        session: node.session_id ?? undefined,
         stale,
       }
     }
@@ -2360,7 +2396,13 @@ export function WorkflowRuntimePanel(props: {
         title: node.title,
         type: nodeKind(node) === "build" ? "build-flash" : (nodeKind(node) as "coding" | "debug" | "deploy"),
         status: tone(node.status),
-        session: node.session_id ?? props.snapshot.workflow.session_id,
+        // Don't fall back to the root session id when a node hasn't
+        // started yet — that lookup chain caused NodeSessionView to render
+        // the MASTER session's messages for unstarted child nodes (the
+        // user reported clicking a not-yet-running node and seeing the
+        // orchestrator's chat). When session is undefined, the chat
+        // panel renders an empty state, which is the correct UX.
+        session: node.session_id ?? undefined,
         summary: modelReady(node) ? [modelLabel(node)] : ["route model"],
         stale,
       }
@@ -2972,6 +3014,10 @@ export function WorkflowRuntimePanel(props: {
         title: props.snapshot.workflow.title,
         status: status(),
         env: env(),
+        // Design-spec sub-tab from the unified shell substrip. Dynamic
+        // tabs (node:<id> / sand:<id>) pass through; WorkflowApp treats
+        // any non-fixed value as "canvas" + sets sessionNode internally.
+        view: ((props.workflowTab ?? "canvas") as "canvas" | "chat" | "events"),
         model: currentModel(),
         models: choices().map((item) => item.label),
         workspace: sdk.directory,
@@ -2985,6 +3031,34 @@ export function WorkflowRuntimePanel(props: {
         flow: flow(),
         agents: agents(),
         tokenStats: tokenStats(),
+        // Pre-project workflow events for the timeline tab — sort happens
+        // in the React side; here we just pick the right fields and join
+        // with the node title so each row can deep-link.
+        workflowEvents: (props.snapshot.events ?? []).map((ev) => {
+          const node = ev.node_id
+            ? props.snapshot.nodes.find((n) => n.id === ev.node_id)
+            : undefined
+          // Build a human-readable summary from the payload — the kind
+          // alone is too terse, but the full payload is too noisy. Pick
+          // a few common fields if present.
+          const p = (ev.payload ?? {}) as Record<string, unknown>
+          const summaryBits: string[] = []
+          for (const k of ["status", "reason", "message", "result", "error"]) {
+            const v = p[k]
+            if (typeof v === "string" && v.length > 0) {
+              summaryBits.push(`${k}=${v.length > 60 ? v.slice(0, 60) + "…" : v}`)
+            }
+          }
+          return {
+            id: ev.id,
+            kind: ev.kind,
+            source: ev.source,
+            nodeID: ev.node_id ?? undefined,
+            nodeTitle: node?.title,
+            summary: summaryBits.length > 0 ? summaryBits.join(" · ") : ev.kind,
+            time: ev.time_created,
+          }
+        }),
         chats: chatsWithDialogs(),
         chatExtraCommands: chatExtraCommands(),
         sandTables: sandTables(),

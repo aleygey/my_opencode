@@ -23,11 +23,14 @@
 
 @import "./tokens.css";
 
-/* ─── Root grid ─── */
+/* ─── Root grid (design-spec: rail | main + bottom status bar) ─── */
 .rune-shell {
   display: grid;
   grid-template-columns: var(--rune-rail-w) 1fr;
-  grid-template-rows: 100%;
+  grid-template-rows: 1fr var(--rune-status-h);
+  grid-template-areas:
+    "rail main"
+    "status status";
   height: 100%;
   width: 100%;
   background: var(--rune-bg-base);
@@ -46,6 +49,10 @@
 .rune-shell[data-rail="collapsed"] {
   grid-template-columns: var(--rune-rail-w-collapsed) 1fr;
 }
+
+.rune-shell .rune-rail { grid-area: rail; }
+.rune-shell .rune-main { grid-area: main; }
+.rune-shell .rune-status { grid-area: status; }
 
 .rune-shell * { box-sizing: border-box; }
 .rune-shell button {
@@ -358,6 +365,71 @@
   flex: none;
 }
 
+/* Rail sub-item with × delete button — wraps the sub button + a
+ * trailing × that's hidden until row hover. */
+.rune-shell .rune-rail-sub-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+.rune-shell .rune-rail-sub-wrap .rune-rail-sub {
+  flex: 1;
+  width: auto;
+}
+.rune-shell .rune-rail-sub-del {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--rune-fg-faint);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  border: 0;
+  padding: 0;
+  opacity: 0;
+  transition: background var(--rune-t-fast), color var(--rune-t-fast), opacity var(--rune-t-fast);
+}
+.rune-shell .rune-rail-sub-wrap:hover .rune-rail-sub-del,
+.rune-shell .rune-rail-sub-wrap.is-on .rune-rail-sub-del {
+  opacity: 1;
+}
+.rune-shell .rune-rail-sub-del:hover {
+  background: var(--rune-st-err);
+  color: #fff;
+}
+
+/* "+ Add task" button at the bottom of the workflow sub-list. Styled
+   as a sub-row but visually subdued — accent only on hover so it
+   doesn't out-shout actual tasks. */
+.rune-shell .rune-rail-sub-add {
+  color: var(--rune-fg-faint);
+  border: 1px dashed transparent;
+  cursor: pointer;
+}
+.rune-shell .rune-rail-sub-add::before {
+  background: transparent !important;
+}
+.rune-shell .rune-rail-sub-add:hover {
+  color: var(--rune-ac);
+  border-color: var(--rune-ac-edge);
+  background: var(--rune-ac-soft);
+}
+.rune-shell .rune-rail-sub-add-ic {
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  color: currentColor;
+}
+
 .rune-shell .rune-rail-foot {
   margin-top: auto;
   padding: var(--rune-u3) var(--rune-u4);
@@ -417,18 +489,29 @@
 .rune-shell .rune-head-meta {
   display: flex;
   align-items: center;
-  gap: var(--rune-u3);
+  gap: 14px;
   padding-left: var(--rune-u4);
+  margin-left: var(--rune-u4);
   border-left: 1px solid var(--rune-line-faint);
-  font-family: var(--rune-font-mono);
   font-size: var(--rune-fs-xs);
-  color: var(--rune-fg-faint);
+  color: var(--rune-fg-dim);
   flex: none;
 }
+.rune-shell .rune-head-meta-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 10px;
+}
 .rune-shell .rune-head-meta-item b {
-  font-weight: 500;
   color: var(--rune-fg-mute);
-  margin-left: 4px;
+  font-weight: 500;
+  font-size: var(--rune-fs-sm);
+  letter-spacing: 0;
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
 }
 .rune-shell .rune-head-actions {
   display: flex;
@@ -437,51 +520,111 @@
   flex: none;
 }
 
-/* ─── Substrip (sub-tabs + extras) ─── */
+/* ─── Substrip (sub-tabs + extras, design-spec: text-link tabs) ─── */
 .rune-shell .rune-substrip {
   display: flex;
   align-items: center;
-  gap: var(--rune-u3);
+  gap: var(--rune-u4);
   height: var(--rune-substrip-h);
   padding: 0 var(--rune-u6);
   border-bottom: 1px solid var(--rune-line-faint);
   background: var(--rune-bg-base);
   min-width: 0;
+  white-space: nowrap;
+  overflow-x: auto;
 }
+.rune-shell .rune-substrip::-webkit-scrollbar { height: 0; }
 .rune-shell .rune-substrip-tabs {
   display: flex;
-  gap: var(--rune-u);
+  align-items: center;
+  gap: 18px;
+  height: 100%;
   flex: none;
 }
 .rune-shell .rune-substrip-tab {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: var(--rune-u);
-  height: 30px;
-  padding: 0 12px;
-  border-radius: var(--rune-r-sm);
-  color: var(--rune-fg-mute);
+  height: 100%;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: var(--rune-fg-dim);
   font-size: var(--rune-fs-sm);
   font-weight: 500;
-  position: relative;
-  transition: color var(--rune-t-fast), background var(--rune-t-fast);
+  letter-spacing: 0.005em;
+  transition: color var(--rune-t-fast);
 }
-.rune-shell .rune-substrip-tab:hover { color: var(--rune-fg); background: var(--rune-bg-inset); }
-.rune-shell .rune-substrip-tab.is-on { color: var(--rune-fg); }
-.rune-shell .rune-substrip-tab.is-on::after {
+.rune-shell .rune-substrip-tab::after {
   content: "";
   position: absolute;
-  left: 12px;
-  right: 12px;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  background: transparent;
+  transition: background var(--rune-t-fast);
+}
+.rune-shell .rune-substrip-tab:hover { color: var(--rune-fg); background: transparent; }
+.rune-shell .rune-substrip-tab.is-on { color: var(--rune-fg); background: transparent; }
+.rune-shell .rune-substrip-tab.is-on::after { background: var(--rune-ac); }
+.rune-shell .rune-substrip-tab-count {
+  font-family: var(--rune-font-sans);
+  font-size: 10px;
+  color: var(--rune-fg-faint);
+  font-weight: 400;
+}
+.rune-shell .rune-substrip-tab.is-on .rune-substrip-tab-count { color: var(--rune-ac-text); }
+
+/* Closable tab (browser-tab-like): wraps tab + × button. The wrap gets
+ * the underline indicator instead of the tab button itself so the
+ * indicator stretches under both. */
+.rune-shell .rune-substrip-tab-wrap {
+  display: inline-flex;
+  align-items: center;
+  height: 100%;
+  position: relative;
+}
+.rune-shell .rune-substrip-tab-wrap.is-closable {
+  padding: 0 6px 0 10px;
+  background: transparent;
+}
+.rune-shell .rune-substrip-tab-wrap.is-on::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
   bottom: -1px;
   height: 2px;
   background: var(--rune-ac);
-  border-radius: 2px;
 }
-.rune-shell .rune-substrip-tab-count {
-  font-family: var(--rune-font-mono);
-  font-size: 10px;
+/* When inside a closable wrap, suppress the button's own underline so
+ * the wrap's underline is the only indicator. */
+.rune-shell .rune-substrip-tab-wrap.is-closable .rune-substrip-tab.is-on::after {
+  display: none;
+}
+.rune-shell .rune-substrip-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 4px;
+  border-radius: 50%;
+  background: transparent;
   color: var(--rune-fg-faint);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  border: 0;
+  padding: 0;
+  transition: background var(--rune-t-fast), color var(--rune-t-fast);
+}
+.rune-shell .rune-substrip-tab-close:hover {
+  background: var(--rune-bg-inset);
+  color: var(--rune-fg);
 }
 
 /* Segmented variant — for binary toggles like List/Graph */
@@ -758,6 +901,86 @@
   background: var(--rune-bg-raised);
   color: var(--rune-fg);
   box-shadow: var(--rune-shadow-sm);
+}
+
+/* ─── Substrip search input — design-spec 200px field with leading icon. */
+.rune-shell .rune-search-input {
+  display: flex;
+  align-items: center;
+  gap: var(--rune-u2);
+  width: 200px;
+  height: 30px;
+  padding: 0 12px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--rune-r);
+  color: var(--rune-fg-dim);
+  font-size: var(--rune-fs-sm);
+  transition: background var(--rune-t-fast), border-color var(--rune-t-fast);
+}
+.rune-shell .rune-search-input:hover {
+  background: var(--rune-bg-surface);
+}
+.rune-shell .rune-search-input:focus-within {
+  background: var(--rune-bg-surface);
+  border-color: var(--rune-line);
+  color: var(--rune-fg);
+}
+.rune-shell .rune-search-input .rune-search-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: currentColor;
+  flex: none;
+}
+.rune-shell .rune-search-input input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  color: var(--rune-fg);
+  font: inherit;
+}
+.rune-shell .rune-search-input input::placeholder {
+  color: var(--rune-fg-faint);
+}
+
+/* ─── Status Bar (28px bottom row, design-spec) ─── */
+.rune-shell .rune-status {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  height: var(--rune-status-h);
+  padding: 0 20px;
+  background: var(--rune-bg-base);
+  border-top: 1px solid var(--rune-line-faint);
+  font-size: 10.5px;
+  color: var(--rune-fg-dim);
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.rune-shell .rune-status-seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.rune-shell .rune-status-seg .rune-status-label {
+  font-size: 9.5px;
+  color: var(--rune-fg-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.rune-shell .rune-status-seg-mono {
+  font-family: var(--rune-font-mono);
+}
+.rune-shell .rune-status-sep {
+  width: 1px;
+  height: 10px;
+  background: var(--rune-line-faint);
+  flex: none;
 }
 
 /* ─── Animations ─── */

@@ -631,8 +631,10 @@ function renderSystemBlock(
   const tag = opts.tag ?? "retrieved_experiences"
   const intro =
     opts.intro ??
-    "These reusable experiences were selected for this turn based on the conversation. " +
-      "Use them as soft guidance — they describe rules, conventions, or knowledge from prior interactions in this workspace."
+    "These experiences were selected for this turn because they directly match the current task's context. " +
+      "Treat them as authoritative project rules — strongly prefer following each `rule` and `detail` line below unless the user explicitly contradicts them in this exact turn. " +
+      "These are not optional reminders; they are accumulated working knowledge that the team has decided applies whenever the matching context appears. " +
+      "If a rule seems to conflict with what the user just asked, surface the conflict to the user before deviating."
   const lines: string[] = []
   lines.push(`<${tag}>`)
   lines.push(intro)
@@ -725,6 +727,7 @@ async function pickBaseline(
   const all = await Refiner.experiences()
   const filtered = all
     .filter((e) => !e.archived)
+    .filter((e) => ((e as any).review_status ?? "approved") !== "rejected")
     .filter((e) => BASELINE_KINDS.has(e.kind))
     .filter((e) => layerMatches((e as any).target_layer ?? "both", layer))
 
@@ -819,6 +822,7 @@ async function runPipeline(input: PipelineInput): Promise<{
     const all = await Refiner.experiences()
     const candidates = all
       .filter((e) => !e.archived)
+      .filter((e) => ((e as any).review_status ?? "approved") !== "rejected")
       .filter((e) => layerMatches((e as any).target_layer ?? "both", layer))
     candidateCount = candidates.length
     const summaries = candidates.map(summarize)

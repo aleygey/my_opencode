@@ -59,6 +59,13 @@ export type ShellSubstripTab = {
   id: string
   name: string
   count?: number
+  /** When set, the tab gets a trailing × button. Click invokes this
+   *  callback (without switching active tab). Used for dynamically
+   *  opened tabs like a node or sand-table session that the user can
+   *  dismiss like a browser tab. */
+  onClose?: () => void
+  /** Optional small dot indicator on the left (status). */
+  state?: "ok" | "run" | "warn" | "idle" | "err"
 }
 
 export type ShellSubstripConfig = {
@@ -78,6 +85,9 @@ export type ShellRailSubItem = {
   meta?: string
   /** Optional left dot status. */
   state?: "ok" | "run" | "warn" | "idle" | "err"
+  /** When set, the sub-item shows a trailing × on hover/focus. Click
+   *  invokes this handler without selecting the sub-item. */
+  onDelete?: () => void
 }
 
 export type ShellTask = {
@@ -118,7 +128,25 @@ export type ShellProps = ParentProps<{
   onPickTask?: (id: string) => void
   /** Click + button to spawn a new task. */
   onCreateTask?: () => void
+  /** Click × button on a task (rail sub or drawer card) to delete it.
+   *  The picker prompts for confirm before invoking. */
+  onDeleteTask?: (id: string) => void
+  /** Bottom status bar segments (design-spec: READY · SESS · MODEL · CTX · REV · time). */
+  status?: ShellStatusConfig
 }>
+
+export type ShellStatusConfig = {
+  /** Lifecycle state of the active session: ready / running / paused / failed. */
+  state?: "ready" | "running" | "paused" | "failed"
+  /** Active session id (truncated by the bar itself). */
+  sessionId?: string
+  /** Resolved model label (e.g. "anthropic/claude-opus-4-7"). */
+  model?: string
+  /** Token usage label (e.g. "12k / 1m"). */
+  ctx?: string
+  /** Workflow graph revision number. */
+  rev?: string | number
+}
 
 /* ──────────────────────────────────────────────────────
    Theme + rail-collapsed persistence
@@ -197,6 +225,7 @@ function Rail(props: {
   activeSubId?: string
   onPickModule: (m: ShellModule) => void
   onPickSub?: (id: string) => void
+  onCreateTask?: () => void
   onToggleCollapse: () => void
 }) {
   // Track which module rows are open (for sub-list reveal). Active module
@@ -262,33 +291,69 @@ function Rail(props: {
                     </span>
                   </Show>
                 </button>
-                <Show when={isOpen() && props.subs && props.subs.length > 0}>
+                <Show when={isOpen() && ((props.subs && props.subs.length > 0) || (def.id === "workflow" && props.onCreateTask))}>
                   <div class="rune-rail-subs">
                     <For each={props.subs}>
                       {(sub) => (
-                        <button
-                          type="button"
-                          class="rune-rail-sub"
+                        <div
+                          class="rune-rail-sub-wrap"
                           classList={{ "is-on": sub.id === props.activeSubId }}
-                          onClick={() => props.onPickSub?.(sub.id)}
                         >
-                          <Show when={sub.state}>
-                            <span class="rune-dot" data-st={sub.state} />
-                          </Show>
-                          <span class="rune-rail-sub-title">{sub.title}</span>
-                          <Show when={sub.meta}>
-                            <span
-                              classList={{
-                                "rune-rail-sub-id": def.id === "workflow",
-                                "rune-rail-sub-n": def.id === "knowledge",
+                          <button
+                            type="button"
+                            class="rune-rail-sub"
+                            classList={{ "is-on": sub.id === props.activeSubId }}
+                            onClick={() => props.onPickSub?.(sub.id)}
+                          >
+                            <Show when={sub.state}>
+                              <span class="rune-dot" data-st={sub.state} />
+                            </Show>
+                            <span class="rune-rail-sub-title">{sub.title}</span>
+                            <Show when={sub.meta}>
+                              <span
+                                classList={{
+                                  "rune-rail-sub-id": def.id === "workflow",
+                                  "rune-rail-sub-n": def.id === "knowledge",
+                                }}
+                              >
+                                {sub.meta}
+                              </span>
+                            </Show>
+                          </button>
+                          <Show when={sub.onDelete}>
+                            <button
+                              type="button"
+                              class="rune-rail-sub-del"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                if (window.confirm(`Delete task "${sub.title}"?`)) {
+                                  sub.onDelete?.()
+                                }
                               }}
+                              title="Delete task"
+                              aria-label={`Delete task ${sub.title}`}
                             >
-                              {sub.meta}
-                            </span>
+                              ×
+                            </button>
                           </Show>
-                        </button>
+                        </div>
                       )}
                     </For>
+                    <Show when={def.id === "workflow" && props.onCreateTask}>
+                      <button
+                        type="button"
+                        class="rune-rail-sub rune-rail-sub-add"
+                        onClick={() => props.onCreateTask?.()}
+                        title="新建 task"
+                      >
+                        <span class="rune-rail-sub-add-ic" aria-hidden>
+                          <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
+                            <path d="M8 3v10M3 8h10" />
+                          </svg>
+                        </span>
+                        <span class="rune-rail-sub-title">新建 task</span>
+                      </button>
+                    </Show>
                   </div>
                 </Show>
               </>
@@ -411,17 +476,42 @@ function Substrip(props: { cfg: ShellSubstripConfig }) {
           <div class="rune-substrip-tabs">
             <For each={props.cfg.tabs}>
               {(t) => (
-                <button
-                  type="button"
-                  class="rune-substrip-tab"
-                  classList={{ "is-on": t.id === props.cfg.active }}
-                  onClick={() => props.cfg.onTab?.(t.id)}
+                <div
+                  class="rune-substrip-tab-wrap"
+                  classList={{
+                    "is-on": t.id === props.cfg.active,
+                    "is-closable": !!t.onClose,
+                  }}
                 >
-                  {t.name}
-                  <Show when={t.count !== undefined}>
-                    <span class="rune-substrip-tab-count">{t.count}</span>
+                  <button
+                    type="button"
+                    class="rune-substrip-tab"
+                    classList={{ "is-on": t.id === props.cfg.active }}
+                    onClick={() => props.cfg.onTab?.(t.id)}
+                  >
+                    <Show when={t.state}>
+                      <span class="rune-dot" data-st={t.state} />
+                    </Show>
+                    {t.name}
+                    <Show when={t.count !== undefined}>
+                      <span class="rune-substrip-tab-count">{t.count}</span>
+                    </Show>
+                  </button>
+                  <Show when={t.onClose}>
+                    <button
+                      type="button"
+                      class="rune-substrip-tab-close"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        t.onClose?.()
+                      }}
+                      title="Close tab"
+                      aria-label="Close tab"
+                    >
+                      ×
+                    </button>
                   </Show>
-                </button>
+                </div>
               )}
             </For>
           </div>
@@ -698,6 +788,73 @@ function TweaksPanel(props: {
 }
 
 /* ──────────────────────────────────────────────────────
+   StatusBar — bottom 28px row (design-spec)
+   ────────────────────────────────────────────────────── */
+
+function StatusBar(props: { cfg?: ShellStatusConfig }) {
+  const [now, setNow] = createSignal<string>(formatClock(new Date()))
+  onMount(() => {
+    const tick = () => setNow(formatClock(new Date()))
+    tick()
+    const id = setInterval(tick, 1000)
+    onCleanup(() => clearInterval(id))
+  })
+  const state = () => props.cfg?.state ?? "ready"
+  const dotState = () =>
+    state() === "running" ? "run" : state() === "paused" ? "warn" : state() === "failed" ? "err" : "ok"
+  const stateLabel = () =>
+    state() === "running"
+      ? "RUNNING"
+      : state() === "paused"
+        ? "PAUSED"
+        : state() === "failed"
+          ? "FAILED"
+          : "READY"
+  return (
+    <div class="rune-status">
+      <span class="rune-status-seg">
+        <span class="rune-dot" data-st={dotState()} />
+        {stateLabel()}
+      </span>
+      <span class="rune-status-sep" />
+      <span class="rune-status-seg rune-status-seg-mono">
+        <span class="rune-status-label">SESS</span>
+        {truncateMid(props.cfg?.sessionId ?? "—", 14)}
+      </span>
+      <span class="rune-status-sep" />
+      <span class="rune-status-seg rune-status-seg-mono">
+        <span class="rune-status-label">MODEL</span>
+        {props.cfg?.model ?? "—"}
+      </span>
+      <span class="rune-status-sep" />
+      <span class="rune-status-seg rune-status-seg-mono">
+        <span class="rune-status-label">CTX</span>
+        {props.cfg?.ctx ?? "—"}
+      </span>
+      <span class="rune-grow" />
+      <span class="rune-status-seg rune-status-seg-mono">
+        <span class="rune-status-label">REV</span>
+        {props.cfg?.rev ?? "—"}
+      </span>
+      <span class="rune-status-sep" />
+      <span class="rune-status-seg rune-status-seg-mono">{now()}</span>
+    </div>
+  )
+}
+
+function formatClock(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0")
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+function truncateMid(s: string, max: number): string {
+  if (s.length <= max) return s
+  const head = Math.ceil((max - 1) / 2)
+  const tail = Math.floor((max - 1) / 2)
+  return `${s.slice(0, head)}…${s.slice(-tail)}`
+}
+
+/* ──────────────────────────────────────────────────────
    UnifiedShell — exported root
    ────────────────────────────────────────────────────── */
 
@@ -754,6 +911,7 @@ export function UnifiedShell(props: ShellProps) {
         activeSubId={props.activeSubId}
         onPickModule={navigateModule}
         onPickSub={props.onPickSub}
+        onCreateTask={props.onCreateTask}
         onToggleCollapse={() => updateCollapsed(!collapsed())}
       />
       <main class="rune-main">
@@ -772,6 +930,8 @@ export function UnifiedShell(props: ShellProps) {
         </Show>
         <div class="rune-body">{props.children}</div>
       </main>
+
+      <StatusBar cfg={props.status} />
 
       <TasksDrawer
         open={tasksOpen()}

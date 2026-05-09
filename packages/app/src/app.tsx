@@ -9,7 +9,7 @@ import { Font } from "@opencode-ai/ui/font"
 import { Splash } from "@opencode-ai/ui/logo"
 import { ThemeProvider } from "@opencode-ai/ui/theme/context"
 import { MetaProvider } from "@solidjs/meta"
-import { type BaseRouterProps, Navigate, Route, Router, useLocation } from "@solidjs/router"
+import { type BaseRouterProps, Navigate, Route, Router, useLocation, useNavigate } from "@solidjs/router"
 import { UnifiedShell } from "@/components/unified-shell"
 import { ShellBridgeProvider, useShellBridge } from "@/components/unified-shell/shell-bridge"
 import { QueryClient, QueryClientProvider } from "@tanstack/solid-query"
@@ -67,6 +67,7 @@ import { useCheckServerHealth } from "./utils/server-health"
 import { useGlobalSDK } from "@/context/global-sdk"
 import { useGlobalSync } from "@/context/global-sync"
 import { DialogSelectDirectory } from "@/components/dialog-select-directory"
+import { base64Encode } from "@opencode-ai/shared/util/encode"
 
 const HomeRoute = lazy(() => import("@/pages/home"))
 const loadSession = () => import("@/pages/session")
@@ -134,6 +135,7 @@ function SessionShellMount(props: ParentProps) {
       activeTaskId={chrome().activeTaskId}
       onPickTask={chrome().onPickTask}
       onCreateTask={chrome().onCreateTask}
+      status={chrome().status}
     >
       {props.children}
     </UnifiedShell>
@@ -295,6 +297,7 @@ function WorkflowScreen() {
   const global = useGlobalSDK()
   const sync = useGlobalSync()
   const permission = usePermission()
+  const navigate = useNavigate()
   const [busy, setBusy] = createSignal(true)
   const [make, setMake] = createSignal("")
   const [err, setErr] = createSignal("")
@@ -387,6 +390,19 @@ function WorkflowScreen() {
       return root
     })
     setBusy(false)
+
+    // Auto-redirect to the unified-shell session route when an active
+    // workflow root session is found. Without this, cold-loading the URL
+    // lands on the legacy `/*all` catchall WorkflowScreen and the user
+    // sees the old chrome (no rune-shell, no rail/header/status bar) —
+    // they had to manually click Refiner to escape into the new layout.
+    if (root) {
+      const item = all.find((x) => x.snap.workflow.session_id === root)
+      const dir = item?.info.directory
+      if (dir) {
+        navigate(`/${base64Encode(dir)}/session/${root}`, { replace: true })
+      }
+    }
   }
 
   const boot = async (dir: string, title?: string) => {
@@ -418,6 +434,11 @@ function WorkflowScreen() {
         setList((rows) => [{ info: session, snap: snap.data! }, ...rows])
         setTask(session.id)
         setSession(session.id)
+        // Jump straight into the unified-shell session route for the
+        // freshly-created workflow so the user lands on the new chrome
+        // (rail / header / status bar / canvas tab) rather than the
+        // legacy WorkflowRoot inline render.
+        navigate(`/${base64Encode(dir)}/session/${session.id}`, { replace: true })
       })
       .catch((e) => {
         setErr(e instanceof Error ? e.message : String(e))

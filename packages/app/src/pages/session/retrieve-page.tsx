@@ -24,10 +24,11 @@ import {
   onMount,
   Show,
 } from "solid-js"
+import { Portal } from "solid-js/web"
 import { useNavigate, useParams } from "@solidjs/router"
 import { useShellBridge } from "@/components/unified-shell/shell-bridge"
 import { TraceRecall, type TraceRecallEntry } from "@/components/unified-shell/modules"
-import { useModels } from "@/context/models"
+import { RuneModelPicker } from "@/components/unified-shell/model-picker"
 import { usePlatform } from "@/context/platform"
 import { useSDK } from "@/context/sdk"
 import { useServer } from "@/context/server"
@@ -269,18 +270,9 @@ const kindName = (kind: string) => {
   return KIND_NAME[kind] ?? kind
 }
 
-const SOURCE_LABEL_MAP: Record<ConfigSource, string> = {
-  override: "override",
-  agent: "agent config",
-  default: "default",
-  none: "—",
-}
-
-const modelLabel = (model?: { providerID: string; modelID: string }) =>
-  model ? `${model.providerID}/${model.modelID}` : "—"
-
 /* ──────────────────────────────────────────────────────
-   Generic dropdown — used by both session & model pickers
+   Generic dropdown — used by the session picker. The model
+   picker now lives in `@/components/unified-shell/model-picker`.
    ────────────────────────────────────────────────────── */
 
 function Chev() {
@@ -347,20 +339,56 @@ function SessionPicker(props: {
   urlSessionId?: string
 }) {
   const [open, setOpen] = createSignal(false)
-  let root: HTMLDivElement | undefined
+  // Position cache for the portaled dropdown — recomputed on every open
+  // from the trigger's boundingClientRect. Keeps the menu attached to
+  // the trigger visually while living at <body> level structurally
+  // (avoids any parent overflow/isolation clipping).
+  const [coords, setCoords] = createSignal<{ top: number; right: number; width: number }>({
+    top: 0,
+    right: 0,
+    width: 320,
+  })
+  let triggerEl: HTMLButtonElement | undefined
+
+  const reposition = () => {
+    if (!triggerEl) return
+    const r = triggerEl.getBoundingClientRect()
+    // Anchor the menu under the trigger and right-aligned to it (the
+    // trigger usually sits in substrip-right). Width clamped to avoid
+    // overflowing on narrow viewports.
+    const width = Math.min(360, Math.max(280, window.innerWidth - 32))
+    setCoords({
+      top: r.bottom + 8,
+      right: Math.max(8, window.innerWidth - r.right),
+      width,
+    })
+  }
+
+  const toggle = () => {
+    if (!open()) reposition()
+    setOpen((v) => !v)
+  }
 
   onMount(() => {
-    const handler = (e: MouseEvent) => {
-      if (!root) return
-      if (!root.contains(e.target as Node)) setOpen(false)
+    const onResize = () => {
+      if (open()) reposition()
     }
-    document.addEventListener("mousedown", handler)
-    onCleanup(() => document.removeEventListener("mousedown", handler))
+    window.addEventListener("resize", onResize)
+    window.addEventListener("scroll", onResize, true)
+    onCleanup(() => {
+      window.removeEventListener("resize", onResize)
+      window.removeEventListener("scroll", onResize, true)
+    })
   })
 
   return (
-    <div class="rt-pop-wrap" ref={(el) => (root = el)}>
-      <button class="rt-pop-trigger" type="button" onClick={() => setOpen((v) => !v)}>
+    <div class="rt-pop-wrap">
+      <button
+        class="rt-pop-trigger"
+        type="button"
+        ref={(el) => (triggerEl = el)}
+        onClick={toggle}
+      >
         <span class="rt-kicker">SESSION</span>
         <span class="rt-pop-label">
           <Show when={props.current} fallback="—">
@@ -373,167 +401,60 @@ function SessionPicker(props: {
         <Chev />
       </button>
       <Show when={open()}>
-        <>
-          <div class="rt-pop-scrim" onClick={() => setOpen(false)} />
-          <div class="rt-pop-menu">
-            <Show
-              when={props.options.length > 0}
-              fallback={<div class="rt-pop-empty">尚无 session</div>}
+        <Portal>
+          <div class="rt-portal-host">
+            <div class="rt-pop-scrim" onClick={() => setOpen(false)} />
+            <div
+              class="rt-pop-menu rt-pop-menu-portal"
+              style={{
+                top: `${coords().top}px`,
+                right: `${coords().right}px`,
+                width: `${coords().width}px`,
+              }}
             >
-              <For each={props.options}>
-                {(s) => (
-                  <button
-                    type="button"
-                    class="rt-pop-opt"
-                    classList={{
-                      active: props.current?.id === s.id,
-                    }}
-                    onClick={() => {
-                      props.onPick(s.id)
-                      setOpen(false)
-                    }}
-                  >
-                    <span class="rt-pop-opt-ttl">
-                      <span class="rt-pop-title">{truncate(s.title, 36)}</span>
-                      <Show when={props.urlSessionId === s.id}>
-                        <span class="rt-current-pill">当前</span>
-                      </Show>
-                    </span>
-                    <span class="rt-pop-opt-sub">
-                      {fmtSessionDate(s.lastAt)} · {s.recallTurns}/{s.totalTurns} 轮命中
-                    </span>
-                  </button>
-                )}
-              </For>
-            </Show>
+              <Show
+                when={props.options.length > 0}
+                fallback={<div class="rt-pop-empty">尚无 session</div>}
+              >
+                <For each={props.options}>
+                  {(s) => (
+                    <button
+                      type="button"
+                      class="rt-pop-opt"
+                      classList={{
+                        active: props.current?.id === s.id,
+                      }}
+                      onClick={() => {
+                        props.onPick(s.id)
+                        setOpen(false)
+                      }}
+                    >
+                      <span class="rt-pop-opt-ttl">
+                        <span class="rt-pop-title">{truncate(s.title, 36)}</span>
+                        <Show when={props.urlSessionId === s.id}>
+                          <span class="rt-current-pill">当前</span>
+                        </Show>
+                      </span>
+                      <span class="rt-pop-opt-sub">
+                        {fmtSessionDate(s.lastAt)} · {s.recallTurns}/{s.totalTurns} 轮命中
+                      </span>
+                    </button>
+                  )}
+                </For>
+              </Show>
+            </div>
           </div>
-        </>
+        </Portal>
       </Show>
     </div>
   )
 }
 
 /* ──────────────────────────────────────────────────────
-   Model picker — runtime config override (kept from prev)
+   (Old per-page ModelPicker removed — replaced by the shared
+   `RuneModelPicker` from `@/components/unified-shell/model-picker`
+   so all three runtime modules share a single visual treatment.)
    ────────────────────────────────────────────────────── */
-
-function ModelPicker(props: {
-  current?: { providerID: string; modelID: string }
-  source: ConfigSource
-  busy: boolean
-  onChange: (model: { providerID: string; modelID: string }) => void
-  onReset: () => void
-}) {
-  const models = useModels()
-  const [open, setOpen] = createSignal(false)
-  let root: HTMLDivElement | undefined
-
-  onMount(() => {
-    const handler = (e: MouseEvent) => {
-      if (!root) return
-      if (!root.contains(e.target as Node)) setOpen(false)
-    }
-    document.addEventListener("mousedown", handler)
-    onCleanup(() => document.removeEventListener("mousedown", handler))
-  })
-
-  const list = createMemo(() => {
-    try {
-      return models
-        .list()
-        .filter((m) => models.visible({ providerID: m.provider.id, modelID: m.id }))
-    } catch {
-      return []
-    }
-  })
-
-  const grouped = createMemo(() => {
-    const map = new Map<string, Array<{ providerID: string; modelID: string; name: string }>>()
-    for (const m of list()) {
-      const key = m.provider.name ?? m.provider.id
-      const arr = map.get(key) ?? []
-      arr.push({ providerID: m.provider.id, modelID: m.id, name: m.name })
-      map.set(key, arr)
-    }
-    return [...map.entries()]
-  })
-
-  return (
-    <div class="rt-pop-wrap" ref={(el) => (root = el)}>
-      <button
-        class="rt-pop-trigger"
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        disabled={props.busy}
-        title={`source: ${SOURCE_LABEL_MAP[props.source]}`}
-      >
-        <span class="rt-kicker">MODEL</span>
-        <span class="rt-pop-label">{modelLabel(props.current)}</span>
-        <Show when={props.source !== "none"}>
-          <span class="rt-source-tag" data-source={props.source}>
-            {SOURCE_LABEL_MAP[props.source]}
-          </span>
-        </Show>
-        <Chev />
-      </button>
-      <Show when={open()}>
-        <>
-          <div class="rt-pop-scrim" onClick={() => setOpen(false)} />
-          <div class="rt-pop-menu rt-pop-menu-right">
-            <Show when={props.source === "override"}>
-              <button
-                type="button"
-                class="rt-pop-opt rt-pop-opt-reset"
-                onClick={() => {
-                  props.onReset()
-                  setOpen(false)
-                }}
-              >
-                ⟲ 恢复默认（清除 override）
-              </button>
-              <div class="rt-pop-sep" />
-            </Show>
-            <Show
-              when={grouped().length > 0}
-              fallback={<div class="rt-pop-empty">暂无可用模型</div>}
-            >
-              <For each={grouped()}>
-                {([providerName, items]) => (
-                  <>
-                    <div class="rt-pop-group">{providerName}</div>
-                    <For each={items}>
-                      {(item) => {
-                        const active = () =>
-                          props.current?.providerID === item.providerID &&
-                          props.current?.modelID === item.modelID
-                        return (
-                          <button
-                            type="button"
-                            class="rt-pop-opt"
-                            classList={{ active: active() }}
-                            onClick={() => {
-                              props.onChange({
-                                providerID: item.providerID,
-                                modelID: item.modelID,
-                              })
-                              setOpen(false)
-                            }}
-                          >
-                            <span class="rt-pop-opt-ttl">{item.name}</span>
-                          </button>
-                        )
-                      }}
-                    </For>
-                  </>
-                )}
-              </For>
-            </Show>
-          </div>
-        </>
-      </Show>
-    </div>
-  )
-}
 
 /* ──────────────────────────────────────────────────────
    Recall row — expandable, shows statement + matched obs
@@ -736,6 +657,21 @@ export default function RetrievePage() {
 
   const allEntries = createMemo(() => logResource()?.entries ?? [])
 
+  // Warm all session records referenced by retrieve log entries. Without
+  // this, sessions that haven't been opened in this app instance show as
+  // `…<last-8-chars>` in the picker because `sync.data.session` only holds
+  // sessions the user has navigated to. We fire-and-forget; the sync layer
+  // de-dupes, so re-calling for the same id is cheap.
+  createEffect(() => {
+    const seen = new Set<string>()
+    for (const s of sync.data.session ?? []) seen.add(s.id)
+    const need = new Set<string>()
+    for (const e of allEntries()) {
+      if (e.session_id && !seen.has(e.session_id)) need.add(e.session_id)
+    }
+    for (const id of need) void sync.session.sync(id).catch(() => undefined)
+  })
+
   // Sessions list, derived from log entries — newest activity first.
   // Title is sourced from sync.data.session (the SDK-pushed list of all
   // sessions in this dir); falls back to the trailing 8 chars of the id
@@ -860,10 +796,11 @@ export default function RetrievePage() {
         }}
         urlSessionId={params.id}
       />
-      <ModelPicker
+      <RuneModelPicker
         current={configResource()?.resolved}
         source={configResource()?.source ?? "none"}
         busy={configBusy()}
+        kicker="MODEL"
         onChange={(m) => updateConfig({ model: m })}
         onReset={() => updateConfig({ model: null })}
       />
@@ -909,23 +846,62 @@ export default function RetrievePage() {
     shell.setChrome({
       header: {
         parent: "Trace",
-        title: currentSession()
-          ? `${currentSession()!.recallTurns}/${currentSession()!.totalTurns} 轮命中`
-          : "Recall",
-        meta: currentSession()
-          ? [{ k: "SESS", v: truncate(currentSession()!.title, 24) }]
-          : [],
+        title: (() => {
+          const e = activeEntry()
+          if (!e) return "Recall"
+          return `Recall · turn ${e.turn_index}`
+        })(),
+        // Design-spec meta: TURN / HITS / EMBED.
+        meta: (() => {
+          const e = activeEntry()
+          const cs = currentSession()
+          if (!e) {
+            return cs
+              ? [{ k: "SESS", v: truncate(cs.title, 24) }]
+              : []
+          }
+          const totalCandidates = e.candidate_count ?? e.picked.length
+          return [
+            { k: "TURN", v: String(e.turn_index) },
+            { k: "HITS", v: `${e.picked.length}/${totalCandidates}` },
+            { k: "EMBED", v: `${e.duration_ms}ms` },
+          ]
+        })(),
+        // Design-spec actions: Export + Filter (we surface them as
+        // Export = JSON download of the active entry, Filter = pass-through
+        // to the existing filter handler if defined; else no-op stub).
         actions: (
-          <button
-            type="button"
-            class="rune-btn"
-            data-size="xs"
-            data-variant="ghost"
-            onClick={() => navigate(`/${params.dir}/session/${params.id}`)}
-            title="返回 session"
-          >
-            ← session
-          </button>
+          <>
+            <button
+              type="button"
+              class="rune-btn"
+              data-size="sm"
+              onClick={() => {
+                const e = activeEntry()
+                if (!e) return
+                const blob = new Blob([JSON.stringify(e, null, 2)], { type: "application/json" })
+                const url = URL.createObjectURL(blob)
+                const a = document.createElement("a")
+                a.href = url
+                a.download = `recall-${e.id}.json`
+                a.click()
+                URL.revokeObjectURL(url)
+              }}
+              title="Export active recall as JSON"
+            >
+              ↗ Export
+            </button>
+            <button
+              type="button"
+              class="rune-btn"
+              data-size="sm"
+              data-variant="ghost"
+              onClick={() => navigate(`/${params.dir}/session/${params.id}`)}
+              title="返回 session"
+            >
+              ← session
+            </button>
+          </>
         ),
       },
       substrip: {

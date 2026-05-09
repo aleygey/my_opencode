@@ -124,6 +124,40 @@
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+
+/* Design-spec rsess message rows: small role label + text. */
+.rune-shell .rt-rsess-msg {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: var(--rune-fs-sm);
+  line-height: 1.45;
+}
+.rune-shell .rt-rsess-msg-role {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 600;
+  flex: none;
+  font-family: var(--rune-font-mono);
+}
+.rune-shell .rt-rsess-msg-user .rt-rsess-msg-role {
+  color: var(--rune-fg-dim);
+}
+.rune-shell .rt-rsess-msg-agent .rt-rsess-msg-role {
+  color: var(--rune-st-ok);
+}
+.rune-shell .rt-rsess-msg-text {
+  color: var(--rune-fg-mute);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+.rune-shell .rt-rsess-msg-user .rt-rsess-msg-text {
+  color: var(--rune-fg);
+}
 .rune-shell .rt-rsess-foot {
   display: flex;
   align-items: center;
@@ -237,11 +271,21 @@
   display: inline-block;
 }
 
+/* Recall hits — flex-column inside a list. Each card is its own block;
+ * the previous selector `.rune-shell .rt-hit + .rune-shell .rt-hit` was
+ * malformed (right side of `+` must be a single compound selector, not
+ * a descendant chain), so the cards collapsed together and looked like
+ * they overlapped. Use a wrapping list with gap instead. */
+.rune-shell .rt-hits {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 .rune-shell .rt-hit {
   display: grid;
-  grid-template-columns: 28px 1fr;
+  grid-template-columns: 28px minmax(0, 1fr);
   gap: 12px;
-  padding: 14px;
+  padding: 14px 14px;
   border: 1px solid var(--rune-line-faint);
   border-radius: var(--rune-r);
   background: var(--rune-bg-base);
@@ -249,8 +293,42 @@
   transition: background var(--rune-t-fast), border-color var(--rune-t-fast);
   cursor: pointer;
   text-align: left;
+  width: 100%;
+  box-sizing: border-box;
+  /* No `overflow: hidden` here — that previously clipped the bottom half
+   * of the title text. Width overflow is already prevented by the
+   * `minmax(0, 1fr)` column + `min-width: 0` on .rt-hit-main + ellipsis
+   * on the title itself. The card grows vertically with content. */
 }
-.rune-shell .rt-hit + .rune-shell .rt-hit { margin-top: 6px; }
+.rune-shell .rt-hit[data-has-score="true"] {
+  grid-template-columns: 28px minmax(0, 1fr) 90px;
+}
+.rune-shell .rt-hit-score {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-end;
+}
+.rune-shell .rt-hit-score-num {
+  font-size: var(--rune-fs-md);
+  color: var(--rune-ac);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.rune-shell .rt-hit-score-bar {
+  width: 80px;
+  height: 2px;
+  background: var(--rune-bg-inset);
+  border: 1px solid var(--rune-line-faint);
+  display: block;
+  border-radius: 1px;
+  overflow: hidden;
+}
+.rune-shell .rt-hit-score-bar i {
+  display: block;
+  height: 100%;
+  background: var(--rune-ac);
+}
 .rune-shell .rt-hit:hover {
   border-color: var(--rune-line);
   background: var(--rune-bg-surface);
@@ -272,6 +350,8 @@
   display: flex;
   align-items: baseline;
   gap: 8px;
+  min-width: 0;
+  width: 100%;
   flex-wrap: wrap;
 }
 .rune-shell .rt-hit-cat {
@@ -280,21 +360,36 @@
   text-transform: uppercase;
   color: var(--rune-ac);
   font-weight: 600;
+  flex: none;
 }
 .rune-shell .rt-hit-code {
   font-size: var(--rune-fs-xs);
   color: var(--rune-fg-faint);
   font-family: var(--rune-font-mono);
+  flex: none;
+  margin-left: auto;
 }
 .rune-shell .rt-hit-title {
   font-size: var(--rune-fs-md);
   font-weight: 500;
   color: var(--rune-fg);
+  flex: 1 1 auto;
+  min-width: 0;
+  /* Match design template — title wraps naturally for long Chinese
+   * titles instead of forcing single-line + ellipsis (which collided
+   * with the row's vertical layout). The flex-wrap on .rt-hit-row1
+   * lets cat / title / code reflow as needed. */
+  word-break: break-word;
 }
 .rune-shell .rt-hit-body {
   font-size: var(--rune-fs-sm);
   color: var(--rune-fg-mute);
   line-height: 1.55;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
 }
 .rune-shell .rt-hit-empty {
   padding: 32px 16px;
@@ -345,21 +440,102 @@
   background: var(--rune-bg-surface);
   box-shadow: inset 2px 0 0 var(--rune-ac);
 }
+/* Multi-select highlight for Merge — distinct from "is-on" so users
+ * can tell which row is the open detail vs which are multi-selected. */
+.rune-shell .kw-exp.is-selected {
+  background: var(--rune-ac-soft);
+  box-shadow: inset 2px 0 0 var(--rune-ac);
+}
+.rune-shell .kw-exp.is-selected.is-on {
+  background: color-mix(in oklab, var(--rune-ac-soft) 60%, var(--rune-bg-surface));
+}
 .rune-shell .kw-exp-row1 {
   display: flex;
   align-items: center;
   gap: 10px;
 }
+/* Tag chips on knowledge cards — clickable to filter the list. The
+ * is-active variant highlights the chip when its tag is the current
+ * filter value. */
+.rune-shell .kw-tag-chip {
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  padding: 1px 6px;
+  font-family: var(--rune-font-mono);
+  font-size: 10px;
+  color: var(--rune-fg-mute);
+  border-radius: 999px;
+  transition: background var(--rune-t-fast), border-color var(--rune-t-fast), color var(--rune-t-fast);
+}
+.rune-shell .kw-tag-chip:hover {
+  background: var(--rune-bg-inset);
+  border-color: var(--rune-line-faint);
+  color: var(--rune-fg);
+}
+.rune-shell .kw-tag-chip.is-active {
+  background: var(--rune-ac-soft);
+  border-color: var(--rune-ac-edge);
+  color: var(--rune-ac-text);
+  font-weight: 600;
+}
+
 .rune-shell .kw-exp-cat {
   font-size: 9px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--rune-ac);
   flex: none;
   font-weight: 600;
   padding: 2px 6px;
+  border-radius: var(--rune-r-sm);
+  /* Default (used when data-kind is unknown / custom). Per-kind overrides
+   * below assign a distinct hue so the user can spot category at a glance. */
+  color: var(--rune-ac);
   border: 1px solid var(--rune-ac-edge);
   background: var(--rune-ac-soft);
+}
+/* Per-kind cat label colors. Tuned for accessible contrast on both
+ * light and dark surfaces; each kind has a distinct hue family. */
+.rune-shell .kw-exp-cat[data-kind="workflow_rule"] {
+  color: light-dark(#3A57D8, #9DB0FF);
+  border-color: light-dark(rgba(76,111,255,0.30), rgba(123,149,255,0.40));
+  background: light-dark(rgba(76,111,255,0.08), rgba(123,149,255,0.14));
+}
+.rune-shell .kw-exp-cat[data-kind="workflow_gap"] {
+  color: light-dark(#B85B07, #F4A155);
+  border-color: light-dark(rgba(217,119,6,0.34), rgba(244,161,85,0.42));
+  background: light-dark(rgba(217,119,6,0.10), rgba(244,161,85,0.16));
+}
+.rune-shell .kw-exp-cat[data-kind="know_how"] {
+  color: light-dark(#0E7C4D, #5DD3A0);
+  border-color: light-dark(rgba(22,163,74,0.32), rgba(93,211,160,0.42));
+  background: light-dark(rgba(22,163,74,0.10), rgba(93,211,160,0.16));
+}
+.rune-shell .kw-exp-cat[data-kind="constraint_or_policy"] {
+  color: light-dark(#B83342, #F08389);
+  border-color: light-dark(rgba(220,38,38,0.32), rgba(240,131,137,0.42));
+  background: light-dark(rgba(220,38,38,0.08), rgba(240,131,137,0.16));
+}
+.rune-shell .kw-exp-cat[data-kind="domain_knowledge"] {
+  color: light-dark(#7A4DAB, #C29AEC);
+  border-color: light-dark(rgba(122,77,171,0.34), rgba(194,154,236,0.42));
+  background: light-dark(rgba(122,77,171,0.08), rgba(194,154,236,0.16));
+}
+.rune-shell .kw-exp-cat[data-kind="preference_style"] {
+  color: light-dark(#1F7596, #6FBED9);
+  border-color: light-dark(rgba(31,117,150,0.30), rgba(111,190,217,0.42));
+  background: light-dark(rgba(31,117,150,0.08), rgba(111,190,217,0.16));
+}
+.rune-shell .kw-exp-cat[data-kind="pitfall_or_caveat"] {
+  color: light-dark(#9C5710, #E5A964);
+  border-color: light-dark(rgba(156,87,16,0.34), rgba(229,169,100,0.42));
+  background: light-dark(rgba(156,87,16,0.08), rgba(229,169,100,0.16));
+}
+/* Custom kinds (data-kind starts with "custom:") get a neutral gray */
+.rune-shell .kw-exp-cat[data-kind^="custom:"] {
+  color: var(--rune-fg-mute);
+  border-color: var(--rune-line-strong);
+  background: var(--rune-bg-inset);
 }
 .rune-shell .kw-exp-title {
   font-size: var(--rune-fs-md);
@@ -412,10 +588,57 @@
 .rune-shell .kw-exp-flag.f-pending {
   color: var(--rune-st-warn);
   border: 1px solid var(--rune-st-warn);
+  background: color-mix(in oklab, var(--rune-st-warn) 10%, transparent);
 }
 .rune-shell .kw-exp-flag.f-rejected {
   color: var(--rune-st-err);
   border: 1px solid var(--rune-st-err);
+}
+
+/* Pending review highlight — surface unreviewed exps without forcing the
+   user to scan badges. The whole card gets a tinted background + a vertical
+   stripe + a soft pulse on the corner pip so eyes catch it on scroll. */
+.rune-shell .kw-exp[data-flag="pending"] {
+  background: color-mix(in oklab, var(--rune-st-warn) 7%, transparent);
+}
+.rune-shell .kw-exp[data-flag="pending"]:hover {
+  background: color-mix(in oklab, var(--rune-st-warn) 12%, transparent);
+}
+.rune-shell .kw-exp[data-flag="pending"]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--rune-st-warn);
+}
+.rune-shell .kw-exp-pending-pulse {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--rune-st-warn);
+  pointer-events: none;
+  animation: rune-pulse-pending 1.6s ease-in-out infinite;
+}
+@keyframes rune-pulse-pending {
+  0%, 100% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--rune-st-warn) 80%, transparent);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 0 6px color-mix(in oklab, var(--rune-st-warn) 0%, transparent);
+    transform: scale(1.15);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rune-shell .kw-exp-pending-pulse { animation: none; }
+}
+.rune-shell .kw-exp[data-flag="rejected"] {
+  opacity: 0.6;
 }
 .rune-shell .kw-exp-empty {
   padding: 64px 24px;

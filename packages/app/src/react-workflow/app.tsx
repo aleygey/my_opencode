@@ -7,7 +7,7 @@ import { EnhancedInspectorPanel } from "./components/enhanced-inspector-panel"
 import { ChatPanel } from "./components/chat-panel"
 import type { Msg as ChatMsg } from "./components/chat-panel"
 import type { SlashCommand } from "./commands"
-import { TaskSidebar, type Task } from "./components/task-sidebar"
+import type { Task } from "./components/task-sidebar"
 import { NodeSessionView } from "./components/node-session-view"
 import {
   SandTableSessionView,
@@ -39,7 +39,13 @@ export type Node = {
   title: string
   type: Kind
   status: Status
-  session: string
+  /** Backing session id once the node has started executing. Undefined
+   *  before first execution — chat lookups must NOT fall back to the
+   *  root session for unstarted nodes (would leak orchestrator chat). */
+  session?: string
+  /** Live slave-agent status — most recent reasoning / tool / event line
+   *  for this node. Renders as a marquee at the bottom of running cards. */
+  liveStatus?: string
   summary?: string[]
   /**
    * True when this node started against an older graph_rev than the current
@@ -110,6 +116,22 @@ export type WorkflowAppProps = {
   title: string
   status: State
   env: string
+  /** Design-spec body sub-tab — Canvas / Chat / Events fixed tabs OR
+   *  dynamic node / sand-table tabs in `node:<id>` / `sand:<id>` form.
+   *  Default canvas. */
+  view?: string
+  /** Workflow event timeline (Events tab). Pre-projected for ergonomic
+   *  rendering — kind/source for icon, time for timestamp column,
+   *  summary for message text, and node link if applicable. */
+  workflowEvents?: Array<{
+    id: string | number
+    kind: string
+    source: string
+    nodeID?: string
+    nodeTitle?: string
+    summary: string
+    time: number
+  }>
   pick?: string
   model?: string
   models?: string[]
@@ -231,8 +253,50 @@ export type WorkflowGraphEdit = {
 
 export function WorkflowApp(props: WorkflowAppProps) {
   const [pick, setPick] = useState<string | null>(props.pick ?? props.nodes[0]?.id ?? null)
-  const [sidebar, setSidebar] = useState(false)
   const [sessionNode, setSessionNode] = useState<string | null>(null)
+  /* Clear the inline `sessionNode` state whenever the substrip switches
+   * to a fixed tab (canvas / chat / events). Without this, the inline
+   * fallback overlay (set on node click as a backup) sticks around even
+   * after the dynamic tab is closed via the substrip's × button — the
+   * user couldn't return to the canvas without round-tripping via the
+   * rail's "Workflow" module. */
+  useEffect(() => {
+    const v = props.view ?? 'canvas'
+    if (v === 'canvas' || v === 'chat' || v === 'events') {
+      setSessionNode(null)
+    }
+  }, [props.view])
+
+  /* Aside (Inspector) collapse state — design template uses a single
+   * toggle button instead of a draggable splitbar. Persists across
+   * mount via localStorage so collapse choice survives navigation. */
+  const ASIDE_KEY = 'wf-aside-open:v1'
+  const [asideOpen, setAsideOpen] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true
+    try { return window.localStorage.getItem(ASIDE_KEY) !== '0' } catch { return true }
+  })
+  useEffect(() => {
+    try { window.localStorage.setItem(ASIDE_KEY, asideOpen ? '1' : '0') } catch {}
+  }, [asideOpen])
+
+  /* Bridge for the unified shell header's Replay / Pause / Run buttons.
+   * session.tsx publishes those buttons as part of the chrome and dispatches
+   * `rune:wf:{run,pause,replay,search}` global events when clicked; we listen
+   * here so we can call the corresponding workflow-runtime handlers without
+   * cross-framework prop wiring. */
+  useEffect(() => {
+    const onRun = () => props.onRun(undefined)
+    const onPause = () => props.onPause(undefined)
+    const onReplay = () => props.onRestart(undefined)
+    window.addEventListener("rune:wf:run", onRun as EventListener)
+    window.addEventListener("rune:wf:pause", onPause as EventListener)
+    window.addEventListener("rune:wf:replay", onReplay as EventListener)
+    return () => {
+      window.removeEventListener("rune:wf:run", onRun as EventListener)
+      window.removeEventListener("rune:wf:pause", onPause as EventListener)
+      window.removeEventListener("rune:wf:replay", onReplay as EventListener)
+    }
+  }, [props.onRun, props.onPause, props.onRestart])
   // P3 — graph-edit drawer visibility. Opens when the TopBar pending-edits
   // chip is clicked; renders the pending queue with apply/reject controls
   // and a finalise button when the workflow is still active.
@@ -275,7 +339,11 @@ export function WorkflowApp(props: WorkflowAppProps) {
       // quota exceeded / privacy mode — ignore, worst case we re-open on refresh
     }
   }
-  const side = useSplit({ axis: "x", size: 640, min: 520, max: 920, dir: -1 })
+  // Inspector width — design template uses a fixed `--aside-w: 340px`.
+  // We keep the SplitBar drag for power users but anchor the default at
+  // 340 so the chat tab gets the bulk of the horizontal real estate
+  // (was 640 = inspector eats half the screen).
+  const side = useSplit({ axis: "x", size: 340, min: 280, max: 720, dir: -1 })
   const chat = useSplit({ axis: "y", size: 520, min: 0, max: 700, dir: -1 })
   // ── Chat panel height modes ──
   // tall       full chat with long message list (idle / design mode)
@@ -445,8 +513,22 @@ export function WorkflowApp(props: WorkflowAppProps) {
     return msg?.plan ?? null
   }, [activePlanMsgId, planMessages])
 
-  // Node session view (Page 2)
-  if (sessionNode) {
+  /* Decode dynamic tab ids surfaced from the unified shell substrip:
+   *  - `node:<id>` → render NodeSessionView in the body
+   *  - `sand:<id>` → render SandTableSessionView in the body
+   * The legacy inline overlay (sessionNode state + early-return) is now
+   * a fallback only when the parent shell isn't dispatching tabs (e.g.
+   * running outside the rune-shell context). */
+  const dynamicTab = (() => {
+    const v = props.view ?? ""
+    if (v.startsWith("node:")) return { kind: "node" as const, id: v.slice("node:".length) }
+    if (v.startsWith("sand:")) return { kind: "sand" as const, id: v.slice("sand:".length) }
+    return null
+  })()
+  const dynamicNodeId = dynamicTab?.id ?? null
+  const showInline =
+    sessionNode !== null && dynamicNodeId === null
+  if (showInline && sessionNode) {
     const sNode = allNodes.find((n) => n.id === sessionNode) ?? null
     const sDetail = props.details[sessionNode] ?? null
     const sMessages = props.chats[sNode?.session ?? ""] ?? []
@@ -510,7 +592,6 @@ export function WorkflowApp(props: WorkflowAppProps) {
           environment={props.env}
           nodeProgress={nodeProgress}
           tokenStats={props.tokenStats}
-          onTaskSidebarToggle={() => setSidebar((v) => !v)}
           onModelClick={props.onModel}
           onRefinerClick={() => props.onRefiner?.(node?.id)}
           onRetrieveClick={() => props.onRetrieve?.(node?.id)}
@@ -525,9 +606,69 @@ export function WorkflowApp(props: WorkflowAppProps) {
         />
 
         <div className="flex min-h-0 flex-1 overflow-hidden">
-          {/* Left column: Canvas + Chat */}
-          <div className="flex min-w-0 flex-1 flex-col">
-            <div className="min-h-0 flex-1">
+          {/* Left column: Canvas / Chat / Events tab body. Per design,
+            * only ONE of the three tabs renders at a time. Use conditional
+            * mounting (not display:none on always-mounted divs) so flex
+            * calculations stay clean — the previous approach caused the
+            * chat composer to float in the middle when the messages list
+            * was empty, because three flex:1 siblings + display:none on
+            * two of them confused the layout engine in some browsers. */}
+          <div className="flex min-w-0 flex-1 flex-col" data-wf-view={props.view ?? "canvas"}>
+            {(props.view ?? "canvas") === "canvas" && (
+            <div className="min-h-0 flex-1 wf-canvas-host">
+              {/* Canvas HUD — top-left chip cluster (status / progress)
+                * + top-right run-control cluster. Replaces the former
+                * top-bar action group; keeps controls visible without
+                * the redundant chrome. */}
+              <div className="wf-canvas-hud" aria-label="Workflow status">
+                <span
+                  className="wf-canvas-hud-chip"
+                  data-state={
+                    props.status === "running"
+                      ? "run"
+                      : props.status === "completed"
+                        ? "ok"
+                        : props.status === "failed"
+                          ? "err"
+                          : "idle"
+                  }
+                >
+                  <span className="wf-canvas-hud-dot" />
+                  {props.status === "running"
+                    ? `RUN · ${nodeProgress.done}/${nodeProgress.total}`
+                    : props.status === "completed"
+                      ? "DONE"
+                      : props.status === "failed"
+                        ? "FAILED"
+                        : "IDLE"}
+                </span>
+                <span className="wf-canvas-hud-chip">
+                  graph · {nodeProgress.total} nodes
+                </span>
+                {typeof props.graphRev === "number" && (
+                  <span className="wf-canvas-hud-chip wf-canvas-hud-chip-mono">
+                    rev #{props.graphRev}
+                  </span>
+                )}
+              </div>
+              {/* Per design template, Run / Pause / Replay live in the
+                * unified shell header (top-right action cluster, dispatched
+                * via global rune:wf:* events). The canvas no longer carries
+                * a duplicate control cluster. Pending-edits chip is the
+                * only floating action retained, since it's contextual to
+                * graph state rather than execution. */}
+              {(props.pendingEdits ?? []).filter((e) => e.status === "pending").length > 0 && (
+                <div className="wf-canvas-run-cluster" aria-label="Pending edits">
+                  <button
+                    type="button"
+                    className="wf-canvas-run-ctrl wf-canvas-run-ctrl-warn"
+                    onClick={() => setEditsOpen(true)}
+                    title="Pending graph edits"
+                  >
+                    {(props.pendingEdits ?? []).filter((e) => e.status === "pending").length} edits
+                  </button>
+                </div>
+              )}
               <WorkflowCanvas
                 root={{
                   title: props.title,
@@ -548,99 +689,282 @@ export function WorkflowApp(props: WorkflowAppProps) {
                   setPick(id)
                 }}
                 onNodeOpen={(id) => {
-                  // Arrow click: drill into the node's detail view in-place.
-                  // Both plan nodes (SandTableSessionView) and regular nodes
-                  // (NodeSessionView) render inside the workflow canvas — this
-                  // keeps navigation contextual to the workflow rather than
-                  // punting the user to the old session page. The previous
-                  // behaviour (non-plan → props.onSession(id)) caused the UI
-                  // to jump out of the workflow view, which required users to
-                  // click a separate "Detail" button to get back in.
+                  // Open the node in a NEW substrip tab card (browser-tab
+                  // style). The previous inline NodeSessionView render is
+                  // kept as a fallback when the global event listener isn't
+                  // wired (e.g. running outside the unified shell).
                   setPick(id)
+                  const opened = allNodes.find((n) => n.id === id)
+                  const kind = opened?.type === "plan" ? "sand" : "node"
+                  const title = opened?.title ?? id
+                  if (typeof window !== "undefined") {
+                    window.dispatchEvent(
+                      new CustomEvent("rune:wf:open-node", {
+                        detail: { id, kind, title },
+                      }),
+                    )
+                  }
+                  // Inline fallback in case the shell isn't listening.
                   setSessionNode(id)
                 }}
                 onRootClick={() => props.onSession()}
               />
             </div>
-            {chatHeight !== "hidden" && <SplitBar axis="y" {...chat.bind} />}
-            {chatHeight === "hidden" ? (
-              <div
-                className="wf-chat-restore-zone"
-                onMouseEnter={(e) => {
-                  const bar = e.currentTarget.querySelector(".wf-chat-restore-bar") as HTMLElement
-                  if (bar) bar.classList.add("wf-chat-restore-bar--visible")
-                }}
-                onMouseLeave={(e) => {
-                  const bar = e.currentTarget.querySelector(".wf-chat-restore-bar") as HTMLElement
-                  if (bar) bar.classList.remove("wf-chat-restore-bar--visible")
-                }}
-              >
-                <div className="wf-chat-restore-bar">
-                  <button className="wf-chat-restore-btn" onClick={handleRestore}>
-                    <ChevronUp className="h-3.5 w-3.5" strokeWidth={2.5} />
-                    <span>Show Chat</span>
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div
-                className="flex-shrink-0"
-                style={{
-                  height: chat.size,
-                  transition: chatAnimating ? "height 450ms cubic-bezier(0.16, 1, 0.3, 1)" : "none",
-                }}
-              >
-                <ChatPanel
-                  messages={rows}
-                  model={props.model}
-                  models={props.models}
-                  agent={props.rootAgent}
-                  agents={props.rootAgents}
-                  onAgentChange={props.onRootAgentChange}
-                  workspace={props.workspace}
-                  onSendMessage={(text) => props.onSend(text)}
-                  onModelChange={props.onModelChange}
-                  onWorkspaceClick={props.onWorkspaceClick}
-                  onNewSession={props.onNewSession}
-                  onModelPickerOpen={props.onModelPickerOpen ?? props.onModel}
-                  extraCommands={props.chatExtraCommands}
-                  onPlanRun={props.onPlanRun}
-                  onPlanEdit={props.onPlanEdit}
-                  isRunning={rootSessionRunning}
-                  onStop={() => props.onStopMaster?.()}
-                  onQuestionReply={props.onQuestionReply}
-                  onQuestionReject={props.onQuestionReject}
-                  onPermissionReply={props.onPermissionReply}
-                  chatHeight={chatHeight}
-                  onSizeToggle={handleSizeToggle}
-                  onHide={handleHide}
-                  monitorText={monitorText}
-                  monitorPlanMsgId={latestPlanMsgId}
-                  historyHasMore={props.historyHasMore}
-                  historyLoading={props.historyLoading}
-                  onLoadMoreHistory={props.onLoadMoreHistory}
-                  // Plan routing: the message list renders a compact
-                  // chip for every plan so the full card is reserved
-                  // for the modal overlay. Clicking the chip re-opens
-                  // the overlay for that specific plan.
-                  renderPlanAsChip
-                  onPlanOpen={(msgId) => {
-                    setMinimizedPlans((prev) => {
-                      if (!prev.has(msgId)) return prev
-                      const next = new Set(prev)
-                      next.delete(msgId)
-                      return next
-                    })
-                    setActivePlanMsgId(msgId)
-                  }}
-                />
-              </div>
             )}
+            {/* Chat tab body — full-height when active. Plan modals and
+              * tool overlays still mount here, so they're only visible on
+              * this tab (matches the design's tab-isolation model). */}
+            {(props.view ?? "canvas") === "chat" && (
+            <div className="flex min-h-0 min-w-0 w-full flex-1">
+              <ChatPanel
+                messages={rows}
+                model={props.model}
+                models={props.models}
+                agent={props.rootAgent}
+                agents={props.rootAgents}
+                onAgentChange={props.onRootAgentChange}
+                workspace={props.workspace}
+                onSendMessage={(text) => props.onSend(text)}
+                onModelChange={props.onModelChange}
+                onWorkspaceClick={props.onWorkspaceClick}
+                onNewSession={props.onNewSession}
+                onModelPickerOpen={props.onModelPickerOpen ?? props.onModel}
+                extraCommands={props.chatExtraCommands}
+                onPlanRun={props.onPlanRun}
+                onPlanEdit={props.onPlanEdit}
+                isRunning={rootSessionRunning}
+                onStop={() => props.onStopMaster?.()}
+                onQuestionReply={props.onQuestionReply}
+                onQuestionReject={props.onQuestionReject}
+                onPermissionReply={props.onPermissionReply}
+                chatHeight="tall"
+                onSizeToggle={handleSizeToggle}
+                onHide={handleHide}
+                monitorText={monitorText}
+                monitorPlanMsgId={latestPlanMsgId}
+                historyHasMore={props.historyHasMore}
+                historyLoading={props.historyLoading}
+                onLoadMoreHistory={props.onLoadMoreHistory}
+                renderPlanAsChip
+                onPlanOpen={(msgId) => {
+                  setMinimizedPlans((prev) => {
+                    if (!prev.has(msgId)) return prev
+                    const next = new Set(prev)
+                    next.delete(msgId)
+                    return next
+                  })
+                  setActivePlanMsgId(msgId)
+                }}
+              />
+            </div>
+            )}
+
+            {/* Events tab body — vertical timeline of workflow runtime
+              * events. Each entry shows time, kind dot (color-coded by
+              * event kind), the source agent/system, and the node link
+              * if applicable. Falls back to per-node executionLog if no
+              * snapshot events are passed (legacy mode). */}
+            {(props.view ?? "canvas") === "events" && (
+            <div className="wf-events-pane">
+              {(() => {
+                const events = props.workflowEvents ?? []
+                if (events.length > 0) {
+                  // Sort newest-first so the user sees latest activity at
+                  // the top of the timeline.
+                  const sorted = [...events].sort((a, b) => b.time - a.time)
+                  return (
+                    <ol className="wf-timeline">
+                      {sorted.map((ev) => {
+                        const date = new Date(ev.time)
+                        const time = date.toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                          second: "2-digit",
+                        })
+                        const tone = ev.kind.includes("error") || ev.kind.includes("fail")
+                          ? "err"
+                          : ev.kind.includes("complete") || ev.kind.includes("done") || ev.kind.includes("success")
+                            ? "ok"
+                            : ev.kind.includes("start") || ev.kind.includes("running")
+                              ? "run"
+                              : ev.kind.includes("pause") || ev.kind.includes("wait")
+                                ? "warn"
+                                : "idle"
+                        return (
+                          <li key={String(ev.id)} className="wf-timeline-row">
+                            <span className="wf-timeline-time">{time}</span>
+                            <span className="wf-timeline-spine" aria-hidden>
+                              <span className={`wf-timeline-dot wf-timeline-dot--${tone}`} />
+                            </span>
+                            <div className="wf-timeline-body">
+                              <div className="wf-timeline-headline">
+                                <span className={`wf-timeline-kind wf-timeline-kind--${tone}`}>
+                                  {ev.kind}
+                                </span>
+                                <span className="wf-timeline-source">{ev.source}</span>
+                                {ev.nodeTitle && (
+                                  <button
+                                    type="button"
+                                    className="wf-timeline-node"
+                                    onClick={() => ev.nodeID && setPick(ev.nodeID)}
+                                  >
+                                    → {ev.nodeTitle}
+                                  </button>
+                                )}
+                              </div>
+                              <div className="wf-timeline-summary">{ev.summary}</div>
+                            </div>
+                          </li>
+                        )
+                      })}
+                    </ol>
+                  )
+                }
+                // Legacy fallback: show active node's executionLog
+                const log = (detail?.executionLog ?? []) as string[]
+                if (log.length === 0) {
+                  return (
+                    <div className="wf-events-empty">
+                      No events yet — run the workflow to populate the timeline.
+                    </div>
+                  )
+                }
+                return (
+                  <ol className="wf-timeline">
+                    {log.map((line, i) => {
+                      const cleaned = line.replace(/^\[\d+\]\s*/, "")
+                      return (
+                        <li key={i} className="wf-timeline-row">
+                          <span className="wf-timeline-time">{String(i + 1).padStart(2, "0")}</span>
+                          <span className="wf-timeline-spine" aria-hidden>
+                            <span className="wf-timeline-dot wf-timeline-dot--idle" />
+                          </span>
+                          <div className="wf-timeline-body">
+                            <div className="wf-timeline-summary">{cleaned}</div>
+                          </div>
+                        </li>
+                      )
+                    })}
+                  </ol>
+                )
+              })()}
+            </div>
+            )}
+
+            {/* Dynamic node / sand-table tab body — renders inside the
+              * substrip flow (the close × button is on the substrip tab
+              * itself). The legacy back-button still works as a fallback
+              * for inline cases. */}
+            {dynamicTab && (() => {
+              const id = dynamicTab.id
+              const sNode = allNodes.find((n) => n.id === id) ?? null
+              const sDetail = props.details[id] ?? null
+              const sMessages = props.chats[sNode?.session ?? ""] ?? []
+              const sSand = props.sandTables?.[id]
+              if (dynamicTab.kind === "sand") {
+                if (!sSand || !sNode) {
+                  return (
+                    <div className="wf-tab-empty">
+                      Sand-table data unavailable for this node.
+                    </div>
+                  )
+                }
+                // Look up the planner / evaluator inner sessions via the
+                // sand-table discussion's participant list; the inner
+                // session messages live in the WorkflowApp `chats` map
+                // keyed by session id. The InnerStreamPane projects them
+                // into reasoning / tool / agent rows.
+                const plannerPart = sSand.participants.find((p) => p.role === "planner")
+                const evaluatorPart = sSand.participants.find((p) => p.role === "evaluator")
+                const projectInner = (msgs: ChatMsg[] | undefined) =>
+                  (msgs ?? []).map((m) => {
+                    let role = m.role as string
+                    if (m.toolCall) role = "tool"
+                    if (m.reasoning?.text) role = "reason"
+                    return {
+                      id: m.id,
+                      role,
+                      text: m.reasoning?.text ?? m.content,
+                      tool: m.toolCall ? (m.toolCall as { name?: string }).name ?? "tool" : undefined,
+                      out: m.toolCall ? ((m.toolCall as { output?: string }).output ?? undefined) : undefined,
+                      t: m.timestamp,
+                      dur: m.thinking?.status === "running" ? "…" : undefined,
+                      stream: m.thinking?.status === "running",
+                    }
+                  })
+                const innerMessages = {
+                  planner: plannerPart ? projectInner(props.chats[plannerPart.sessionID]) : undefined,
+                  evaluator: evaluatorPart ? projectInner(props.chats[evaluatorPart.sessionID]) : undefined,
+                }
+                return (
+                  <div className="flex min-h-0 flex-1">
+                    <SandTableSessionView
+                      nodeId={id}
+                      nodeTitle={sNode.title}
+                      nodeStatus={sNode.status}
+                      discussion={sSand}
+                      onBack={() => undefined}
+                      onStop={() => props.onStop(id)}
+                      onSend={(text) => props.onSandTableSend?.(id, text)}
+                      innerMessages={innerMessages}
+                    />
+                  </div>
+                )
+              }
+              return (
+                <div className="flex min-h-0 flex-1">
+                  <NodeSessionView
+                    nodeId={id}
+                    nodeTitle={sNode?.title ?? "Session"}
+                    nodeType={sNode?.type ?? "coding"}
+                    nodeStatus={sNode?.status ?? "pending"}
+                    messages={sMessages}
+                    detail={sDetail}
+                    model={props.model}
+                    models={props.models}
+                    workspace={props.workspace}
+                    onModelChange={props.onModelChange}
+                    onWorkspaceClick={props.onWorkspaceClick}
+                    onNewSession={props.onNewSession}
+                    onModelPickerOpen={
+                      props.onModelPickerOpen ?? (() => props.onModel([id]))
+                    }
+                    onPlanRun={props.onPlanRun}
+                    onPlanEdit={props.onPlanEdit}
+                    onQuestionReply={props.onQuestionReply}
+                    onQuestionReject={props.onQuestionReject}
+                    onPermissionReply={props.onPermissionReply}
+                    onBack={() => undefined}
+                    onStop={() => props.onStop(id)}
+                    onRestart={() => props.onRestart(id)}
+                    onStep={() => props.onPause(id)}
+                    onRun={() => props.onRun(id)}
+                    onSend={(text) => props.onSend(text, id)}
+                  />
+                </div>
+              )
+            })()}
           </div>
 
-          {/* Right column: Inspector (full height) */}
-          <SplitBar axis="x" {...side.bind} />
-          <div className="flex-shrink-0" style={{ width: side.size }}>
+          {/* Right column: Inspector (full height). Per design template,
+            * the aside is a fixed 340px column that can collapse to 0 via
+            * a toggle button (no draggable splitbar). The split hook is
+            * kept for backwards-compat but we drive width via an
+            * asideOpen flag now. */}
+          <button
+            type="button"
+            className="wf-rcanvas-aside-toggle"
+            onClick={() => setAsideOpen((v) => !v)}
+            title={asideOpen ? 'Collapse panel' : 'Expand panel'}
+            aria-label="Toggle inspector"
+          >
+            {asideOpen ? '›' : '‹'}
+          </button>
+          <div
+            className="flex-shrink-0 wf-aside-col"
+            data-aside={asideOpen ? 'open' : 'closed'}
+            style={{ width: asideOpen ? `${side.size}px` : '0px' }}
+          >
             <EnhancedInspectorPanel
               nodeDetails={detail}
               workflowContext={props.flow}
@@ -650,54 +974,11 @@ export function WorkflowApp(props: WorkflowAppProps) {
           </div>
         </div>
 
-        <TaskSidebar
-          open={sidebar}
-          tasks={
-            props.tasks ?? [
-              {
-                id: props.root,
-                title: props.title,
-                status: props.status,
-                nodes: allNodes.map((n) => ({
-                  id: n.id,
-                  title: n.title,
-                  type: n.type,
-                  status: n.status,
-                  session: n.session,
-                })),
-                duration: props.flow.phase,
-              },
-            ]
-          }
-          activeTaskId={props.activeTaskId ?? props.root}
-          activeNodeId={pick ?? undefined}
-          onClose={() => setSidebar(false)}
-          onSelectTask={(id) => {
-            props.onTaskSelect?.(id)
-          }}
-          onSelectNode={(id) => {
-            setPick(id)
-            setSidebar(false)
-          }}
-          onOpenNode={(id) => {
-            setPick(id)
-            const next = allNodes.find((item) => item.id === id)
-            if (next?.type === "plan") {
-              setSessionNode(id)
-              setSidebar(false)
-              return
-            }
-            props.onSession(id)
-            setSidebar(false)
-          }}
-          onNewTask={() => {
-            props.onNewTask?.()
-            setSidebar(false)
-          }}
-          onDeleteTask={(id) => {
-            props.onDeleteTask?.(id)
-          }}
-        />
+        {/* The legacy TaskSidebar drawer was removed — tasks now live in
+         * the unified shell's left rail (under "Workflow") with an inline
+         * "+ Add task" button. The drawer was redundant and partially
+         * occluded the workflow canvas; the rail is always visible and
+         * supports the same pick + create operations. */}
 
         {/* P5 — Graph edits drawer. Mounted inside the relative container
          * so its absolute backdrop only covers the workflow surface, not the
@@ -733,8 +1014,21 @@ export function WorkflowApp(props: WorkflowAppProps) {
             setMinimizedPlans((prev) => new Set(prev).add(activePlanMsgId))
             setActivePlanMsgId(null)
           }}
-          onRun={props.onPlanRun}
-          onEdit={props.onPlanEdit}
+          /* Auto-close the plan modal when the user commits via "Create
+           * graph" or "Edit" — they want to land back on the workflow
+           * canvas (or wherever they were) rather than continue staring
+           * at the plan modal while the workflow starts running. The
+           * plan stays in chat as a chip so they can re-open if needed. */
+          onRun={(plan) => {
+            props.onPlanRun?.(plan)
+            setMinimizedPlans((prev) => new Set(prev).add(activePlanMsgId))
+            setActivePlanMsgId(null)
+          }}
+          onEdit={(ctx) => {
+            props.onPlanEdit?.(ctx)
+            setMinimizedPlans((prev) => new Set(prev).add(activePlanMsgId))
+            setActivePlanMsgId(null)
+          }}
         />
       )}
     </div>
