@@ -2225,7 +2225,14 @@ export default function Page() {
           <div class="h-80 border-t border-emerald-500/20 bg-background/95 shadow-2xl backdrop-blur-sm" />
         </div>
       </Match>
-      <Match when={params.id && workflowSnapshot() && workflowRootSelected() && store.workflow === "graph"}>
+      <Match when={params.id && workflowSnapshot() && workflowRootSelected()}>
+        {/* Root session of a workflow → full hand-off to the React
+         * WorkflowApp (TopBar + Canvas/Chat/Events body + own composer).
+         * This branch used to gate on `store.workflow === "graph"`, which
+         * made the Chat tab fall through to the legacy MessageTimeline —
+         * losing the React ChatPanel design (monitor + plan chip +
+         * sand-table cards). The substrip's `workflowTab` is forwarded
+         * so the React side renders the right tab body. */}
         <div class="size-full overflow-hidden bg-[radial-gradient(circle_at_top_left,rgba(16,185,129,0.08),transparent_32%),radial-gradient(circle_at_top_right,rgba(59,130,246,0.08),transparent_28%),linear-gradient(180deg,#f8fafc_0%,#eef2f7_100%)]">
           <WorkflowRuntimePanel
             snapshot={workflowSnapshot()!}
