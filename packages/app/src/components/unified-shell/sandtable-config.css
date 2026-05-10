@@ -100,7 +100,13 @@
   gap: 12px;
   font-size: 12px;
 }
-.rune-stcfg-field > span {
+/* The 64px fixed-width slot is for short labels (Agent / Model /
+ * Rounds) that pair with a select on the right. The Pre-confirm
+ * toggle reuses the same row container but with a long Chinese
+ * description instead of a label — exclude `.rune-stcfg-toggle-text`
+ * so it doesn't get squeezed into a 64px column and wrap into a
+ * vertical sliver. */
+.rune-stcfg-field > span:not(.rune-stcfg-toggle-text) {
   flex: 0 0 64px;
   color: var(--rune-fg-mute);
   font-size: 11px;
