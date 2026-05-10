@@ -673,33 +673,41 @@
   z-index: 5;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 0;
   height: 28px;
-  padding: 0 6px;
-  border-radius: var(--rune-r, 6px);
+  padding: 0;
+  border-radius: 999px; /* fully rounded — match HUD chips, no harsh corners */
   border: 1px solid var(--rune-line-faint, var(--wf-line));
   background: var(--rune-bg-base, var(--wf-card));
   font-family: var(--rune-font-sans, var(--wf-font-sans));
   font-size: var(--rune-fs-xs, 11px);
   color: var(--rune-fg-dim, var(--wf-dim));
   font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
-/* ── Node card (design-spec 160px shell-style) ──
- * Header: status dot + kind icon + KIND chip + node id (mono right)
- * Body: name + meta (mono command)
- * States: hover line, .is-on accent edge + glow, .is-running pulse
- *         .is-done / .is-err / .is-warn left-strip color
+/* ── Node card (design-spec, refined) ──
+ * Per the handoff design: faint 1px border, soft 6px corners, NO inner
+ * dividers, state shown via a 2px tinted left bar (`::before`) — never
+ * via a thick `border-left` (the previous 3px state border created the
+ * "extra grey segment" the user complained about, because the rest of
+ * the border was thinner so the asymmetry read as a stray line).
+ *
+ * Width 168px (design spec). Hover bumps the border one step; active /
+ * selected adds a 1px accent-tinted ring; running animates a subtle
+ * top progress shimmer instead of a pulsing outer halo (which made the
+ * whole canvas feel restless).
  */
 .workflow-make .wf-node {
   position: relative;
-  width: 160px;
-  min-width: 160px;
-  max-width: 160px;
-  flex: 0 0 160px;
+  width: 168px;
+  min-width: 168px;
+  max-width: 168px;
+  flex: 0 0 168px;
   box-sizing: border-box;
   background: var(--rune-bg-raised, var(--wf-card));
   border: 1px solid var(--rune-line-faint, var(--wf-line));
-  border-radius: var(--rune-r, 6px);
+  border-radius: 6px;
   display: flex;
   flex-direction: column;
   cursor: pointer;
@@ -708,7 +716,7 @@
   font: inherit;
   color: inherit;
   transition: border-color 140ms ease, box-shadow 180ms ease, transform 140ms ease;
-  box-shadow: var(--rune-shadow-sm, 0 1px 2px rgba(15,23,42,0.04));
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
   overflow: hidden;
 }
 .workflow-make .wf-node:hover {
@@ -717,25 +725,67 @@
 .workflow-make .wf-node.is-on {
   border-color: var(--rune-ac-edge, var(--wf-accent-edge));
   box-shadow: 0 0 0 1px var(--rune-ac-edge, var(--wf-accent-edge)),
-              0 8px 24px -8px rgba(76,111,255,0.4);
+              0 8px 24px -8px rgba(76, 111, 255, 0.32);
 }
 .workflow-make .wf-node.is-running {
   border-color: var(--rune-ac-edge, var(--wf-accent-edge));
-  animation: wf-node-design-pulse 1.8s ease-in-out infinite;
 }
-@keyframes wf-node-design-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 var(--rune-ac-edge, rgba(76,111,255,0.32)); }
-  50%      { box-shadow: 0 0 0 4px transparent; }
+
+/* State left-bar — 2px coloured strip running the full card height.
+ * Replaces the old `border-left: 3px` which left a visible asymmetric
+ * "grey segment" wherever the rest of the card border was 1px line-faint. */
+.workflow-make .wf-node::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--rune-line-faint, var(--wf-line));
+  border-radius: 6px 0 0 6px;
+  pointer-events: none;
+  z-index: 1;
 }
-.workflow-make .wf-node.is-done { border-left: 3px solid var(--rune-st-ok, var(--wf-ok)); }
-.workflow-make .wf-node.is-err  { border-left: 3px solid var(--rune-st-err, var(--wf-bad)); }
-.workflow-make .wf-node.is-warn { border-left: 3px solid var(--rune-st-warn, var(--wf-warn)); }
+.workflow-make .wf-node.is-done::before    { background: var(--rune-st-ok, var(--wf-ok)); }
+.workflow-make .wf-node.is-err::before     { background: var(--rune-st-err, var(--wf-bad)); }
+.workflow-make .wf-node.is-warn::before    { background: var(--rune-st-warn, var(--wf-warn)); }
+.workflow-make .wf-node.is-running::before { background: var(--rune-ac, var(--wf-accent)); }
+
+/* Top progress shimmer — only on running nodes. 1px line that scrolls
+ * an accent-tinted segment from left to right, replacing the previous
+ * full-card pulse halo. */
+.workflow-make .wf-node.is-running > .wf-node-runbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: rgba(76, 111, 255, 0.10);
+  overflow: hidden;
+  z-index: 1;
+}
+.workflow-make .wf-node.is-running > .wf-node-runbar::after {
+  content: "";
+  display: block;
+  height: 100%;
+  width: 30%;
+  background: var(--rune-ac, var(--wf-accent));
+  opacity: 0.6;
+  animation: wf-node-runbar-scroll 2.4s linear infinite;
+}
+@keyframes wf-node-runbar-scroll {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
 
 .workflow-make .wf-node-hd {
   display: flex; align-items: center; gap: 6px;
-  padding: 7px 10px;
-  font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase;
-  color: var(--rune-fg-faint, var(--wf-dim)); font-weight: 500;
+  padding: 8px 10px 4px 12px;
+  font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--rune-fg-mute, var(--wf-dim)); font-weight: 500;
+  border-bottom: none; /* explicit: no separator under header — the
+                          stray grey line the user reported came from
+                          a previous ruleset adding one here. */
 }
 .workflow-make .wf-node-hd-dot {
   width: 6px; height: 6px; border-radius: 50%;
@@ -7374,15 +7424,16 @@
   align-items: center;
   gap: 6px;
   height: 22px;
-  padding: 0 8px;
+  padding: 0 9px;
   background: var(--rune-bg-base, var(--wf-bg));
   border: 1px solid var(--rune-line-faint, var(--wf-line));
-  border-radius: 4px;
+  border-radius: 999px; /* fully rounded — no harsh corners on the HUD */
   font-size: 10.5px;
   font-weight: 500;
   color: var(--rune-fg-mute, var(--wf-ink-soft));
   pointer-events: auto;
   white-space: nowrap;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 .workflow-make .wf-canvas-hud-chip-mono {
   font-family: var(--rune-font-mono, var(--wf-font-mono));

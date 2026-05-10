@@ -709,45 +709,178 @@ function WorkflowScreen() {
           )}
       </Match>
       <Match when={true}>
-        <div class="flex h-dvh w-screen items-center justify-center bg-background-base px-6 text-center">
+        {/* Empty-state landing — redesigned to match the unified shell
+         * tokens. The previous version used a generic Tailwind palette
+         * with hard borders + emerald accents, which clashed with the
+         * rest of the redesigned UI. This version sits inside a
+         * `.rune-shell` host so it inherits all the typography +
+         * surface tokens, and the cards use the same soft 1px-line +
+         * rounded corner treatment as the workflow node cards. */}
+        <div
+          class="rune-shell flex h-dvh w-screen items-center justify-center px-6"
+          style={{ background: "var(--rune-bg-base)", color: "var(--rune-fg)" }}
+        >
           <div class="w-full max-w-3xl">
-            <div class="mx-auto max-w-md">
-              <div class="text-16-medium text-text-strong">Connected to {server.name || server.key}</div>
-              <div class="mt-2 text-14-regular text-text-weak">
-                {err() || "No workflow root session exists yet. Create one from a project below."}
+            <div class="mx-auto max-w-xl text-center">
+              <div
+                class="mx-auto mb-5 inline-flex h-12 w-12 items-center justify-center rounded-full"
+                style={{
+                  background: "var(--rune-ac-soft)",
+                  color: "var(--rune-ac-text)",
+                  border: "1px solid var(--rune-ac-edge)",
+                }}
+                aria-hidden
+              >
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="6" r="2.5" />
+                  <circle cx="6" cy="18" r="2.5" />
+                  <circle cx="18" cy="18" r="2.5" />
+                  <path d="M12 8.5v3a2 2 0 0 1-2 2H8M12 8.5v3a2 2 0 0 0 2 2h2M8 13.5v2M16 13.5v2" />
+                </svg>
+              </div>
+              <h1
+                style={{
+                  "font-family": "var(--rune-font-sans)",
+                  "font-size": "22px",
+                  "font-weight": 620,
+                  "letter-spacing": "-0.02em",
+                  "font-variation-settings": '"opsz" 24',
+                  color: "var(--rune-fg)",
+                  margin: 0,
+                }}
+              >
+                Start a workflow
+              </h1>
+              <div
+                class="mx-auto mt-2 max-w-md"
+                style={{
+                  "font-size": "13px",
+                  "line-height": 1.6,
+                  color: "var(--rune-fg-mute)",
+                }}
+              >
+                {err() || (
+                  <>
+                    <span class="rune-mono" style={{ color: "var(--rune-fg-dim)" }}>
+                      {server.name || server.key}
+                    </span>
+                    <span style={{ margin: "0 6px", color: "var(--rune-fg-faint)" }}>·</span>
+                    Pick a project to bootstrap a runtime session.
+                  </>
+                )}
               </div>
             </div>
+
             <Show
               when={projects().length > 0}
               fallback={
-                <div class="mt-6 text-13-regular text-text-weak">
-                  No projects were returned by the server, so there is nothing to bootstrap yet.
+                <div
+                  class="mx-auto mt-8 max-w-md rounded-lg px-4 py-3 text-center"
+                  style={{
+                    border: "1px dashed var(--rune-line)",
+                    background: "var(--rune-bg-surface)",
+                    "font-size": "12px",
+                    color: "var(--rune-fg-mute)",
+                  }}
+                >
+                  No projects were returned by the server.
                 </div>
               }
             >
-              <div class="mt-8 grid gap-3 text-left md:grid-cols-2">
+              <div class="mt-7 grid gap-2.5 sm:grid-cols-2">
                 <For each={projects().slice(0, 8)}>
-                  {(project) => (
-                    <button
-                      type="button"
-                      class="rounded-2xl border border-border/60 bg-background px-4 py-4 transition-colors hover:bg-muted/30"
-                      disabled={!!make()}
-                      onClick={() => void boot(project.worktree, project.name || project.worktree.split("/").at(-1) || "Workflow")}
-                    >
-                      <div class="truncate text-14-medium text-text-strong">{project.name || project.worktree.split("/").at(-1)}</div>
-                      <div class="mt-1 truncate text-12-regular text-text-weak">{project.worktree}</div>
-                      <div class="mt-3 text-12-medium text-emerald-600">
-                        {make() === project.worktree ? "Creating workflow..." : "Create workflow"}
-                      </div>
-                    </button>
-                  )}
+                  {(project) => {
+                    const isActive = () => make() === project.worktree
+                    return (
+                      <button
+                        type="button"
+                        class="group text-left transition-all"
+                        style={{
+                          border: "1px solid var(--rune-line-faint)",
+                          background: "var(--rune-bg-raised)",
+                          "border-radius": "10px",
+                          padding: "14px 16px",
+                          color: "var(--rune-fg)",
+                          "box-shadow": "0 1px 2px rgba(15, 23, 42, 0.04)",
+                          cursor: make() ? "default" : "pointer",
+                          opacity: make() && !isActive() ? 0.55 : 1,
+                        }}
+                        disabled={!!make()}
+                        onClick={() =>
+                          void boot(
+                            project.worktree,
+                            project.name || project.worktree.split("/").at(-1) || "Workflow",
+                          )
+                        }
+                        onMouseEnter={(e) => {
+                          if (!make()) e.currentTarget.style.borderColor = "var(--rune-ac-edge)"
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.borderColor = "var(--rune-line-faint)"
+                        }}
+                      >
+                        <div
+                          style={{
+                            "font-size": "13.5px",
+                            "font-weight": 600,
+                            "letter-spacing": "-0.01em",
+                            color: "var(--rune-fg)",
+                            overflow: "hidden",
+                            "text-overflow": "ellipsis",
+                            "white-space": "nowrap",
+                          }}
+                        >
+                          {project.name || project.worktree.split("/").at(-1)}
+                        </div>
+                        <div
+                          style={{
+                            "margin-top": "3px",
+                            "font-family": "var(--rune-font-mono)",
+                            "font-size": "10.5px",
+                            color: "var(--rune-fg-faint)",
+                            overflow: "hidden",
+                            "text-overflow": "ellipsis",
+                            "white-space": "nowrap",
+                          }}
+                          title={project.worktree}
+                        >
+                          {project.worktree}
+                        </div>
+                        <div
+                          style={{
+                            "margin-top": "10px",
+                            display: "inline-flex",
+                            "align-items": "center",
+                            gap: "5px",
+                            "font-size": "11px",
+                            "font-weight": 500,
+                            color: isActive() ? "var(--rune-ac-text)" : "var(--rune-fg-mute)",
+                          }}
+                        >
+                          {isActive() ? (
+                            <>
+                              <span class="rune-dot" data-st="run" />
+                              Creating…
+                            </>
+                          ) : (
+                            <>
+                              <span style={{ color: "var(--rune-ac-text)" }}>＋</span>
+                              Create workflow
+                            </>
+                          )}
+                        </div>
+                      </button>
+                    )
+                  }}
                 </For>
               </div>
             </Show>
+
             <div class="mt-6 flex flex-wrap items-center justify-center gap-2">
               <button
                 type="button"
-                class="rounded-xl border border-emerald-500/60 bg-emerald-500/10 px-4 py-2 text-13-medium text-emerald-700 transition-colors hover:bg-emerald-500/20 dark:text-emerald-300"
+                class="rune-btn"
+                data-variant="primary"
                 disabled={!!make()}
                 onClick={pickWorkspace}
               >
@@ -755,14 +888,18 @@ function WorkflowScreen() {
               </button>
               <button
                 type="button"
-                class="rounded-xl border border-border/60 px-4 py-2 text-13-medium text-text-base transition-colors hover:bg-muted/30"
+                class="rune-btn"
                 onClick={() => void load()}
               >
-                Refresh
+                ↻ Refresh
               </button>
             </div>
-            <div class="mt-3 text-12-regular text-text-weaker">
-              Health check and global sync are already passing. This page is waiting for a workflow root session.
+
+            <div
+              class="mt-5 text-center"
+              style={{ "font-size": "10.5px", color: "var(--rune-fg-faint)", "letter-spacing": "0.02em" }}
+            >
+              Health check and global sync are passing — waiting for a workflow root session.
             </div>
           </div>
         </div>

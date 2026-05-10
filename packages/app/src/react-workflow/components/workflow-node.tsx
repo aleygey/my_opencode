@@ -89,6 +89,10 @@ export function WorkflowNode({ id, title, type, status, summary, stale, liveStat
       onClick={onClick}
       onDoubleClick={onDoubleClick}
     >
+      {/* 1px top progress shimmer — only visible when this node is the
+        * running one (CSS keys it off `.is-running`). Replaces the old
+        * outer halo pulse that made the whole canvas feel restless. */}
+      {run && <span className="wf-node-runbar" aria-hidden />}
       <div className="wf-node-hd">
         <span
           className="wf-node-hd-dot"

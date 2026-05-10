@@ -157,29 +157,29 @@ function EdgeLine({ active, flowing, height = 32, glow = false }: { active: bool
   return (
     <div className="wf-edge" style={{ height, width: W }}>
       <svg width={W} height={height} viewBox={`0 0 ${W} ${height}`} preserveAspectRatio="none" fill="none">
-        {active && glow && (
-          <path d={path} stroke="var(--rune-ac, var(--wf-ok))" strokeWidth={5} opacity={0.10} fill="none" strokeLinecap="round" />
-        )}
+        {/* Base edge — design spec uses a single thin solid line for
+          * inactive edges (no dash) at `--rune-line-strong`. The dashed
+          * pattern made the canvas feel busy across many connectors. */}
         <path
           d={path}
-          stroke={active ? 'var(--rune-ac, var(--wf-ok))' : 'var(--rune-line, var(--wf-line-strong))'}
-          strokeWidth={active ? 1.5 : 1}
-          strokeDasharray={active ? '0' : '3 4'}
+          stroke={active ? 'var(--rune-ac, var(--wf-ok))' : 'var(--rune-line-strong, var(--wf-line))'}
+          strokeWidth={active ? 1.25 : 1}
           strokeLinecap="round"
           fill="none"
+          opacity={active ? 1 : 0.85}
         />
         {flowing && (
           <>
-            {/* Flowing dash overlay — animates along the active edge to
-              * convey direction of execution without spawning floating
-              * particles (which jittered visually). */}
+            {/* Active edges get a dashed flow overlay AND a travelling
+              * dot to convey direction of execution. The base path above
+              * stays solid so the lane is always readable. */}
             <path
               d={path}
               stroke="var(--rune-ac, var(--wf-ok))"
-              strokeWidth={1.5}
+              strokeWidth={1.25}
               strokeLinecap="round"
               fill="none"
-              strokeDasharray="6 12"
+              strokeDasharray="4 12"
               className="wf-edge-flow"
             />
             <circle r="2" fill="var(--rune-ac, var(--wf-ok))" opacity={0.95}>
