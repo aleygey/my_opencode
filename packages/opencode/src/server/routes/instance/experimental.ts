@@ -17,6 +17,7 @@ import { lazy } from "@/util/lazy"
 import { Effect, Option } from "effect"
 import { Agent } from "@/agent/agent"
 import { Refiner } from "@/refiner"
+import { AppRuntime } from "@/effect/app-runtime"
 // Retrieve is intentionally lazy-imported at the call sites below.
 // Reason: pulling `@/retrieve` into the static module graph (via a top-level
 // `import { Retrieve } from "@/retrieve"`) deadlocks `bun --compile`'s
@@ -477,6 +478,114 @@ export const ExperimentalRoutes = lazy(() =>
       async (c) => {
         const body = c.req.valid("json")
         return c.json(await Refiner.setConfig(body))
+      },
+    )
+    /* ── Sand-table config ─────────────────────────────────────
+     * GET returns the resolved planner / evaluator model + agent
+     * for the current project. PUT persists a partial override
+     * (per-project) into `experimental.sand_table.*`. The
+     * sand_table tool reads this every time it's invoked so the
+     * change takes effect immediately on the next planning run.
+     * Pass `<field>: null` to clear that field. */
+    .get(
+      "/sand_table/config",
+      describeRoute({
+        summary: "Get sand-table config",
+        description:
+          "Read the persisted sand-table planner/evaluator model + agent assignments for the current project. Empty object means defaults.",
+        operationId: "experimental.sand_table.config.get",
+        responses: {
+          200: {
+            description: "Sand-table config",
+            content: {
+              "application/json": {
+                schema: resolver(z.record(z.string(), z.unknown())),
+              },
+            },
+          },
+        },
+      }),
+      async (c) => {
+        const cfg = await AppRuntime.runPromise(
+          Effect.gen(function* () {
+            const config = yield* Config.Service
+            const info = yield* config.get()
+            return info.experimental?.sand_table ?? {}
+          }),
+        )
+        return c.json(cfg)
+      },
+    )
+    .put(
+      "/sand_table/config",
+      describeRoute({
+        summary: "Update sand-table config",
+        description:
+          "Persist a partial sand-table config override into `experimental.sand_table.*`. Pass `<field>: null` to clear.",
+        operationId: "experimental.sand_table.config.update",
+        responses: {
+          200: {
+            description: "Updated sand-table config",
+            content: {
+              "application/json": {
+                schema: resolver(z.record(z.string(), z.unknown())),
+              },
+            },
+          },
+          ...errors(400),
+        },
+      }),
+      validator(
+        "json",
+        z.object({
+          planner_model: z
+            .union([
+              z.object({
+                providerID: z.string().min(1),
+                modelID: z.string().min(1),
+              }),
+              z.null(),
+            ])
+            .optional(),
+          evaluator_model: z
+            .union([
+              z.object({
+                providerID: z.string().min(1),
+                modelID: z.string().min(1),
+              }),
+              z.null(),
+            ])
+            .optional(),
+          planner_agent: z.union([z.string().min(1), z.null()]).optional(),
+          evaluator_agent: z.union([z.string().min(1), z.null()]).optional(),
+          max_rounds: z.union([z.number().int().min(1).max(5), z.null()]).optional(),
+        }),
+      ),
+      async (c) => {
+        const body = c.req.valid("json")
+        const updated = await AppRuntime.runPromise(
+          Effect.gen(function* () {
+            const config = yield* Config.Service
+            const info = yield* config.get()
+            const cur = info.experimental?.sand_table ?? {}
+            const next: Record<string, unknown> = { ...cur }
+            // null clears the field; undefined leaves it; a value sets it.
+            for (const [k, v] of Object.entries(body)) {
+              if (v === null) delete next[k]
+              else if (v !== undefined) next[k] = v
+            }
+            const updatedInfo = {
+              ...info,
+              experimental: {
+                ...(info.experimental ?? {}),
+                sand_table: next,
+              },
+            }
+            yield* config.update(updatedInfo as typeof info)
+            return next
+          }),
+        )
+        return c.json(updated)
       },
     )
     .get(

@@ -1,0 +1,151 @@
+/* Sand-table config dialog — paired with sandtable-config.tsx. Uses
+ * the same dark scrim / lifted modal language as the refiner /
+ * trace logs modals so the three feel like one family of overlays. */
+.rune-stcfg-scrim {
+  position: fixed;
+  inset: 0;
+  background: light-dark(rgba(15, 23, 42, 0.62), rgba(0, 0, 0, 0.72));
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  padding: 24px;
+  font-family: var(--rune-font-sans);
+  color: var(--rune-fg);
+}
+.rune-stcfg-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(560px, 100%);
+  max-height: min(640px, 100%);
+  background: var(--rune-bg-raised);
+  border: 1px solid var(--rune-line);
+  border-radius: var(--rune-r-lg, 10px);
+  box-shadow:
+    0 0 0 1px rgba(15, 23, 42, 0.06),
+    0 24px 60px rgba(15, 23, 42, 0.30);
+  overflow: hidden;
+}
+.rune-stcfg-hd {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--rune-line-faint);
+}
+.rune-stcfg-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--rune-fg);
+}
+.rune-stcfg-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  background: transparent;
+  color: var(--rune-fg-faint);
+  font-size: 18px;
+  cursor: pointer;
+  border-radius: var(--rune-r-sm, 4px);
+}
+.rune-stcfg-close:hover {
+  background: var(--rune-bg-surface);
+  color: var(--rune-fg);
+}
+.rune-stcfg-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.rune-stcfg-empty {
+  padding: 36px;
+  text-align: center;
+  color: var(--rune-fg-faint);
+  font-size: 12px;
+}
+.rune-stcfg-hint {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--rune-fg-mute);
+}
+.rune-stcfg-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--rune-line-faint);
+  border-radius: var(--rune-r, 6px);
+  background: var(--rune-bg-surface);
+}
+.rune-stcfg-row > legend {
+  padding: 0 6px;
+  font-size: 10.5px;
+  font-weight: 550;
+  color: var(--rune-fg-mute);
+  letter-spacing: 0.02em;
+}
+.rune-stcfg-field {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+}
+.rune-stcfg-field > span {
+  flex: 0 0 64px;
+  color: var(--rune-fg-mute);
+  font-size: 11px;
+}
+.rune-stcfg-field > select {
+  flex: 1;
+  height: 30px;
+  padding: 0 28px 0 10px;
+  border: 1px solid var(--rune-line-faint);
+  border-radius: var(--rune-r-sm, 4px);
+  background-color: var(--rune-bg-raised);
+  color: var(--rune-fg);
+  font-family: var(--rune-font-sans);
+  font-size: 12px;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--rune-fg-faint) 50%),
+    linear-gradient(-45deg, transparent 50%, var(--rune-fg-faint) 50%);
+  background-position:
+    calc(100% - 14px) 50%,
+    calc(100% - 9px) 50%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+  cursor: pointer;
+}
+.rune-stcfg-field > select:hover {
+  border-color: var(--rune-line);
+}
+.rune-stcfg-field > select:focus {
+  outline: 0;
+  border-color: var(--rune-ac-edge);
+}
+.rune-stcfg-err {
+  padding: 8px 10px;
+  border: 1px solid var(--rune-warn-edge, #ef4444);
+  border-radius: var(--rune-r-sm, 4px);
+  background: var(--rune-warn-soft, rgba(239, 68, 68, 0.08));
+  color: var(--rune-warn-text, #b91c1c);
+  font-size: 11.5px;
+}
+.rune-stcfg-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--rune-line-faint);
+  background: var(--rune-bg-surface);
+}

@@ -238,6 +238,40 @@ export const Info = Schema.Struct({
           }),
         }),
       ),
+      /* Sand-table planner/evaluator config. Without this, every
+       * `sand_table` tool call falls back to the orchestrator's
+       * model and the hard-coded `sandtable` agent for both roles
+       * — there was no way for the user to pick e.g. "planner =
+       * deepseek-V4-pro, evaluator = glm-5.1, both via the
+       * `architect` agent". This block lets each role be
+       * configured independently and persisted to the project
+       * config; the tool-call args still take precedence per
+       * call. */
+      sand_table: Schema.optional(
+        Schema.Struct({
+          planner_model: Schema.optional(
+            Schema.Struct({
+              providerID: Schema.String,
+              modelID: Schema.String,
+            }),
+          ),
+          evaluator_model: Schema.optional(
+            Schema.Struct({
+              providerID: Schema.String,
+              modelID: Schema.String,
+            }),
+          ),
+          planner_agent: Schema.optional(Schema.String).annotate({
+            description: "Agent name to use for the planner role (default: sandtable).",
+          }),
+          evaluator_agent: Schema.optional(Schema.String).annotate({
+            description: "Agent name to use for the evaluator role (default: sandtable).",
+          }),
+          max_rounds: Schema.optional(PositiveInt).annotate({
+            description: "Default maximum discussion rounds (1–5). Tool args override.",
+          }),
+        }),
+      ),
       openTelemetry: Schema.optional(Schema.Boolean).annotate({
         description: "Enable OpenTelemetry spans for AI SDK calls (using the 'experimental_telemetry' flag)",
       }),

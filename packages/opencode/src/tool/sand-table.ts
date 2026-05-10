@@ -10,6 +10,7 @@ import { Provider } from "../provider"
 import { ModelID, ProviderID } from "../provider/schema"
 import { Bus } from "../bus"
 import { BusEvent } from "../bus/bus-event"
+import { Config } from "../config"
 import { Log } from "../util"
 
 const log = Log.create({ service: "tool.sand-table" })
@@ -164,23 +165,35 @@ const ModelAssignment = z.object({
   modelID: z.string(),
 })
 
+/* Model resolution priority (highest to lowest):
+ *   1. tool-call `params.models.planner / .evaluator` (explicit override
+ *      passed by the orchestrator),
+ *   2. project config `experimental.sand_table.planner_model /
+ *      .evaluator_model` (persisted user choice),
+ *   3. the orchestrator's currently-active model (`currentModel`),
+ *   4. provider default (`provider.defaultModel()`).
+ * Evaluator falls back to the resolved planner if neither override
+ * nor config is set, matching the previous behaviour. */
 function resolveModels(
   provider: Provider.Interface,
   overrides?: { planner?: z.infer<typeof ModelAssignment>; evaluator?: z.infer<typeof ModelAssignment> },
   currentModel?: { providerID: ProviderID; modelID: ModelID },
+  configModels?: { planner?: { providerID: string; modelID: string }; evaluator?: { providerID: string; modelID: string } },
 ) {
   return Effect.gen(function* () {
-    const planner = overrides?.planner
+    const plannerOverride = overrides?.planner ?? configModels?.planner
+    const planner = plannerOverride
       ? {
-          providerID: ProviderID.make(overrides.planner.providerID),
-          modelID: ModelID.make(overrides.planner.modelID),
+          providerID: ProviderID.make(plannerOverride.providerID),
+          modelID: ModelID.make(plannerOverride.modelID),
         }
       : currentModel ?? (yield* provider.defaultModel())
 
-    const evaluator = overrides?.evaluator
+    const evaluatorOverride = overrides?.evaluator ?? configModels?.evaluator
+    const evaluator = evaluatorOverride
       ? {
-          providerID: ProviderID.make(overrides.evaluator.providerID),
-          modelID: ModelID.make(overrides.evaluator.modelID),
+          providerID: ProviderID.make(evaluatorOverride.providerID),
+          modelID: ModelID.make(evaluatorOverride.modelID),
         }
       : planner
 
@@ -369,6 +382,11 @@ function runParticipant(
   participant: Participant,
   prompt: string,
   abort: AbortSignal,
+  /** Agent name to drive the participant. Defaults to the bundled
+   *  `sandtable` agent which scopes tools to msg_read/msg_write only.
+   *  Overrideable via `experimental.sand_table.{planner,evaluator}_agent`
+   *  so users can plug in their own agent definition. */
+  agentName: string = "sandtable",
 ) {
   return Effect.acquireUseRelease(
     Effect.sync(() => {
@@ -397,7 +415,7 @@ function runParticipant(
               messageID,
               sessionID: participant.sessionID,
               model: participant.model,
-              agent: "sandtable",
+              agent: agentName,
               tools: {
                 msg_read: true,
                 msg_write: true,
@@ -440,6 +458,7 @@ export const SandTableTool = Tool.define(
   Effect.gen(function* () {
     const session = yield* Session.Service
     const provider = yield* Provider.Service
+    const config = yield* Config.Service
     return {
       description: DESCRIPTION,
       parameters,
@@ -456,7 +475,23 @@ export const SandTableTool = Tool.define(
             modelID: msg.info.modelID,
           }
 
-          const models = yield* resolveModels(provider, params.models, currentModel)
+          // Read persisted sand-table config (per-project). Tool-call
+          // params still take priority, so the orchestrator can
+          // override on a per-call basis if it wants.
+          const cfg = yield* config.get()
+          const stCfg = cfg?.experimental?.sand_table
+          const plannerAgent = stCfg?.planner_agent ?? "sandtable"
+          const evaluatorAgent = stCfg?.evaluator_agent ?? "sandtable"
+
+          const models = yield* resolveModels(
+            provider,
+            params.models,
+            currentModel,
+            {
+              planner: stCfg?.planner_model,
+              evaluator: stCfg?.evaluator_model,
+            },
+          )
 
           log.info("sand_table starting", {
             discussionID,
@@ -522,7 +557,7 @@ export const SandTableTool = Tool.define(
 
               // Step 1: Planner generates/revises plan
               const planner = state.participants.find((p) => p.role === "planner")!
-              yield* runParticipant(planner, plannerPrompt(state), ctx.abort)
+              yield* runParticipant(planner, plannerPrompt(state), ctx.abort, plannerAgent)
 
               // sp.prompt awaits the planner's full LLM turn; any msg_write
               // it called has already landed in state.messages. Take the
@@ -566,7 +601,7 @@ export const SandTableTool = Tool.define(
                 ...state.participants.filter((p) => p.role !== "evaluator"),
                 evaluator,
               ]
-              yield* runParticipant(evaluator, evaluatorPrompt(state), ctx.abort)
+              yield* runParticipant(evaluator, evaluatorPrompt(state), ctx.abort, evaluatorAgent)
 
               // Same as planner above: msg_write has already landed; take
               // the last one for this round.

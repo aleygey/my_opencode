@@ -10,6 +10,7 @@ import {
   createMemo,
   createEffect,
   createComputed,
+  createSignal,
   on,
   onMount,
   untrack,
@@ -33,6 +34,7 @@ import { NewSessionView, SessionHeader } from "@/components/session"
 import { useShellBridge } from "@/components/unified-shell/shell-bridge"
 import { RuneModelPicker } from "@/components/unified-shell/model-picker"
 import { RuneAgentPicker } from "@/components/unified-shell/agent-picker"
+import { SandTableConfigDialog } from "@/components/unified-shell/sandtable-config"
 import { getSessionContextMetrics } from "@/components/session/session-context-metrics"
 import { useProviders } from "@/hooks/use-providers"
 import { useComments } from "@/context/comments"
@@ -1980,6 +1982,11 @@ export default function Page() {
       .sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0))
       .slice(0, 60)
   })
+  // Sand-table config dialog visibility — opened from a small ⚙
+  // button in the workflow substrip cluster, lets the user pick the
+  // planner / evaluator agent + model that the orchestrator's
+  // `sand_table` tool will use on the next planning round.
+  const [sandTableCfgOpen, setSandTableCfgOpen] = createSignal(false)
   const rootAgentOptions = createMemo(() =>
     local.agent
       .list()
@@ -2155,6 +2162,19 @@ export default function Page() {
                 local.model.set({ providerID: m.providerID, modelID: m.modelID } as never)
               }}
             />
+            {/* ⊞ Sand-table — opens the planner/evaluator config dialog
+              * (agent + model per role + max rounds). Persisted into
+              * project config; the orchestrator picks it up on the next
+              * `sand_table` tool call. */}
+            <button
+              type="button"
+              class="rune-btn"
+              data-size="sm"
+              onClick={() => setSandTableCfgOpen(true)}
+              title="配置 sand_table 的 planner / evaluator agent + model"
+            >
+              ⊞ Sand-table
+            </button>
           </div>
         ),
       },
@@ -2216,6 +2236,7 @@ export default function Page() {
   onCleanup(() => shell.setChrome({}))
 
   return (
+    <>
     <Switch>
       <Match when={params.id && !workflowReady()}>
         <div class="flex size-full min-h-0 flex-col bg-gradient-to-br from-background via-background to-muted/20">
@@ -2553,5 +2574,11 @@ export default function Page() {
         </div>
       </Match>
     </Switch>
+    {/* Sand-table config dialog — Portal-mounted so it overlays the
+      * full app regardless of which Match arm is active. */}
+    <Show when={sandTableCfgOpen()}>
+      <SandTableConfigDialog onClose={() => setSandTableCfgOpen(false)} />
+    </Show>
+    </>
   )
 }
