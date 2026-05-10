@@ -97,13 +97,25 @@ async function getHelper(): Promise<HelperHandle> {
         .filter(Boolean)
         .join(path.delimiter),
     }
-    let proc: ReturnType<typeof Bun.spawn>
+    type HelperProc = {
+      stdin: unknown
+      stdout: ReadableStream<Uint8Array>
+      stderr: ReadableStream<Uint8Array>
+      exited: Promise<number>
+      kill(signal?: number | string): void
+    }
+    let proc: HelperProc
     try {
+      // Bun.spawn with all three pipes ⇒ stdin is FileSink, stdout/stderr
+      // are ReadableStreams. Casting via `unknown` keeps TypeScript happy
+      // while preserving the exact shape we rely on at runtime.
       proc = Bun.spawn([cmd, ...args], {
-        stdio: ["pipe", "pipe", "pipe"],
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
         env,
         cwd: loc.nodeModulesParent,
-      })
+      }) as unknown as HelperProc
     } catch (e) {
       throw new Error(
         `Could not start serial helper — \`${cmd}\` is not available on PATH. ` +

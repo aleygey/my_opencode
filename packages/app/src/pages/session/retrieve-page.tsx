@@ -79,6 +79,16 @@ type RetrieveLogEntry = {
   error?: string
   duration_ms: number
   created_at: number
+  llm_trace?: {
+    provider_id?: string
+    model_id?: string
+    system_prompt?: string
+    user_prompt: string
+    response_text?: string
+    reasoning_text?: string
+    structured_output?: unknown
+    error?: string
+  }
 }
 
 type LogResponse = { entries: RetrieveLogEntry[] }
@@ -782,6 +792,18 @@ export default function RetrievePage() {
           title: p.title,
           body: p.reason || p.abstract,
         })),
+        llmTrace: e.llm_trace
+          ? {
+              providerId: e.llm_trace.provider_id,
+              modelId: e.llm_trace.model_id,
+              systemPrompt: e.llm_trace.system_prompt,
+              userPrompt: e.llm_trace.user_prompt,
+              responseText: e.llm_trace.response_text,
+              reasoningText: e.llm_trace.reasoning_text,
+              structuredOutput: e.llm_trace.structured_output,
+              error: e.llm_trace.error,
+            }
+          : undefined,
       }
     }),
   )

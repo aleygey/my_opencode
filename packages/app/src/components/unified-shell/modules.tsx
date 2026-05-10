@@ -27,6 +27,7 @@ import {
   onMount,
   Show,
 } from "solid-js"
+import { Portal } from "solid-js/web"
 import "./modules.css"
 
 /* ──────────────────────────────────────────────────────
@@ -105,6 +106,20 @@ export type TraceRecallEntry = {
   source?: string
   hits: TraceHit[]
   llmUsed?: boolean
+  /** Optional verbatim retrieve-agent LLM trace — the system + user
+   *  prompts, response text, reasoning, and the structured output the
+   *  recall pipeline used to pick seeds. Surfaced via the per-card
+   *  "Logs" button so the user can audit *how* the agent decided. */
+  llmTrace?: {
+    providerId?: string
+    modelId?: string
+    systemPrompt?: string
+    userPrompt: string
+    responseText?: string
+    reasoningText?: string
+    structuredOutput?: unknown
+    error?: string
+  }
 }
 
 export function TraceRecall(props: {
@@ -117,6 +132,10 @@ export function TraceRecall(props: {
   modelTag?: string
 }) {
   const active = createMemo(() => props.entries.find((e) => e.id === props.activeId) ?? props.entries[0])
+  // Tracks which entry's LLM trace is currently shown in the Logs
+  // modal. `null` ⇒ closed. The modal renders via a Portal so its
+  // z-index isn't constrained by the recall grid layout.
+  const [logsEntry, setLogsEntry] = createSignal<TraceRecallEntry | null>(null)
   return (
     <div class="rt-grid">
       <section class="rt-main-pane">
@@ -225,11 +244,18 @@ export function TraceRecall(props: {
           >
             <For each={props.entries}>
               {(r) => (
-                <button
-                  type="button"
+                <div
+                  role="button"
+                  tabIndex={0}
                   class="rt-rsess"
                   classList={{ "is-on": r.id === active()?.id }}
                   onClick={() => props.onPick(r.id)}
+                  onKeyDown={(ev) => {
+                    if (ev.key === "Enter" || ev.key === " ") {
+                      ev.preventDefault()
+                      props.onPick(r.id)
+                    }
+                  }}
                 >
                   <div class="rt-rsess-head">
                     <span class="rt-rsess-t">{r.shortTime ?? r.time}</span>
@@ -258,14 +284,134 @@ export function TraceRecall(props: {
                     <Show when={r.llmUsed === false}>
                       <span class="rt-rsess-chip is-mute">heur</span>
                     </Show>
+                    <Show when={r.llmTrace}>
+                      <button
+                        type="button"
+                        class="rt-rsess-logs-btn"
+                        title="查看本次召回的 retrieve agent LLM 推理记录"
+                        onClick={(ev) => {
+                          ev.stopPropagation()
+                          setLogsEntry(r)
+                        }}
+                      >
+                        logs
+                      </button>
+                    </Show>
                   </div>
-                </button>
+                </div>
               )}
             </For>
           </Show>
         </div>
       </aside>
+
+      <Show when={logsEntry()}>
+        {(entry) => (
+          <TraceLogsModal entry={entry()} onClose={() => setLogsEntry(null)} />
+        )}
+      </Show>
     </div>
+  )
+}
+
+/* Modal showing the verbatim retrieve-agent LLM trace for a single
+ * recall entry. Surfaces the system prompt + user payload sent to the
+ * model, the model's text/reasoning response, and the structured
+ * output (seed selection) it produced. The user clicks the per-card
+ * "logs" button in the right rail; this opens, scrim closes. */
+function TraceLogsModal(props: {
+  entry: TraceRecallEntry
+  onClose: () => void
+}) {
+  const trace = () => props.entry.llmTrace
+  return (
+    <Portal>
+      <div
+        class="rt-logs-scrim"
+        onClick={props.onClose}
+        role="presentation"
+      >
+        <div
+          class="rt-logs-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Retrieve agent LLM trace"
+          onClick={(ev) => ev.stopPropagation()}
+        >
+          <div class="rt-logs-hd">
+            <div class="rt-logs-hd-l">
+              <span class="rt-logs-title">Retrieve agent · turn {props.entry.turn}</span>
+              <Show when={trace()?.providerId || trace()?.modelId}>
+                <span class="rt-logs-meta rune-mono">
+                  {trace()?.providerId}/{trace()?.modelId}
+                </span>
+              </Show>
+              <span class="rt-logs-meta">{props.entry.durationMs}ms</span>
+            </div>
+            <button
+              type="button"
+              class="rt-logs-close"
+              aria-label="Close"
+              onClick={props.onClose}
+            >
+              ×
+            </button>
+          </div>
+
+          <div class="rt-logs-body">
+            <Show when={trace()?.error}>
+              <section class="rt-logs-sec rt-logs-sec-err">
+                <h3 class="rt-logs-sec-hd">⚠ Error</h3>
+                <pre class="rt-logs-pre">{trace()?.error}</pre>
+              </section>
+            </Show>
+
+            <Show when={trace()?.systemPrompt}>
+              <section class="rt-logs-sec">
+                <h3 class="rt-logs-sec-hd">System prompt</h3>
+                <pre class="rt-logs-pre">{trace()?.systemPrompt}</pre>
+              </section>
+            </Show>
+
+            <section class="rt-logs-sec">
+              <h3 class="rt-logs-sec-hd">User prompt (recall payload)</h3>
+              <pre class="rt-logs-pre">{trace()?.userPrompt}</pre>
+            </section>
+
+            <Show when={trace()?.reasoningText}>
+              <section class="rt-logs-sec">
+                <h3 class="rt-logs-sec-hd">Reasoning</h3>
+                <pre class="rt-logs-pre rt-logs-pre-reasoning">
+                  {trace()?.reasoningText}
+                </pre>
+              </section>
+            </Show>
+
+            <Show when={trace()?.responseText}>
+              <section class="rt-logs-sec">
+                <h3 class="rt-logs-sec-hd">Response</h3>
+                <pre class="rt-logs-pre">{trace()?.responseText}</pre>
+              </section>
+            </Show>
+
+            <Show when={trace()?.structuredOutput !== undefined}>
+              <section class="rt-logs-sec">
+                <h3 class="rt-logs-sec-hd">Structured output (seed selection)</h3>
+                <pre class="rt-logs-pre">
+                  {JSON.stringify(trace()?.structuredOutput, null, 2)}
+                </pre>
+              </section>
+            </Show>
+
+            <Show when={!trace()}>
+              <div class="rt-hit-empty">
+                这条 recall 没有 LLM trace（可能走的是 heuristic fallback 或老版本 binary）。
+              </div>
+            </Show>
+          </div>
+        </div>
+      </div>
+    </Portal>
   )
 }
 
