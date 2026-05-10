@@ -93,15 +93,18 @@
 .rune-shell .rune-row.rune-gap-3 { gap: var(--rune-u3); }
 
 .rune-shell .rune-kicker {
-  /* "Modules" / section labels — switched from mono to Inter at 10px
-   * with wide tracking. Mono kickers were reading cluttered next to
-   * the brand mark; Inter kickers + a touch less weight feel more
-   * editorial. */
+  /* "Modules" / section labels. Previous version was 10px UPPERCASE
+   * with 0.14em tracking, which the user called out as "丑" — caps
+   * + wide tracking reads thin and old-fashioned at small sizes.
+   * Switch to title-case ("Modules" / "Tasks") at 10.5px with
+   * minimal tracking and Inter's variable weight at 550. Cleaner,
+   * less editorial, more contemporary. */
   font-family: var(--rune-font-sans);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
+  font-size: 10.5px;
+  font-weight: 550;
+  font-variation-settings: "wght" 550;
+  letter-spacing: 0;
+  text-transform: none;
   color: var(--rune-fg-faint);
   font-feature-settings: "ss01" 1, "cv11" 1;
 }

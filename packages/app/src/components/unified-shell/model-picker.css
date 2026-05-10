@@ -43,11 +43,17 @@
 }
 
 .rune-model-kicker {
-  font-size: 9px;
-  letter-spacing: 0.18em;
+  /* The previous 9px / 0.18em tracking made these caps look thin and
+   * over-stretched ("非常丑"). Bump the size, drop the letter-spacing
+   * back to a reasonable 0.05em, lean on weight (550 via Inter
+   * variable axis) for emphasis instead. */
+  font-size: 10px;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--rune-fg-dim, #5a584d);
-  font-weight: 600;
+  font-weight: 550;
+  font-variation-settings: "wght" 550;
+  font-feature-settings: "ss01" 1, "cv11" 1;
   flex: none;
 }
 
@@ -122,12 +128,19 @@
 }
 
 .rune-model-group {
-  font-size: 9px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
+  /* Provider group label in the dropdown (e.g. "Opencode-Go"). Was
+   * 9px caps with 0.16em tracking — looked stretched. Match the
+   * kicker treatment: 10px / 0.05em / 550 weight. Title-case
+   * (instead of UPPER) reads more like an editorial section
+   * heading and dodges the "OPENCODE GO" all-caps awkwardness. */
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: none;
   color: var(--rune-fg-dim, #5a584d);
   padding: 8px 12px 4px;
-  font-weight: 600;
+  font-weight: 550;
+  font-variation-settings: "wght" 550;
+  font-feature-settings: "ss01" 1, "cv11" 1;
 }
 
 .rune-model-item {

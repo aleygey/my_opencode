@@ -437,20 +437,27 @@ function Header(props: {
       <span class="rune-grow" />
       <div class="rune-head-actions">
         {props.cfg?.actions}
-        <button
-          type="button"
-          class="rune-tasks-toggle"
-          data-running={props.taskRunning ? "true" : "false"}
-          onClick={props.onTasks}
-          title="Open tasks drawer"
-        >
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
-            <rect x="2.5" y="3.5" width="11" height="9" rx="1.5" />
-            <path d="M5 6.5h6M5 9h4" />
-          </svg>
-          <span>Tasks</span>
-          <span class="rune-tasks-toggle-count">{props.taskRunning ? "1·RUN" : String(props.taskCount)}</span>
-        </button>
+        {/* Tasks drawer button — only shown on Workflow. Knowledge /
+         * Trace don't have a "tasks" concept (they expose their own
+         * activity via Logs and the right rail), so the button there
+         * was redundant chrome. Per user request: 删除 trace 和
+         * refiner 的右上角 task 按钮. */}
+        <Show when={props.module === "workflow"}>
+          <button
+            type="button"
+            class="rune-tasks-toggle"
+            data-running={props.taskRunning ? "true" : "false"}
+            onClick={props.onTasks}
+            title="Open tasks drawer"
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+              <rect x="2.5" y="3.5" width="11" height="9" rx="1.5" />
+              <path d="M5 6.5h6M5 9h4" />
+            </svg>
+            <span>Tasks</span>
+            <span class="rune-tasks-toggle-count">{props.taskRunning ? "1·RUN" : String(props.taskCount)}</span>
+          </button>
+        </Show>
       </div>
     </header>
   )

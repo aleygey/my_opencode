@@ -755,12 +755,15 @@ export function WorkflowCanvas({ root, chains, tail, selectedNodeId, onNodeSelec
           {root && (
             <>
               <RootAgentCard root={root} chainCount={chains.length} onClick={onRootClick} />
-              {/* Only draw the trunk/junction connector when there's at
-               * least one downstream chain. With zero nodes the
-               * connector's `count <= 1` branch was rendering a stray
-               * 40px vertical line in the middle of an otherwise empty
-               * canvas (user-reported "莫名其妙的线"). */}
-              {chains.length > 0 && (
+              {/* Draw the trunk/junction connector ONLY when at least
+               * one chain has at least one node. The previous gate
+               * `chains.length > 0` still let an empty-but-present
+               * chain (the orchestrator boots one lane skeleton before
+               * any node lands) render `BranchConnector` with count=1
+               * — which falls into its `count <= 1` branch and emits
+               * a 40px vertical EdgeLine. That's the "莫名其妙的线"
+               * the user kept reporting on a fresh workflow. */}
+              {chains.some((c) => c.nodes.length > 0) && (
                 <BranchConnector count={chains.length} status={root.status} />
               )}
             </>

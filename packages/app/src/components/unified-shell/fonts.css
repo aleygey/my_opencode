@@ -16,12 +16,17 @@
  * still renders.
  */
 
-/* Geist Sans / Geist Mono — refined display + UI font (Vercel's
- * typeface, SIL OFL). Loaded opportunistically from Google Fonts so
- * the rest of the chrome doesn't block on it; if the network call
- * fails (offline first paint, CSP), the @font-face below for Inter
- * Variable still ships locally as a guaranteed fallback. */
-@import url("https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@400;500&display=swap");
+/* The previous round loaded Geist via Google Fonts (`@import url(
+ * fonts.googleapis.com/...)`), but the user reported on-site office
+ * machines (China firewall / restricted networks) couldn't reach
+ * Google, the fetch failed, and the chrome cascaded down to system
+ * Latin which on some Windows installs ends up as a serif (宋体).
+ * We rely entirely on the self-hosted Inter Variable now — it's
+ * already bundled inside the binary and loads regardless of
+ * network. The `--rune-font-display` token still LISTS Geist first
+ * so any user who has Geist installed system-wide still sees it,
+ * but no remote stylesheet is requested.
+ */
 
 @font-face {
   font-family: "Inter Variable";

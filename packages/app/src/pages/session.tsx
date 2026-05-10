@@ -714,7 +714,10 @@ export default function Page() {
      *   - "node:<id>"                  — opened from canvas node click
      *   - "sand:<id>"                  — opened from sand-table node click
      */
-    workflowTab: "canvas" as string,
+    /* Default tab when entering a workflow page is Chat — the user
+     * lands here to talk to the orchestrator first; Canvas is a view
+     * they switch into after the graph has nodes worth inspecting. */
+    workflowTab: "chat" as string,
     /** Set of currently-opened node/sand-table tab ids. Each id encodes
      *  its kind via the prefix ("node:" / "sand:"). Order = insertion. */
     workflowOpenTabs: [] as Array<{ id: string; kind: "node" | "sand"; title: string }>,
