@@ -334,7 +334,13 @@ export const WorkflowGraphProposeTool = Tool.define(
         '{"kind":"MODIFY_NODE","node_id":"<id3>","patch":{"max_attempts":2}},' +
         '{"kind":"DELETE_EDGE","edge_id":"<id4>"}' +
         "]. " +
-        "All op kinds: INSERT_NODE (node), REPLACE_NODE (node_id + node), MODIFY_NODE (node_id + patch), DELETE_NODE (node_id), INSERT_EDGE (edge), DELETE_EDGE (edge_id).",
+        "All op kinds: INSERT_NODE (node), REPLACE_NODE (node_id + node), MODIFY_NODE (node_id + patch), DELETE_NODE (node_id), INSERT_EDGE (edge), DELETE_EDGE (edge_id). " +
+        "INSERT_EDGE common failure modes (the WHOLE propose transaction is rejected on any of these): " +
+        "WRONG: {\"kind\":\"INSERT_EDGE\",\"edge\":{}}  ← empty `edge` object, will be Zod-rejected with 'expected string, received undefined' on from_node_id and to_node_id. " +
+        "WRONG: {\"kind\":\"INSERT_EDGE\",\"from_node_id\":\"n1\",\"to_node_id\":\"n2\"}  ← fields must be NESTED inside `edge`, not flat. " +
+        "RIGHT: {\"kind\":\"INSERT_EDGE\",\"edge\":{\"from_node_id\":\"n1\",\"to_node_id\":\"n2\",\"label\":\"depends_on\"}}. " +
+        "If you do not have node IDs in scope, call workflow_read first to fetch them — never guess and never emit empty `edge: {}`. " +
+        "Keep batches small for INSERT_EDGE (≤5 per call) — large batches of nested objects degrade tool-call accuracy on smaller models.",
       parameters: WorkflowGraphProposeParameters,
       execute: (input: z.infer<typeof WorkflowGraphProposeParameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
