@@ -4210,6 +4210,11 @@ function ExperienceGraphView(props: {
    *  whose `categories` includes this slug are rendered. Edges are kept iff
    *  both endpoints survive the filter — orphan edges would mislead. */
   activeCategory?: string
+  /** Tag filter — same shape as `activeCategory` (matches against
+   *  `categories[]`), but driven by clicking a #tag chip on a list card.
+   *  In the unified shell `activeCategory` is never set (legacy filterbar
+   *  is hidden), so this is the actual filter the user reaches. */
+  activeTag?: string
   activeEdgeKinds: Set<ChainEdgeKind>
   toggleEdgeKind: (k: ChainEdgeKind) => void
   includeArchived: boolean
@@ -4230,10 +4235,12 @@ function ExperienceGraphView(props: {
     const src = props.data?.experiences ?? []
     const kind = props.activeKind
     const cat = props.activeCategory
+    const tag = props.activeTag
     return src.filter((e) => {
       if (!props.includeArchived && e.archived) return false
       if (kind && e.kind !== kind) return false
       if (cat && !(e.categories ?? []).includes(cat)) return false
+      if (tag && !(e.categories ?? []).includes(tag)) return false
       return true
     })
   })
@@ -5461,6 +5468,10 @@ export default function RefinerPage() {
       },
       // Design's Knowledge ships both List and Graph views (segmented
       // toggle in the design — sliding pill rather than text-link tabs).
+      // The right cluster carries the unified RuneModelPicker — without
+      // this the user has no way to pick the refiner's LLM (the legacy
+      // `rf-top` toolbar that used to host it is `display:none`'d when
+      // running inside the unified shell).
       substrip: {
         tabs: [
           { id: "list", name: "List" },
@@ -5469,6 +5480,15 @@ export default function RefinerPage() {
         active: viewMode(),
         onTab: (id: string) => setViewMode(id as "list" | "graph"),
         variant: "segmented",
+        right: (
+          <RuneModelPicker
+            current={config()?.resolved ?? overview()?.model}
+            source={config()?.source}
+            kicker="MODEL"
+            onChange={updateModel}
+            onReset={resetModel}
+          />
+        ),
       },
       railSubs: railCategorySubs(),
       activeSubId: activeKind() ?? "__all",
@@ -5645,6 +5665,23 @@ export default function RefinerPage() {
         <div class="rf-banner">{banner()}</div>
       </Show>
 
+      {/* Tag-filter banner — lifted above the stage so it shows in BOTH
+          list and graph views (the chip is set from list cards but the
+          graph also needs to honour it). */}
+      <Show when={activeTag()}>
+        <div class="rf-tag-filter-bar">
+          <span class="rf-tag-filter-label">已按 tag 筛选:</span>
+          <button
+            type="button"
+            class="rune-chip kw-tag-chip is-active"
+            onClick={() => setActiveTag(undefined)}
+            title="点击清除筛选"
+          >
+            #{activeTag()} ×
+          </button>
+        </div>
+      </Show>
+
       <div class="rf-stage" data-view={viewMode()}>
         <Show when={viewMode() === "graph"}>
           <div class="rf-main rf-main-graph">
@@ -5654,6 +5691,7 @@ export default function RefinerPage() {
               onPick={pickExperienceByID}
               activeKind={activeKind()}
               activeCategory={activeCategory()}
+              activeTag={activeTag()}
               activeEdgeKinds={graphEdgeKinds()}
               toggleEdgeKind={toggleGraphEdgeKind}
               includeArchived={includeArchived()}
@@ -5662,19 +5700,6 @@ export default function RefinerPage() {
         </Show>
         <Show when={viewMode() === "list"}>
           <div class="rf-main">
-            <Show when={activeTag()}>
-              <div class="rf-tag-filter-bar">
-                <span class="rf-tag-filter-label">已按 tag 筛选:</span>
-                <button
-                  type="button"
-                  class="rune-chip kw-tag-chip is-active"
-                  onClick={() => setActiveTag(undefined)}
-                  title="点击清除筛选"
-                >
-                  #{activeTag()} ×
-                </button>
-              </div>
-            </Show>
             <RuneKnowledgeList
               experiences={runeExperiences()}
               selectedIds={new Set(selectedIds())}
