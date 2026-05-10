@@ -12,25 +12,18 @@ const mockProps: WorkflowAppProps = {
   model: "GPT-5.4",
   models: ["GPT-5.4", "GPT-5.4-turbo", "Claude-3.5-Sonnet", "Claude-3-Opus", "Gemini-Pro"],
   workspace: "/home/user/projects/embedded-firmware/arm-hello",
-  nodes: [],
-  chains: [
-    {
-      id: "chain-build",
-      label: "Build & Flash",
-      nodes: [
-        { id: "node-001", title: "Initialize Environment", type: "coding", status: "completed", session: "session-001" },
-        { id: "node-002", title: "Create fancy hello C source", type: "coding", status: "completed", session: "session-002" },
-        { id: "node-003", title: "Compile the C program", type: "build-flash", status: "running", session: "session-003" },
-      ],
-    },
-    {
-      id: "chain-deploy",
-      label: "Deploy & Verify",
-      nodes: [
-        { id: "node-004", title: "Transfer and run over ttyS0", type: "debug", status: "pending", session: "session-004" },
-        { id: "node-005", title: "Verify Execution Logs", type: "debug", status: "pending", session: "session-005" },
-      ],
-    },
+  nodes: [
+    { id: "node-001", title: "Initialize Environment", type: "coding", status: "completed", session: "session-001" },
+    { id: "node-002", title: "Create fancy hello C source", type: "coding", status: "completed", session: "session-002" },
+    { id: "node-003", title: "Compile the C program", type: "build-flash", status: "running", session: "session-003" },
+    { id: "node-004", title: "Transfer and run over ttyS0", type: "debug", status: "pending", session: "session-004" },
+    { id: "node-005", title: "Verify Execution Logs", type: "debug", status: "pending", session: "session-005" },
+  ],
+  edges: [
+    { from: "node-001", to: "node-002" },
+    { from: "node-002", to: "node-003" },
+    { from: "node-003", to: "node-004" },
+    { from: "node-004", to: "node-005" },
   ],
   details: {
     "node-001": {

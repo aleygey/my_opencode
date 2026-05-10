@@ -56,13 +56,6 @@ export type Node = {
   stale?: boolean
 }
 
-export type Chain = {
-  id: string
-  label: string
-  color?: string
-  nodes: Node[]
-}
-
 export type Detail = {
   id: string
   title: string
@@ -154,13 +147,13 @@ export type WorkflowAppProps = {
   onRootAgentChange?: (agent: string) => void
   workspace?: string
   nodes: Node[]
-  chains?: Chain[]
-  /** Optional merge-tail node — a single node downstream of multiple lanes
-   * that the canvas should render *after* the lanes with a converging
-   * connector (mirror of the top fan-out `BranchConnector`). When the
-   * graph has no fan-in (or only a single lane), this is undefined and
-   * the canvas falls back to plain lane rendering. */
-  chainTail?: Node
+  /** Optional flat DAG edges — drives the new layered-graph canvas
+   * (column = topo depth; row sorted by avg-parent-row). Multiple
+   * edges into one node naturally render as fan-in via bezier curves.
+   * When empty / absent, the canvas falls back to a column-collapsed
+   * "no edges known" rendering of nodes alone. The legacy `chains`
+   * prop is gone; the layered layout subsumes it. */
+  edges?: Array<{ from: string; to: string; kind?: 'flow' | 'support' }>
   tasks?: Task[]
   activeTaskId?: string
   details: Record<string, Detail>
@@ -429,46 +422,30 @@ export function WorkflowApp(props: WorkflowAppProps) {
     return () => clearTimeout(t)
   }, [isRunning])
 
-  const allNodes = useMemo(() => {
-    if (props.chains && props.chains.length > 0) {
-      return props.chains.flatMap((c) => c.nodes)
-    }
-    return props.nodes
-  }, [props.chains, props.nodes])
+  // The new layered-graph canvas reads `props.nodes` flat — the legacy
+  // `chains` projection is gone. We hydrate `progress` from the per-node
+  // detail's stateJson so the node card's progress chip stays accurate.
+  const allNodes = useMemo(
+    () =>
+      props.nodes.map((n) => ({
+        ...n,
+        progress:
+          typeof props.details[n.id]?.stateJson?.progress === "number"
+            ? (props.details[n.id].stateJson.progress as number)
+            : undefined,
+      })),
+    [props.nodes, props.details],
+  )
 
   const nodeProgress = useMemo(() => {
     const done = allNodes.filter((n) => n.status === "completed").length
     return { done, total: allNodes.length }
   }, [allNodes])
 
-  const canvasChains = useMemo(() => {
-    if (props.chains && props.chains.length > 0) {
-      return props.chains.map((c) => ({
-        ...c,
-        nodes: c.nodes.map((n) => ({
-          ...n,
-          progress:
-            typeof props.details[n.id]?.stateJson?.progress === "number"
-              ? (props.details[n.id].stateJson.progress as number)
-              : undefined,
-        })),
-      }))
-    }
-    // Default: wrap flat nodes into a single chain
-    return [
-      {
-        id: "default",
-        label: "Main",
-        nodes: props.nodes.map((n) => ({
-          ...n,
-          progress:
-            typeof props.details[n.id]?.stateJson?.progress === "number"
-              ? (props.details[n.id].stateJson.progress as number)
-              : undefined,
-        })),
-      },
-    ]
-  }, [props.chains, props.nodes, props.details])
+  const canvasEdges = useMemo<NonNullable<WorkflowAppProps["edges"]>>(
+    () => props.edges ?? [],
+    [props.edges],
+  )
 
   useEffect(() => {
     const first = allNodes[0]?.id ?? null
@@ -703,8 +680,8 @@ export function WorkflowApp(props: WorkflowAppProps) {
                   nodeCount: nodeProgress.total,
                   completedCount: nodeProgress.done,
                 }}
-                chains={canvasChains}
-                tail={props.chainTail}
+                nodes={allNodes}
+                edges={canvasEdges}
                 selectedNodeId={pick}
                 onNodeSelect={(id) => {
                   // Selecting a node only updates the inspector — it never
@@ -944,28 +921,41 @@ export function WorkflowApp(props: WorkflowAppProps) {
             * the aside is a fixed 340px column that can collapse to 0 via
             * a toggle button (no draggable splitbar). The split hook is
             * kept for backwards-compat but we drive width via an
-            * asideOpen flag now. */}
-          <button
-            type="button"
-            className="wf-rcanvas-aside-toggle"
-            onClick={() => setAsideOpen((v) => !v)}
-            title={asideOpen ? 'Collapse panel' : 'Expand panel'}
-            aria-label="Toggle inspector"
-          >
-            {asideOpen ? '›' : '‹'}
-          </button>
-          <div
-            className="flex-shrink-0 wf-aside-col"
-            data-aside={asideOpen ? 'open' : 'closed'}
-            style={{ width: asideOpen ? `${side.size}px` : '0px' }}
-          >
-            <EnhancedInspectorPanel
-              nodeDetails={detail}
-              workflowContext={props.flow}
-              agents={props.agents}
-              onModelClick={props.onModel}
-            />
-          </div>
+            * asideOpen flag now.
+            *
+            * Suppressed entirely when the user has opened a dynamic tab
+            * (`node:*` / `sand:*`) — those views are full-page and
+            * carry their own per-node detail rails (CODE CHANGES /
+            * State / Plan), so showing the workflow Inspector
+            * alongside (a) duplicates information and (b) leaves an
+            * empty 340px strip on the far right that the user
+            * reported as visual junk. Returning to canvas / chat /
+            * events restores it. */}
+          {!dynamicTab && (
+            <>
+              <button
+                type="button"
+                className="wf-rcanvas-aside-toggle"
+                onClick={() => setAsideOpen((v) => !v)}
+                title={asideOpen ? 'Collapse panel' : 'Expand panel'}
+                aria-label="Toggle inspector"
+              >
+                {asideOpen ? '›' : '‹'}
+              </button>
+              <div
+                className="flex-shrink-0 wf-aside-col"
+                data-aside={asideOpen ? 'open' : 'closed'}
+                style={{ width: asideOpen ? `${side.size}px` : '0px' }}
+              >
+                <EnhancedInspectorPanel
+                  nodeDetails={detail}
+                  workflowContext={props.flow}
+                  agents={props.agents}
+                  onModelClick={props.onModel}
+                />
+              </div>
+            </>
+          )}
         </div>
 
         {/* The legacy TaskSidebar drawer was removed — tasks now live in

@@ -1975,383 +1975,11 @@ export function WorkflowRuntimePanel(props: {
     }, 1000)
     onCleanup(() => clearInterval(timer))
   })
-  const chainData = createMemo<WorkflowAppProps["chains"] | undefined>(() => {
-    type ChainNode = NonNullable<WorkflowAppProps["chains"]>[number]["nodes"][number]
-    const wfRev = props.snapshot.workflow.graph_rev
-    const allNodes = nodes()
-    const plan = sandPlan()
-    if (!plan && allNodes.length === 0) return undefined
-
-    // Index events by node_id so each node card can show its latest
-    // slave-agent activity in the bottom marquee. We pick the most
-    // recent event and project a short status string from it.
-    const liveStatusByNode = new Map<string, string>()
-    const allEvents = props.snapshot.events ?? []
-    const sorted = [...allEvents].sort((a, b) => b.time_created - a.time_created)
-    for (const ev of sorted) {
-      if (!ev.node_id) continue
-      if (liveStatusByNode.has(ev.node_id)) continue
-      const p = (ev.payload ?? {}) as Record<string, unknown>
-      const txt =
-        (typeof p["status"] === "string" && (p["status"] as string)) ||
-        (typeof p["message"] === "string" && (p["message"] as string)) ||
-        (typeof p["reason"] === "string" && (p["reason"] as string)) ||
-        ev.kind
-      liveStatusByNode.set(ev.node_id, `${ev.kind} · ${txt}`)
-    }
-
-    const renderable = (node: WorkflowNode): ChainNode => {
-      const startRev = node.graph_rev_at_start
-      const stale =
-        typeof startRev === "number" && typeof wfRev === "number" && startRev < wfRev
-      return {
-        id: node.id,
-        title: node.title,
-        type: nodeKind(node) === "build" ? "build-flash" : (nodeKind(node) as "coding" | "debug" | "deploy"),
-        status: tone(node.status),
-        // Don't fall back to the root session id when a node hasn't
-        // started yet — that lookup chain caused NodeSessionView to render
-        // the MASTER session's messages for unstarted child nodes (the
-        // user reported clicking a not-yet-running node and seeing the
-        // orchestrator's chat). When session is undefined, the chat
-        // panel renders an empty state, which is the correct UX.
-        session: node.session_id ?? undefined,
-        liveStatus: liveStatusByNode.get(node.id),
-        stale,
-      }
-    }
-    const planNode = (): ChainNode | undefined =>
-      plan
-        ? {
-            id: `sand-table:${plan.id}`,
-            title: plan.title,
-            type: "plan",
-            status: plan.status,
-            session: rootID(),
-            summary: sandPlanBadges(plan),
-          }
-        : undefined
-
-    // Plan-only (no execution nodes yet): single chain so the planning header
-    // doesn't get marooned inside the multi-lane layout.
-    if (allNodes.length === 0) {
-      return [
-        {
-          id: "workflow",
-          label: props.snapshot.workflow.title || "Workflow",
-          color: "#7578c5",
-          nodes: [planNode()!],
-        },
-      ]
-    }
-
-    const edges = props.snapshot.edges ?? []
-
-    // No edges → no DAG to decompose. Preserve historical single-chain
-    // behaviour for legacy workflows that just declare a flat node list.
-    if (edges.length === 0) {
-      const merged: ChainNode[] = []
-      const head = planNode()
-      if (head) merged.push(head)
-      for (const node of allNodes) merged.push(renderable(node))
-      return [
-        {
-          id: "workflow",
-          label: props.snapshot.workflow.title || "Workflow",
-          color: "#7578c5",
-          nodes: merged,
-        },
-      ]
-    }
-
-    // Topological lane decomposition (option B from the discussion).
-    //
-    // The canvas already supports multi-lane rendering (`isMulti` branch in
-    // workflow-canvas.tsx — flex `wf-lanes` row with junction diamond + measured
-    // crossbar). What was missing was producing > 1 chain when the underlying
-    // graph actually has parallel branches. The master agent has been creating
-    // proper DAGs (fan-out from a planning node into independent sub-tasks),
-    // but `chainData` was flattening them all into a single linear chain
-    // sorted by `position`, hiding the parallelism from the user.
-    //
-    // Algorithm:
-    //   1. Build adjacency from edges; compute in-degree per node.
-    //   2. Roots = nodes with in-degree 0 (sorted by position so left-to-right
-    //      lane order matches creation order).
-    //   3. Walk DFS from each root. At each step, pick the first unvisited
-    //      child to continue the current lane and queue any remaining
-    //      unvisited children as new lane heads. Each node is visited at most
-    //      once globally (fan-in nodes appear in the lane of their first
-    //      visiting parent only; this is the standard trade-off when
-    //      projecting a DAG onto linear lanes).
-    //   4. The plan (sand_table) header — when present — is prepended to the
-    //      first lane only. Putting it in its own dedicated lane wastes a
-    //      column; prepending matches the existing single-lane behaviour for
-    //      lane 0 and keeps lanes 1..N visually parallel.
-    const out = new Map<string, string[]>()
-    const inDegree = new Map<string, number>()
-    const positionOf = new Map<string, number>()
-    allNodes.forEach((node, i) => {
-      out.set(node.id, [])
-      inDegree.set(node.id, 0)
-      positionOf.set(node.id, i)
-    })
-    for (const edge of edges) {
-      const from = out.get(edge.from_node_id)
-      if (!from || !inDegree.has(edge.to_node_id)) continue
-      from.push(edge.to_node_id)
-      inDegree.set(edge.to_node_id, (inDegree.get(edge.to_node_id) ?? 0) + 1)
-    }
-    // Stable child ordering by position so lane spawn order matches the order
-    // the master agent created the children in.
-    for (const arr of out.values()) {
-      arr.sort((a, b) => (positionOf.get(a) ?? 0) - (positionOf.get(b) ?? 0))
-    }
-
-    const nodeMap = new Map(allNodes.map((n) => [n.id, n] as const))
-    const visited = new Set<string>()
-    const lanes: WorkflowNode[][] = []
-    const stack: string[] = allNodes
-      .filter((n) => (inDegree.get(n.id) ?? 0) === 0)
-      .map((n) => n.id)
-
-    while (stack.length) {
-      const startID = stack.shift()!
-      if (visited.has(startID)) continue
-      const lane: WorkflowNode[] = []
-      let cursor: string | undefined = startID
-      while (cursor && !visited.has(cursor)) {
-        visited.add(cursor)
-        const node = nodeMap.get(cursor)
-        if (!node) break
-        lane.push(node)
-        const children: string[] = (out.get(cursor) ?? []).filter(
-          (id) => !visited.has(id),
-        )
-        if (children.length === 0) {
-          cursor = undefined
-          break
-        }
-        const first: string = children[0]
-        const rest: string[] = children.slice(1)
-        // Push spawned lanes in reverse so popping (from front) preserves
-        // left-to-right order on the next outer iteration.
-        for (const id of rest.slice().reverse()) stack.unshift(id)
-        cursor = first
-      }
-      if (lane.length > 0) lanes.push(lane)
-    }
-
-    // Defensive fallback: if a cycle slipped past P2's invariants and left
-    // some nodes unvisited, append them as a single trailing lane so they
-    // don't silently disappear.
-    const orphans = allNodes.filter((n) => !visited.has(n.id))
-    if (orphans.length > 0) lanes.push(orphans)
-    // Empty result (shouldn't happen given the early guards) → single chain.
-    // We include the plan head in this fallback too — without it, the
-    // user reported "plan节点莫名消失" (plan node mysteriously disappears)
-    // because hitting this branch (e.g. a malformed graph with all nodes
-    // self-cycling) would render the canvas with execution nodes but no
-    // planning header, even though `sandPlan()` was still populated.
-    if (lanes.length === 0) {
-      const head = planNode()
-      const all: ChainNode[] = []
-      if (head) all.push(head)
-      for (const n of allNodes) all.push(renderable(n))
-      return [
-        {
-          id: "workflow",
-          label: props.snapshot.workflow.title || "Workflow",
-          color: "#7578c5",
-          nodes: all,
-        },
-      ]
-    }
-
-    // Tail merge detection. The LLM frequently produces DAGs where multiple
-    // parallel branches converge into a single follow-up node (e.g. plan ->
-    // [build, test, lint] -> deploy). The topological lane-decomposition
-    // above places that fan-in node in the *first* visiting parent's lane
-    // only, leaving sibling lanes ending mid-air with no visual indication
-    // that they re-converge. The user reported this as "多节点是否会merge
-    // 到同一个头/尾节点上" — they expect to see the tail.
-    //
-    // Heuristic: find a node that
-    //   (a) has incoming edges from parents living in >= 2 different lanes
-    //       (so it really IS a multi-lane merge, not just a serial join),
-    //   (b) has no outgoing edge to any other node (so it's a true tail —
-    //       avoids accidentally yanking a mid-graph join out of place).
-    // If such a node exists, pull it out of its host lane and surface it as
-    // a separate tail card. The canvas renders a mirror of the top
-    // `BranchConnector` between the lanes and the tail card.
-    const laneOf = new Map<string, number>()
-    lanes.forEach((lane, i) => lane.forEach((n) => laneOf.set(n.id, i)))
-    const incomingByID = new Map<string, string[]>()
-    const hasOutgoing = new Set<string>()
-    for (const edge of edges) {
-      hasOutgoing.add(edge.from_node_id)
-      const list = incomingByID.get(edge.to_node_id)
-      if (list) list.push(edge.from_node_id)
-      else incomingByID.set(edge.to_node_id, [edge.from_node_id])
-    }
-
-    let tailNode: WorkflowNode | undefined
-    if (lanes.length > 1) {
-      for (const node of allNodes) {
-        if (hasOutgoing.has(node.id)) continue
-        const parents = incomingByID.get(node.id) ?? []
-        if (parents.length < 2) continue
-        const distinctLanes = new Set<number>()
-        for (const p of parents) {
-          const li = laneOf.get(p)
-          if (li !== undefined) distinctLanes.add(li)
-        }
-        if (distinctLanes.size >= 2) {
-          tailNode = node
-          break
-        }
-      }
-    }
-
-    // Strip the tail from whichever lane it currently lives in (it was put
-    // there by the topological walk under "first visiting parent" rules).
-    if (tailNode) {
-      const id = tailNode.id
-      for (let i = 0; i < lanes.length; i++) {
-        const idx = lanes[i].findIndex((n) => n.id === id)
-        if (idx !== -1) lanes[i].splice(idx, 1)
-      }
-    }
-
-    const chains = lanes
-      .filter((lane) => lane.length > 0)
-      .map((lane, i, kept) => ({
-        id: `lane-${i}-${lane[0].id}`,
-        // The chain label only shows in multi-lane layout; fall back to the
-        // workflow title if there's only one lane (single-lane keeps existing
-        // header-hidden behaviour).
-        label: kept.length > 1 ? lane[0].title : props.snapshot.workflow.title || "Workflow",
-        // Let the canvas pick the lane color from its `laneColors` palette via
-        // `colorIdx={i}`; leaving `color` undefined avoids forcing one tint
-        // across all lanes.
-        color: kept.length === 1 ? "#7578c5" : undefined,
-        nodes: lane.map(renderable),
-        // Tag the lane that fed the tail so consumers (canvas / debug) can
-        // optionally surface "merges into …" hinting later. Cheap to attach;
-        // ignored by the current canvas renderer.
-        ...(tailNode && lane.some((n) => (incomingByID.get(tailNode!.id) ?? []).includes(n.id))
-          ? { mergesInto: tailNode.id }
-          : {}),
-      }))
-
-    const head = planNode()
-    if (head && chains[0]) chains[0].nodes.unshift(head)
-
-    // Attach the merge tail as a sibling field on the array via a tagged
-    // property. We deliberately avoid changing `WorkflowAppProps["chains"]`
-    // shape because the canvas already consumes a plain `Chain[]`; instead
-    // the tail is plumbed through a separate `chainTail` prop on
-    // `WorkflowApp` (see `chainTail` memo below).
-    return chains
-  })
-
-  // Sibling memo to chainData(). Re-runs the same topological walk just to
-  // emit the merge-tail node (or undefined). Cheap because the inputs are the
-  // same memoised reactive sources.
-  const chainTail = createMemo<WorkflowAppProps["chainTail"] | undefined>(() => {
-    const allNodes = nodes()
-    const edges = props.snapshot.edges ?? []
-    if (allNodes.length < 2 || edges.length === 0) return undefined
-
-    // Re-derive the lane assignment so we know which parents belong to
-    // which lane. Sharing memoised state across two memos is awkward in
-    // SolidJS so we just pay the linear-time cost twice.
-    const out = new Map<string, string[]>()
-    const inDegree = new Map<string, number>()
-    const positionOf = new Map<string, number>()
-    allNodes.forEach((node, i) => {
-      out.set(node.id, [])
-      inDegree.set(node.id, 0)
-      positionOf.set(node.id, i)
-    })
-    for (const edge of edges) {
-      const from = out.get(edge.from_node_id)
-      if (!from || !inDegree.has(edge.to_node_id)) continue
-      from.push(edge.to_node_id)
-      inDegree.set(edge.to_node_id, (inDegree.get(edge.to_node_id) ?? 0) + 1)
-    }
-    for (const arr of out.values()) {
-      arr.sort((a, b) => (positionOf.get(a) ?? 0) - (positionOf.get(b) ?? 0))
-    }
-
-    const visited = new Set<string>()
-    const lanes: WorkflowNode[][] = []
-    const stack: string[] = allNodes.filter((n) => (inDegree.get(n.id) ?? 0) === 0).map((n) => n.id)
-    while (stack.length) {
-      const startID = stack.shift()!
-      if (visited.has(startID)) continue
-      const lane: WorkflowNode[] = []
-      let cursor: string | undefined = startID
-      while (cursor && !visited.has(cursor)) {
-        visited.add(cursor)
-        const node = allNodes.find((n) => n.id === cursor)
-        if (!node) break
-        lane.push(node)
-        const children: string[] = (out.get(cursor) ?? []).filter((id) => !visited.has(id))
-        if (children.length === 0) {
-          cursor = undefined
-          break
-        }
-        const first: string = children[0]
-        const rest: string[] = children.slice(1)
-        for (const id of rest.slice().reverse()) stack.unshift(id)
-        cursor = first
-      }
-      if (lane.length > 0) lanes.push(lane)
-    }
-    if (lanes.length < 2) return undefined
-
-    const laneOf = new Map<string, number>()
-    lanes.forEach((lane, i) => lane.forEach((n) => laneOf.set(n.id, i)))
-    const incomingByID = new Map<string, string[]>()
-    const hasOutgoing = new Set<string>()
-    for (const edge of edges) {
-      hasOutgoing.add(edge.from_node_id)
-      const list = incomingByID.get(edge.to_node_id)
-      if (list) list.push(edge.from_node_id)
-      else incomingByID.set(edge.to_node_id, [edge.from_node_id])
-    }
-
-    const wfRev = props.snapshot.workflow.graph_rev
-    for (const node of allNodes) {
-      if (hasOutgoing.has(node.id)) continue
-      const parents = incomingByID.get(node.id) ?? []
-      if (parents.length < 2) continue
-      const distinctLanes = new Set<number>()
-      for (const p of parents) {
-        const li = laneOf.get(p)
-        if (li !== undefined) distinctLanes.add(li)
-      }
-      if (distinctLanes.size < 2) continue
-      const startRev = node.graph_rev_at_start
-      const stale = typeof startRev === "number" && typeof wfRev === "number" && startRev < wfRev
-      return {
-        id: node.id,
-        title: node.title,
-        type: nodeKind(node) === "build" ? "build-flash" : (nodeKind(node) as "coding" | "debug" | "deploy"),
-        status: tone(node.status),
-        // Don't fall back to the root session id when a node hasn't
-        // started yet — that lookup chain caused NodeSessionView to render
-        // the MASTER session's messages for unstarted child nodes (the
-        // user reported clicking a not-yet-running node and seeing the
-        // orchestrator's chat). When session is undefined, the chat
-        // panel renders an empty state, which is the correct UX.
-        session: node.session_id ?? undefined,
-        stale,
-      }
-    }
-    return undefined
-  })
+  // Legacy `chainData` / `chainTail` projection is gone — the new
+  // layered-graph canvas (`canvas` + `canvasEdges` below) handles
+  // fan-in / fan-out natively via bezier edges from a flat node /
+  // edge list, so the previous ~370 lines of topological lane
+  // decomposition + tail-merge heuristic was dead weight.
   const detailsWithPlan = createMemo<WorkflowAppProps["details"]>(() => {
     const base = details()
     const plan = sandPlan()
@@ -2468,34 +2096,106 @@ export function WorkflowRuntimePanel(props: {
     const fallback = sessionModel
       ? { providerID: sessionModel.provider.id, modelID: sessionModel.id }
       : undefined
-    return nodes().map((node) => {
-      // P5 — a node is "stale" when it started against an older graph_rev than
-      // the workflow's current revision. A subsequent edit may have invalidated
-      // its inputs, so we surface a small badge in the canvas.
+
+    // Per-node "live status" — most recent event line (e.g. running ·
+    // waiting on tool, completed · 7 actions). Surfaced as the meta
+    // line under the node title so the user can see what each node is
+    // doing without drilling into the session.
+    const liveStatusByNode = new Map<string, string>()
+    const evs = props.snapshot.events ?? []
+    const sortedEvs = [...evs].sort((a, b) => b.time_created - a.time_created)
+    for (const ev of sortedEvs) {
+      if (!ev.node_id || liveStatusByNode.has(ev.node_id)) continue
+      const p = (ev.payload ?? {}) as Record<string, unknown>
+      const txt =
+        (typeof p["status"] === "string" && (p["status"] as string)) ||
+        (typeof p["message"] === "string" && (p["message"] as string)) ||
+        (typeof p["reason"] === "string" && (p["reason"] as string)) ||
+        ev.kind
+      liveStatusByNode.set(ev.node_id, `${ev.kind} · ${txt}`)
+    }
+
+    const allNodes = nodes()
+    const out: WorkflowAppProps["nodes"] = []
+
+    // Plan (sand_table) head — when present we surface it as a virtual
+    // node at the top of the graph so the planning round is visible
+    // alongside its execution children. The new canvas's layered
+    // layout treats it like any other node; we synthesise edges from
+    // it to all execution-graph roots in `canvasEdges` below.
+    const plan = sandPlan()
+    if (plan) {
+      out.push({
+        id: `sand-table:${plan.id}`,
+        title: plan.title,
+        type: "plan",
+        status: plan.status,
+        session: rootID(),
+        summary: sandPlanBadges(plan),
+      })
+    }
+
+    for (const node of allNodes) {
       const startRev = node.graph_rev_at_start
       const stale =
         typeof startRev === "number" && typeof wfRev === "number" && startRev < wfRev
-      // Show the model that will actually be used at runtime — explicit
-      // node.model when set, otherwise the orchestrator's session model
-      // that `routeNodesToCurrentModel` will auto-route to. Only when
-      // BOTH are missing do we surface the "route model" prompt.
       const ready = modelReady(node) || modelInherited(node, fallback)
-      return {
+      out.push({
         id: node.id,
         title: node.title,
         type: nodeKind(node) === "build" ? "build-flash" : (nodeKind(node) as "coding" | "debug" | "deploy"),
         status: tone(node.status),
-        // Don't fall back to the root session id when a node hasn't
-        // started yet — that lookup chain caused NodeSessionView to render
-        // the MASTER session's messages for unstarted child nodes (the
-        // user reported clicking a not-yet-running node and seeing the
-        // orchestrator's chat). When session is undefined, the chat
-        // panel renders an empty state, which is the correct UX.
         session: node.session_id ?? undefined,
         summary: ready ? [modelLabel(node, fallback)] : ["route model"],
         stale,
+        liveStatus: liveStatusByNode.get(node.id),
+      })
+    }
+    return out
+  })
+
+  /* DAG edges for the layered-graph canvas. Projects from the
+   * snapshot's edge list (`from_node_id`/`to_node_id`/`kind`) into
+   * the canvas's `{from, to, kind?}` shape. When a sand_table plan
+   * head exists, we synthesise a "support" edge from it to every
+   * execution-graph root so the plan is visually connected to the
+   * children it produced. */
+  const canvasEdges = createMemo<WorkflowAppProps["edges"]>(() => {
+    const out: NonNullable<WorkflowAppProps["edges"]> = []
+    const allNodes = nodes()
+    const wfEdges = props.snapshot.edges ?? []
+
+    for (const e of wfEdges) {
+      const k = (e as { kind?: string }).kind
+      out.push({
+        from: e.from_node_id,
+        to: e.to_node_id,
+        // Anything tagged as `support` / `secondary` / `optional` in
+        // the schema renders as a dashed edge so primary flow stays
+        // dominant. Default to `flow` for everything else.
+        kind: k === "support" || k === "secondary" || k === "optional" ? "support" : "flow",
+      })
+    }
+
+    const plan = sandPlan()
+    if (plan && allNodes.length > 0) {
+      const planID = `sand-table:${plan.id}`
+      // Roots of the execution DAG (in-degree 0 within the wfEdges
+      // graph). The plan node "produces" all of them, so we draw a
+      // support edge from the plan to each — solid lines stay
+      // reserved for true execution dependencies.
+      const inDeg = new Map<string, number>()
+      for (const n of allNodes) inDeg.set(n.id, 0)
+      for (const e of wfEdges) {
+        if (inDeg.has(e.to_node_id)) inDeg.set(e.to_node_id, (inDeg.get(e.to_node_id) ?? 0) + 1)
       }
-    })
+      for (const n of allNodes) {
+        if ((inDeg.get(n.id) ?? 0) === 0) {
+          out.push({ from: planID, to: n.id, kind: "support" })
+        }
+      }
+    }
+    return out
   })
 
   const unroutedNodes = createMemo(() => nodes().filter((node) => !modelReady(node)))
@@ -3143,8 +2843,7 @@ export function WorkflowRuntimePanel(props: {
         activeTaskId: props.activeTaskId,
         pick: pick(),
         nodes: canvas(),
-        chains: chainData(),
-        chainTail: chainTail(),
+        edges: canvasEdges(),
         details: detailsWithPlan(),
         flow: flow(),
         agents: agents(),

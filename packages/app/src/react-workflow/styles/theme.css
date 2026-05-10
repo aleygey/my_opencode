@@ -7574,6 +7574,310 @@
   background: rgba(217, 119, 6, 0.16);
 }
 
+/* ── R2 layered-graph canvas ──
+ * Replaces the lane-based view. Drives the new WorkflowCanvas
+ * (200×70 cards, bezier edges, dotted-grid background, HUD chip
+ * cluster top-left, zoom controls top-right). The `.wf-r2-*`
+ * namespace lives alongside legacy `.wf-canvas` styles so callers
+ * that haven't migrated keep working. Visual spec mirrors the design
+ * hand-off (Workflow Runtime design pack). */
+.workflow-make .wf-r2-canvas {
+  position: relative;
+  flex: 1;
+  background: var(--wf-bg);
+  overflow: hidden;
+  background-image: radial-gradient(circle, var(--wf-line-faint, var(--wf-line)) 1px, transparent 1px);
+  background-size: 28px 28px;
+  background-position: 0 0;
+}
+.workflow-make .wf-r2-hud {
+  position: absolute;
+  top: 16px; left: 16px;
+  display: flex; flex-direction: column; gap: 6px;
+  z-index: 3;
+  pointer-events: none;
+  font-size: 11px;
+  color: var(--wf-dim);
+  font-variant-numeric: tabular-nums;
+}
+.workflow-make .wf-r2-chip {
+  pointer-events: auto;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 9px;
+  border: 1px solid var(--wf-line);
+  border-radius: 999px;
+  background: var(--wf-card);
+  color: var(--wf-ink-soft);
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+.workflow-make .wf-r2-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--wf-dim);
+  flex-shrink: 0;
+}
+.workflow-make .wf-r2-dot--ok { background: var(--wf-ok); }
+.workflow-make .wf-r2-dot--err { background: var(--wf-bad); }
+.workflow-make .wf-r2-dot--warn { background: var(--wf-warn); }
+.workflow-make .wf-r2-dot--run {
+  background: var(--wf-ok);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--wf-ok) 22%, transparent);
+  animation: wf-r2-dot-pulse 1.6s ease-in-out infinite;
+}
+@keyframes wf-r2-dot-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px color-mix(in oklab, var(--wf-ok) 22%, transparent); }
+  50%      { box-shadow: 0 0 0 6px color-mix(in oklab, var(--wf-ok) 0%, transparent); }
+}
+
+.workflow-make .wf-r2-controls {
+  position: absolute;
+  top: 16px; right: 16px;
+  display: flex; align-items: center;
+  background: var(--wf-card);
+  border: 1px solid var(--wf-line);
+  border-radius: 8px;
+  z-index: 3;
+  overflow: hidden;
+}
+.workflow-make .wf-r2-controls-btn {
+  width: 28px; height: 28px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--wf-dim);
+  border: 0;
+  border-right: 1px solid var(--wf-line-faint, var(--wf-line));
+  font-size: 14px;
+  background: transparent;
+  cursor: pointer;
+  transition: background 100ms ease, color 100ms ease;
+}
+.workflow-make .wf-r2-controls-btn:last-child { border-right: 0; }
+.workflow-make .wf-r2-controls-btn:hover { background: var(--wf-chip); color: var(--wf-ink); }
+.workflow-make .wf-r2-controls-btn.is-active { color: var(--wf-ok); }
+.workflow-make .wf-r2-controls-pct {
+  padding: 0 10px; height: 28px;
+  display: inline-flex; align-items: center;
+  font-size: 10.5px; color: var(--wf-dim);
+  border-right: 1px solid var(--wf-line-faint, var(--wf-line));
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  background: transparent;
+  font-family: inherit;
+}
+.workflow-make .wf-r2-controls-pct:hover { color: var(--wf-ink); }
+
+/* Graph viewport — fixed-size box with absolute SVG edges + abs
+ * positioned node cards. */
+.workflow-make .wf-r2-graph {
+  position: relative;
+}
+.workflow-make .wf-r2-edges {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  color: var(--wf-line-strong);
+  overflow: visible;
+}
+.workflow-make .wf-r2-edge .wf-r2-edge-base {
+  fill: none;
+  stroke: var(--wf-line-strong);
+  stroke-width: 1;
+  stroke-linecap: round;
+  transition: stroke 200ms ease, stroke-width 200ms ease;
+}
+.workflow-make .wf-r2-edge--support .wf-r2-edge-base {
+  stroke-dasharray: 2 5;
+  opacity: 0.55;
+}
+.workflow-make .wf-r2-edge.is-active .wf-r2-edge-base {
+  stroke: var(--wf-ok);
+  stroke-width: 1.25;
+  opacity: 1;
+}
+.workflow-make .wf-r2-edge-flow {
+  fill: none;
+  stroke: var(--wf-ok);
+  stroke-width: 1.25;
+  stroke-linecap: round;
+  stroke-dasharray: 4 12;
+  animation: wf-r2-dashflow 2s linear infinite;
+}
+@keyframes wf-r2-dashflow {
+  to { stroke-dashoffset: -16; }
+}
+
+.workflow-make .wf-r2-node-wrap {
+  z-index: 2;
+}
+
+/* Node card — design-spec compact 200×70, state-tinted left bar. */
+.workflow-make .wf-r2-node {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  background: var(--wf-card);
+  border: 1px solid var(--wf-line);
+  border-radius: 6px;
+  display: flex; flex-direction: column;
+  cursor: pointer;
+  overflow: hidden;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+}
+.workflow-make .wf-r2-node:hover {
+  border-color: var(--wf-line-strong);
+  transform: translateY(-1px);
+}
+.workflow-make .wf-r2-node.is-on {
+  border-color: var(--wf-ok);
+  box-shadow: 0 0 0 1px var(--wf-ok);
+}
+.workflow-make .wf-r2-node.is-running {
+  border-color: color-mix(in oklab, var(--wf-ok) 55%, var(--wf-line));
+}
+.workflow-make .wf-r2-node::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 2px;
+  background: var(--wf-line);
+}
+.workflow-make .wf-r2-node[data-status="completed"]::before { background: var(--wf-ok); }
+.workflow-make .wf-r2-node[data-status="running"]::before   { background: var(--wf-ok); }
+.workflow-make .wf-r2-node[data-status="failed"]::before    { background: var(--wf-bad); }
+.workflow-make .wf-r2-node[data-status="paused"]::before    { background: var(--wf-warn); }
+
+.workflow-make .wf-r2-node-runbar {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 1px;
+  background: rgba(77, 158, 138, 0.10);
+  overflow: hidden;
+  z-index: 1;
+}
+.workflow-make .wf-r2-node-runbar::after {
+  content: '';
+  display: block;
+  height: 100%;
+  width: 30%;
+  background: var(--wf-ok);
+  opacity: 0.6;
+  animation: wf-r2-runbar 2.4s linear infinite;
+}
+@keyframes wf-r2-runbar {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+
+.workflow-make .wf-r2-node-hd {
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 10px 3px 12px;
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--wf-dim);
+}
+.workflow-make .wf-r2-node-hd-icon {
+  width: 11px; height: 11px;
+  flex-shrink: 0;
+  color: var(--wf-dim);
+}
+.workflow-make .wf-r2-node-hd-kind {
+  font-weight: 500;
+  color: var(--wf-ink-soft);
+}
+.workflow-make .wf-r2-node-hd-state {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-family: var(--rune-font-mono, ui-monospace, monospace);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  color: var(--wf-dim);
+}
+.workflow-make .wf-r2-node[data-status="completed"] .wf-r2-node-hd-state { color: var(--wf-ok); }
+.workflow-make .wf-r2-node[data-status="running"]   .wf-r2-node-hd-state { color: var(--wf-ok); }
+.workflow-make .wf-r2-node[data-status="failed"]    .wf-r2-node-hd-state { color: var(--wf-bad); }
+.workflow-make .wf-r2-node[data-status="paused"]    .wf-r2-node-hd-state { color: var(--wf-warn); }
+
+.workflow-make .wf-r2-node-bd {
+  padding: 0 12px 9px;
+  display: flex; flex-direction: column; gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.workflow-make .wf-r2-node-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  color: var(--wf-ink);
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workflow-make .wf-r2-node-meta {
+  font-size: 10.5px;
+  color: var(--wf-dim);
+  font-family: var(--rune-font-mono, ui-monospace, monospace);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-make .wf-r2-node-open {
+  position: absolute;
+  top: 6px; right: 6px;
+  width: 18px; height: 18px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--wf-dim);
+  cursor: pointer;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 100ms ease, background 100ms ease, color 100ms ease;
+  z-index: 3;
+}
+.workflow-make .wf-r2-node:hover .wf-r2-node-open,
+.workflow-make .wf-r2-node:focus-within .wf-r2-node-open {
+  opacity: 1;
+}
+.workflow-make .wf-r2-node-open:hover {
+  background: var(--wf-chip);
+  color: var(--wf-ink);
+}
+
+.workflow-make .wf-r2-node-status-icon {
+  position: absolute;
+  top: 7px; right: 28px;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px;
+  color: var(--wf-dim);
+  z-index: 2;
+  transition: opacity 100ms ease;
+}
+.workflow-make .wf-r2-node:hover .wf-r2-node-status-icon { opacity: 0; }
+.workflow-make .wf-r2-node-status-icon[data-status="completed"] { color: var(--wf-ok); }
+.workflow-make .wf-r2-node-status-icon[data-status="failed"]    { color: var(--wf-bad); }
+.workflow-make .wf-r2-node-status-icon[data-status="paused"]    { color: var(--wf-warn); }
+
+.workflow-make .wf-r2-node-stale {
+  position: absolute;
+  bottom: 4px; right: 6px;
+  font-size: 8.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--wf-warn);
+  background: color-mix(in oklab, var(--wf-warn) 10%, transparent);
+  padding: 1px 5px;
+  border-radius: 3px;
+  z-index: 2;
+}
+
 /* ── Sand-table awaiting_start confirm panel ──
  * Rendered into the dialogue thread when the backend has paused on
  * `confirm_before_start`. Visual language matches the inspector's
