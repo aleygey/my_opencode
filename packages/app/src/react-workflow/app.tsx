@@ -94,6 +94,12 @@ type Agent = {
   model: string
   role: string
   nodeIDs?: string[]
+  /** True when `model` came from the session/orchestrator fallback
+   *  rather than an explicit `node.model` assignment — the runtime
+   *  will auto-route the node to this model at execution time, so
+   *  the inspector should render in a neutral "inherited" state
+   *  rather than a red "route required". */
+  inherited?: boolean
 }
 
 type Flow = {

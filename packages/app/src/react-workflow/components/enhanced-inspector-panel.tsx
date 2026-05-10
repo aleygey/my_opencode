@@ -16,6 +16,12 @@ interface Agent {
   model: string
   role: string
   nodeIDs?: string[]
+  /** True when `model` came from the orchestrator session/agent
+   *  fallback rather than an explicit `node.model` assignment.
+   *  Drives the "inherits" pill + neutral label colour so users
+   *  don't see a red "route required" when in fact the runtime
+   *  WILL auto-route the node at execute time. */
+  inherited?: boolean
 }
 
 interface Props {
@@ -200,9 +206,26 @@ function AgentCard({
   onModelClick?: (nodeIDs?: string[]) => void
 }) {
   const color = agentColors[index % agentColors.length]
-  const unset = !item.model || item.model === 'route required' || item.model === 'No model configured'
+  // Three display states:
+  //   "unset"     — no model anywhere, runtime would block on execute.
+  //                 Render in red so the user knows action is needed.
+  //   "inherited" — node.model is empty BUT the session has a current
+  //                 model that will auto-route at execute time. Render
+  //                 in neutral colour with an "inherits" hint chip so
+  //                 the user sees what model will actually be used and
+  //                 isn't misled into thinking nothing's configured.
+  //                 Fixes the user report "配置了，但是显示还是 required".
+  //   "explicit"  — node.model is set; the model is locked in.
+  const unset =
+    !item.model || item.model === 'route required' || item.model === 'No model configured'
+  const inherited = !unset && !!item.inherited
   const label = item.model || 'No model configured'
   const openPicker = () => onModelClick?.(item.nodeIDs)
+  const labelColor = unset
+    ? 'var(--wf-bad, #c96b6b)'
+    : inherited
+      ? 'var(--wf-dim)'
+      : 'var(--wf-ink-soft)'
 
   return (
     <div className="wf-inspector-agent group relative">
@@ -219,6 +242,19 @@ function AgentCard({
           <div className="flex items-baseline gap-2">
             <span className="truncate text-[12px] font-semibold tracking-[-0.01em] text-[var(--wf-ink)]">{item.name}</span>
             <span className="truncate text-[10.5px] text-[var(--wf-dim)]">{item.role}</span>
+            {inherited && (
+              <span
+                className="ml-auto flex-shrink-0 rounded-full border px-1.5 py-px text-[9px] font-bold uppercase tracking-[0.06em]"
+                style={{
+                  borderColor: 'var(--wf-line)',
+                  background: 'var(--wf-chip)',
+                  color: 'var(--wf-dim)',
+                }}
+                title="Inherits from session — runtime auto-routes this node to the orchestrator's current model. Click the model pill below to override per-node."
+              >
+                inherits
+              </span>
+            )}
           </div>
 
           {/* Model pill — clicking opens the native model picker directly */}
@@ -229,12 +265,19 @@ function AgentCard({
             onKeyDown={(e) => { if (e.key === 'Enter') openPicker() }}
             className="wf-model-trigger"
             data-unset={unset ? 'true' : 'false'}
-            title="Select model"
+            data-inherited={inherited ? 'true' : 'false'}
+            title={
+              unset
+                ? 'No model assigned — pick one to route this agent'
+                : inherited
+                  ? 'Inherits the orchestrator session model. Click to set explicitly.'
+                  : 'Click to change model'
+            }
           >
             <Cpu className="h-3 w-3 flex-shrink-0 text-[var(--wf-dim)]" strokeWidth={1.8} />
             <span
               className="min-w-0 flex-1 truncate font-mono font-medium"
-              style={{ color: unset ? 'var(--wf-bad, #c96b6b)' : 'var(--wf-ink-soft)' }}
+              style={{ color: labelColor }}
             >
               {label}
             </span>

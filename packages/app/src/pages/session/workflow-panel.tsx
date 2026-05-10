@@ -313,13 +313,45 @@ const duration = (start?: number, end?: number) =>
 
 const modelReady = (node: WorkflowNode) => !!node.model?.providerID && !!node.model?.modelID
 
-const modelLabel = (node: WorkflowNode) => {
-  const id = node.model?.modelID
-  const provider = node.model?.providerID
+/* Format `provider/model` for the LLM route panel.
+ *
+ * History — the original implementation returned the literal string
+ * "route required" when both providerID and modelID were unset, and
+ * the inspector painted that red. The user reported "配置了，但是显示
+ * 还是 required": they had a session-level model configured (chat
+ * panel picker / sand-table config / orchestrator's currentModel) but
+ * each workflow node has its own `node.model` field that stays empty
+ * until either the per-node picker is used OR `executeWorkflow` ->
+ * `routeNodesToCurrentModel` fires at run-time. So the node really
+ * was unrouted — but the user had every reason to think otherwise.
+ *
+ * `fallback` lets the caller pass the session's current
+ * provider/model. When the node's own model is empty AND a fallback
+ * is available, the label resolves to the fallback so the user sees
+ * the model that will actually be used at runtime. The inspector
+ * pairs this with an "inherited" flag (from `modelInherited` below)
+ * to render the inherited state in neutral colour instead of red. */
+const modelLabel = (
+  node: WorkflowNode,
+  fallback?: { providerID?: string; modelID?: string },
+) => {
+  const id = node.model?.modelID ?? fallback?.modelID
+  const provider = node.model?.providerID ?? fallback?.providerID
   if (!id && !provider) return "route required"
   if (!provider) return id!
   if (!id) return provider
   return `${provider}/${id}`
+}
+
+/* True when the displayed label came from the session/agent fallback
+ * rather than a node-level explicit assignment. Used to drive the
+ * "inherited from session" label state in the inspector. */
+const modelInherited = (
+  node: WorkflowNode,
+  fallback?: { providerID?: string; modelID?: string },
+) => {
+  if (modelReady(node)) return false
+  return !!(fallback?.providerID || fallback?.modelID)
 }
 
 const short = (value: unknown) => JSON.stringify(value ?? {}, null, 2)
@@ -1820,8 +1852,16 @@ export function WorkflowRuntimePanel(props: {
         })
     })
   })
-  const details = createMemo<WorkflowAppProps["details"]>(() =>
-    Object.fromEntries(
+  const details = createMemo<WorkflowAppProps["details"]>(() => {
+    // Same fallback chain as `agents` below — when a node hasn't been
+    // explicitly routed, fall back to the orchestrator's currently-
+    // active model so the Selected-node panel reflects what the
+    // runtime would actually use at execute time.
+    const sessionModel = local.model.current()
+    const fallback = sessionModel
+      ? { providerID: sessionModel.provider.id, modelID: sessionModel.id }
+      : undefined
+    return Object.fromEntries(
       nodes().map((node) => {
         const control = props.snapshot.events
           .filter((event) => event.kind === "node.control" && event.target_node_id === node.id)
@@ -1848,7 +1888,7 @@ export function WorkflowRuntimePanel(props: {
             type: nodeKind(node),
             status: node.status,
             result: cap(node.result_status),
-            model: modelLabel(node),
+            model: modelLabel(node, fallback),
             attempt: `${node.attempt}/${node.max_attempts}`,
             actions: `${node.action_count}/${node.max_actions}`,
             sessionId: node.session_id ?? "not started",
@@ -1862,8 +1902,8 @@ export function WorkflowRuntimePanel(props: {
           },
         ] as const
       }),
-    ),
-  )
+    )
+  })
   // The plan is derived from the master session's `sand_table` tool call.
   // During context compaction, history pagination, or transient sync windows
   // (e.g. brief moments while messages are re-fetched), `sandTableSummary`
@@ -2402,15 +2442,32 @@ export function WorkflowRuntimePanel(props: {
       if (list) list.push(node)
       else byAgent.set(node.agent, [node])
     })
+    // Session-level fallback — the orchestrator's currently-active
+    // model. This is what the runtime auto-routes unrouted nodes to
+    // via `routeNodesToCurrentModel` when `executeWorkflow` fires. We
+    // surface it now in the inspector so the user sees the model that
+    // will actually be used, instead of a red "route required" that
+    // contradicted their (correct) belief that they had configured
+    // the session model. Per-node explicit `node.model` still wins
+    // when it's set.
+    const sessionModel = local.model.current()
+    const fallback = sessionModel
+      ? { providerID: sessionModel.provider.id, modelID: sessionModel.id }
+      : undefined
     return agentRows(props.snapshot).map((node) => ({
       name: node.agent,
-      model: modelLabel(node),
+      model: modelLabel(node, fallback),
       role: node.title,
       nodeIDs: (byAgent.get(node.agent) ?? [node]).map((n) => n.id),
+      inherited: modelInherited(node, fallback),
     }))
   })
   const canvas = createMemo<WorkflowAppProps["nodes"]>(() => {
     const wfRev = props.snapshot.workflow.graph_rev
+    const sessionModel = local.model.current()
+    const fallback = sessionModel
+      ? { providerID: sessionModel.provider.id, modelID: sessionModel.id }
+      : undefined
     return nodes().map((node) => {
       // P5 — a node is "stale" when it started against an older graph_rev than
       // the workflow's current revision. A subsequent edit may have invalidated
@@ -2418,6 +2475,11 @@ export function WorkflowRuntimePanel(props: {
       const startRev = node.graph_rev_at_start
       const stale =
         typeof startRev === "number" && typeof wfRev === "number" && startRev < wfRev
+      // Show the model that will actually be used at runtime — explicit
+      // node.model when set, otherwise the orchestrator's session model
+      // that `routeNodesToCurrentModel` will auto-route to. Only when
+      // BOTH are missing do we surface the "route model" prompt.
+      const ready = modelReady(node) || modelInherited(node, fallback)
       return {
         id: node.id,
         title: node.title,
@@ -2430,7 +2492,7 @@ export function WorkflowRuntimePanel(props: {
         // orchestrator's chat). When session is undefined, the chat
         // panel renders an empty state, which is the correct UX.
         session: node.session_id ?? undefined,
-        summary: modelReady(node) ? [modelLabel(node)] : ["route model"],
+        summary: ready ? [modelLabel(node, fallback)] : ["route model"],
         stale,
       }
     })
