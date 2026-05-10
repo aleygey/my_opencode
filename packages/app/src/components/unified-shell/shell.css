@@ -38,6 +38,15 @@
   font-family: var(--rune-font-sans);
   font-size: var(--rune-fs-md);
   line-height: var(--rune-lh);
+  /* Inherited Inter feature-settings + optical sizing so every label,
+   * not just the explicitly-styled titles, gets the better cuts. The
+   * generic "OS UI font" feel the user complained about was largely
+   * Inter rendering with default features turned off. */
+  font-feature-settings: "ss01" 1, "cv11" 1, "calt" 1;
+  font-optical-sizing: auto;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   letter-spacing: -0.005em;
   overflow: hidden;
@@ -84,12 +93,17 @@
 .rune-shell .rune-row.rune-gap-3 { gap: var(--rune-u3); }
 
 .rune-shell .rune-kicker {
-  font-family: var(--rune-font-mono);
+  /* "Modules" / section labels — switched from mono to Inter at 10px
+   * with wide tracking. Mono kickers were reading cluttered next to
+   * the brand mark; Inter kickers + a touch less weight feel more
+   * editorial. */
+  font-family: var(--rune-font-sans);
   font-size: 10px;
   font-weight: 600;
-  letter-spacing: 0.10em;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--rune-fg-faint);
+  font-feature-settings: "ss01" 1, "cv11" 1;
 }
 
 .rune-shell .rune-dot {
@@ -205,14 +219,25 @@
   flex: none;
 }
 .rune-shell .rune-rail-brand-name {
-  font-weight: 600;
-  font-size: var(--rune-fs-md);
-  letter-spacing: 0.02em;
+  /* Brand mark — Inter at 14px with optical sizing + the variable
+   * weight axis tuned for display. The previous 600/normal-tracking
+   * read as "system UI font" and was the user's main typography
+   * complaint. Tighter tracking + slight weight shift into 620
+   * (variable axis between SemiBold & Bold) gives a more refined,
+   * less generic feel without adding a new font dependency. */
+  font-family: var(--rune-font-sans);
+  font-size: 14px;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+  font-feature-settings: "ss01" 1, "ss03" 1, "cv11" 1, "calt" 1;
+  font-variation-settings: "opsz" 18;
+  font-optical-sizing: auto;
 }
 .rune-shell .rune-rail-brand-name b {
-  font-weight: 600;
-  margin: 0 1px;
+  font-weight: 620;
+  margin: 0 2px;
   color: var(--rune-ac);
+  font-feature-settings: inherit;
 }
 
 .rune-shell[data-rail="collapsed"] .rune-rail-brand-name { display: none; }
@@ -473,16 +498,30 @@
   font-size: var(--rune-fs-md);
   white-space: nowrap;
 }
+.rune-shell .rune-head-crumbs {
+  /* Apply Inter's stylistic sets to the breadcrumb area for tighter
+   * digit / arrow / dot rendering. Otherwise we'd be reading the
+   * default cuts which feel slightly clunky next to the rest of the
+   * shell. */
+  font-feature-settings: "ss01" 1, "ss03" 1, "cv11" 1, "calt" 1;
+  font-optical-sizing: auto;
+}
 .rune-shell .rune-head-crumb-prev {
   color: var(--rune-fg-faint);
   font-weight: 500;
+  letter-spacing: 0;
 }
-.rune-shell .rune-head-crumb-sep { color: var(--rune-fg-faint); }
+.rune-shell .rune-head-crumb-sep {
+  color: var(--rune-fg-faint);
+  opacity: 0.55;
+  margin: 0 2px;
+}
 .rune-shell .rune-head-crumb-cur {
   color: var(--rune-fg);
-  font-weight: 600;
-  font-size: var(--rune-fs-lg);
-  letter-spacing: -0.01em;
+  font-weight: 620;
+  font-size: 17px;
+  letter-spacing: -0.018em;
+  font-variation-settings: "opsz" 22;
   overflow: hidden;
   text-overflow: ellipsis;
 }

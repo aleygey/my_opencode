@@ -178,27 +178,45 @@
   padding-left: 0;
 }
 
-/* Per-card "logs" button — opens the LLM trace modal. Sits next to the
- * hits/source chips on the right of the foot row. */
+/* Per-card "logs" button — opens the LLM trace modal. Sits next to
+ * the hits/source chips on the right of the foot row. Visible on
+ * EVERY card so the entry-point is always findable; cards without a
+ * captured trace use a muted variant + the modal itself shows an
+ * empty state. */
 .rune-shell .rt-rsess-logs-btn {
   display: inline-flex;
   align-items: center;
-  height: 18px;
-  padding: 0 7px;
-  border: 1px solid var(--rune-line-faint);
-  border-radius: var(--rune-r, 6px);
-  background: transparent;
-  color: var(--rune-fg-faint);
-  font-family: var(--rune-font-mono);
-  font-size: 10px;
-  letter-spacing: 0.04em;
+  gap: 4px;
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid var(--rune-line);
+  border-radius: 999px;
+  background: var(--rune-bg-raised);
+  color: var(--rune-ac-text, var(--rune-fg));
+  font-family: var(--rune-font-sans);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
   cursor: pointer;
-  transition: background 100ms ease, color 100ms ease, border-color 100ms ease;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease,
+    transform 100ms ease;
 }
 .rune-shell .rt-rsess-logs-btn:hover {
-  background: var(--rune-bg-surface);
+  background: var(--rune-ac-soft);
+  color: var(--rune-ac-text);
+  border-color: var(--rune-ac-edge, var(--rune-line));
+  transform: translateY(-0.5px);
+}
+.rune-shell .rt-rsess-logs-btn[data-has-trace="false"] {
+  color: var(--rune-fg-faint);
+  background: transparent;
+  border-style: dashed;
+  border-color: var(--rune-line-faint);
+}
+.rune-shell .rt-rsess-logs-btn[data-has-trace="false"]:hover {
   color: var(--rune-fg);
-  border-color: var(--rune-line);
+  background: var(--rune-bg-surface);
+  border-style: solid;
 }
 
 /* ── Trace Logs modal ─────────────────────────────────────────────

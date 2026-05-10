@@ -2662,13 +2662,21 @@
 }
 .workflow-make .wf-msg-bubble p { margin: 0; color: inherit; }
 
-/* Agent bubble — left, neutral surface, asymmetric corner pinches the
- * bottom-left to give a subtle "speech tail" without an actual tail. */
+/* Agent bubble — left, slightly tinted surface so the agent's reply
+ * reads as "the answer" rather than blending into the page. The tint
+ * is a soft mix of the page bg + the brand-accent (≈4% in light, 6%
+ * in dark) — enough separation to draw the eye, far short of the
+ * user's accent bubble. Asymmetric corner gives a subtle "speech
+ * tail" without an actual tail. */
 .workflow-make .wf-msg-bubble--agent {
-  background: var(--rune-bg-raised, var(--wf-card));
-  border-color: var(--rune-line, var(--wf-line));
+  background: light-dark(
+    color-mix(in srgb, var(--rune-bg-raised) 92%, var(--rune-ac-edge) 8%),
+    color-mix(in srgb, var(--rune-bg-raised) 90%, var(--rune-ac-edge) 10%)
+  );
+  border-color: color-mix(in srgb, var(--rune-line) 70%, var(--rune-ac-edge) 30%);
   color: var(--rune-fg, var(--wf-ink));
   border-bottom-left-radius: 3px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 
 /* System bubble — separator-style label, no fill. */

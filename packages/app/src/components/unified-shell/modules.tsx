@@ -284,19 +284,40 @@ export function TraceRecall(props: {
                     <Show when={r.llmUsed === false}>
                       <span class="rt-rsess-chip is-mute">heur</span>
                     </Show>
-                    <Show when={r.llmTrace}>
-                      <button
-                        type="button"
-                        class="rt-rsess-logs-btn"
-                        title="查看本次召回的 retrieve agent LLM 推理记录"
-                        onClick={(ev) => {
-                          ev.stopPropagation()
-                          setLogsEntry(r)
-                        }}
+                    {/* Logs chip — ALWAYS visible (the user said the
+                     * trace-gated button was hard to find). When this
+                     * particular recall didn't run an LLM call (heuristic
+                     * fallback / 0-candidate / dry-run), the modal shows
+                     * a clear "no trace" empty state instead of nothing. */}
+                    <button
+                      type="button"
+                      class="rt-rsess-logs-btn"
+                      data-has-trace={r.llmTrace ? "true" : "false"}
+                      title={
+                        r.llmTrace
+                          ? "查看本次召回的 retrieve agent LLM 推理记录"
+                          : "本次召回没有 LLM trace（heuristic / 老版本日志）"
+                      }
+                      onClick={(ev) => {
+                        ev.stopPropagation()
+                        setLogsEntry(r)
+                      }}
+                    >
+                      <svg
+                        width="9"
+                        height="9"
+                        viewBox="0 0 12 12"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.6"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        aria-hidden
                       >
-                        logs
-                      </button>
-                    </Show>
+                        <path d="M3 2h6M3 6h6M3 10h4" />
+                      </svg>
+                      logs
+                    </button>
                   </div>
                 </div>
               )}
