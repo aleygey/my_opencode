@@ -1190,3 +1190,61 @@
   color: var(--rune-fg-faint);
   font-style: italic;
 }
+
+/* Markdown wrappers inside the trace-logs modal — drop into the same
+ * pre-block surface (subtle inset background, mono-ish for code, room
+ * to breathe) but render block-level Markdown. The Markdown component
+ * outputs an unstyled `.markdown` host class; we scope our overrides
+ * inside `.rt-logs-md`. */
+.rune-shell .rt-logs-md {
+  padding: 10px 12px;
+  background: var(--rune-bg-surface);
+  border: 1px solid var(--rune-line-faint);
+  border-radius: var(--rune-r, 6px);
+  max-height: 360px;
+  overflow-y: auto;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--rune-fg);
+}
+.rune-shell .rt-logs-md p,
+.rune-shell .rt-logs-md ul,
+.rune-shell .rt-logs-md ol,
+.rune-shell .rt-logs-md pre,
+.rune-shell .rt-logs-md blockquote {
+  margin: 0 0 8px;
+}
+.rune-shell .rt-logs-md p:last-child,
+.rune-shell .rt-logs-md ul:last-child,
+.rune-shell .rt-logs-md ol:last-child,
+.rune-shell .rt-logs-md pre:last-child { margin-bottom: 0; }
+.rune-shell .rt-logs-md ul,
+.rune-shell .rt-logs-md ol { padding-left: 18px; }
+.rune-shell .rt-logs-md h1,
+.rune-shell .rt-logs-md h2,
+.rune-shell .rt-logs-md h3,
+.rune-shell .rt-logs-md h4 {
+  font-size: 12.5px;
+  font-weight: 600;
+  margin: 10px 0 4px;
+  color: var(--rune-fg);
+}
+.rune-shell .rt-logs-md code {
+  font-family: var(--rune-font-mono);
+  font-size: 11.5px;
+  padding: 1px 4px;
+  background: var(--rune-bg-inset);
+  border-radius: 3px;
+}
+.rune-shell .rt-logs-md pre {
+  padding: 8px 10px;
+  background: var(--rune-bg-inset);
+  border: 1px solid var(--rune-line-faint);
+  border-radius: var(--rune-r-sm);
+  overflow-x: auto;
+  font-size: 11px;
+}
+.rune-shell .rt-logs-md pre code { padding: 0; background: transparent; }
+.rune-shell .rt-logs-md-reasoning {
+  color: var(--rune-fg-faint);
+}

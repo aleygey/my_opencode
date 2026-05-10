@@ -989,6 +989,63 @@
 .rune-shell .rune-search-input input::placeholder {
   color: var(--rune-fg-faint);
 }
+.rune-shell .rune-search-clear {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--rune-fg-faint);
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: var(--rune-r-sm);
+}
+.rune-shell .rune-search-clear:hover {
+  background: var(--rune-bg-inset);
+  color: var(--rune-fg);
+}
+
+/* Tag dropdown — uses a native <select> styled to match the
+ * RuneModelPicker trigger so the substrip cluster stays visually
+ * coherent. Native <select>'s popup is intentionally kept (the
+ * built-in keyboard/typeahead behaviour is better than anything
+ * we'd reinvent for a 1-of-N filter). */
+.rune-shell .rune-tag-select {
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 26px 0 12px;
+  border: 1px solid var(--rune-line-faint);
+  border-radius: var(--rune-r);
+  background: transparent;
+  color: var(--rune-fg);
+  font-family: var(--rune-font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--rune-fg-faint) 50%),
+    linear-gradient(-45deg, transparent 50%, var(--rune-fg-faint) 50%);
+  background-position:
+    calc(100% - 14px) 50%,
+    calc(100% - 9px) 50%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+  transition: background-color var(--rune-t-fast), border-color var(--rune-t-fast);
+}
+.rune-shell .rune-tag-select:hover {
+  background-color: var(--rune-bg-surface);
+  border-color: var(--rune-line);
+}
+.rune-shell .rune-tag-select:focus {
+  outline: 0;
+  border-color: var(--rune-ac-edge);
+}
 
 /* ─── Status Bar (28px bottom row, design-spec) ─── */
 .rune-shell .rune-status {

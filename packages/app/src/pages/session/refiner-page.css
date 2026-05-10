@@ -3547,3 +3547,53 @@
   gap: 10px;
   background: var(--rune-bg-surface);
 }
+
+/* Markdown wrappers inside the refiner-logs modal — same surface
+ * treatment as the trace-logs `.rt-logs-md` so the two log views
+ * read with one shared visual language. */
+.rf-logs-md {
+  padding: 10px 12px;
+  background: var(--rune-bg-inset);
+  border: 1px solid var(--rune-line-faint);
+  border-radius: var(--rune-r, 6px);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--rune-fg);
+  max-height: 320px;
+  overflow-y: auto;
+}
+.rf-logs-md p,
+.rf-logs-md ul,
+.rf-logs-md ol,
+.rf-logs-md pre,
+.rf-logs-md blockquote { margin: 0 0 8px; }
+.rf-logs-md p:last-child,
+.rf-logs-md ul:last-child,
+.rf-logs-md ol:last-child,
+.rf-logs-md pre:last-child { margin-bottom: 0; }
+.rf-logs-md ul,
+.rf-logs-md ol { padding-left: 18px; }
+.rf-logs-md h1, .rf-logs-md h2, .rf-logs-md h3, .rf-logs-md h4 {
+  font-size: 12.5px;
+  font-weight: 600;
+  margin: 10px 0 4px;
+  color: var(--rune-fg);
+}
+.rf-logs-md code {
+  font-family: var(--rune-font-mono);
+  font-size: 11px;
+  padding: 1px 4px;
+  background: var(--rune-bg-raised);
+  border: 1px solid var(--rune-line-faint);
+  border-radius: 3px;
+}
+.rf-logs-md pre {
+  padding: 8px 10px;
+  background: var(--rune-bg-raised);
+  border: 1px solid var(--rune-line-faint);
+  border-radius: var(--rune-r-sm);
+  overflow-x: auto;
+  font-size: 11px;
+}
+.rf-logs-md pre code { padding: 0; border: 0; background: transparent; }
+.rf-logs-md-reasoning { color: var(--rune-fg-faint); }

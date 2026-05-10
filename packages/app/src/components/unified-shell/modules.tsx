@@ -28,6 +28,7 @@ import {
   Show,
 } from "solid-js"
 import { Portal } from "solid-js/web"
+import { Markdown } from "@opencode-ai/ui/markdown"
 import "./modules.css"
 
 /* ──────────────────────────────────────────────────────
@@ -400,28 +401,34 @@ function TraceLogsModal(props: {
             <Show when={trace()?.systemPrompt}>
               <section class="rt-logs-sec">
                 <h3 class="rt-logs-sec-hd">System prompt</h3>
-                <pre class="rt-logs-pre">{trace()?.systemPrompt}</pre>
+                <div class="rt-logs-md">
+                  <Markdown text={trace()!.systemPrompt!} />
+                </div>
               </section>
             </Show>
 
             <section class="rt-logs-sec">
               <h3 class="rt-logs-sec-hd">User prompt (recall payload)</h3>
-              <pre class="rt-logs-pre">{trace()?.userPrompt}</pre>
+              <div class="rt-logs-md">
+                <Markdown text={trace()?.userPrompt ?? ""} />
+              </div>
             </section>
 
             <Show when={trace()?.reasoningText}>
               <section class="rt-logs-sec">
                 <h3 class="rt-logs-sec-hd">Reasoning</h3>
-                <pre class="rt-logs-pre rt-logs-pre-reasoning">
-                  {trace()?.reasoningText}
-                </pre>
+                <div class="rt-logs-md rt-logs-md-reasoning">
+                  <Markdown text={trace()!.reasoningText!} />
+                </div>
               </section>
             </Show>
 
             <Show when={trace()?.responseText}>
               <section class="rt-logs-sec">
                 <h3 class="rt-logs-sec-hd">Response</h3>
-                <pre class="rt-logs-pre">{trace()?.responseText}</pre>
+                <div class="rt-logs-md">
+                  <Markdown text={trace()!.responseText!} />
+                </div>
               </section>
             </Show>
 

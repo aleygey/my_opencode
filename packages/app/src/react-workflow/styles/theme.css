@@ -855,79 +855,50 @@
 .workflow-make .wf-node.is-warn .wf-node-status-icon { color: var(--rune-st-warn, var(--wf-warn)); }
 .workflow-make .wf-node-spin { position: absolute; top: 6px; right: 28px; }
 
-/* Always-visible scrolling status footer at the bottom of every node
- * card. Tone-coloured by status (run = accent, ok = green, err = red,
- * warn = orange, idle = neutral gray). Duplicated text inside the
- * track loops seamlessly; gradient masks at left/right hide the
- * wrap-around seam. */
+/* Live status footer at the bottom of every node card.
+ *
+ * The user reverted the previous tinted+horizontal-marquee design:
+ * "下方栏不需要背景色，按照纵向滚动，只有新的在刷新". So now this is a
+ * single-line transparent strip whose text is keyed by the current
+ * status string — when the string changes, the new text rises in
+ * from below (vertical translate) while the old text shifts up and
+ * fades out. Idle cards just sit still showing the current status. */
 .workflow-make .wf-node-live {
   position: relative;
   height: 18px;
   margin-top: auto;
   border-top: 1px solid var(--rune-line-faint, var(--wf-line));
-  background: var(--rune-bg-inset, var(--wf-chip));
+  background: transparent;
   overflow: hidden;
   font-family: var(--rune-font-mono, var(--wf-font-mono));
   font-size: 10px;
   color: var(--rune-fg-mute, var(--wf-ink-soft));
 }
-.workflow-make .wf-node-live[data-tone="run"] {
-  background: color-mix(in oklab, var(--rune-ac, #4C6FFF) 8%, var(--rune-bg-raised, var(--wf-card)));
-  color: var(--rune-ac-text, var(--wf-accent-text));
-}
-.workflow-make .wf-node-live[data-tone="ok"] {
-  background: color-mix(in oklab, var(--rune-st-ok, var(--wf-ok)) 8%, var(--rune-bg-raised, var(--wf-card)));
-  color: var(--rune-st-ok, var(--wf-ok));
-}
-.workflow-make .wf-node-live[data-tone="err"] {
-  background: color-mix(in oklab, var(--rune-st-err, var(--wf-bad)) 8%, var(--rune-bg-raised, var(--wf-card)));
-  color: var(--rune-st-err, var(--wf-bad));
-}
-.workflow-make .wf-node-live[data-tone="warn"] {
-  background: color-mix(in oklab, var(--rune-st-warn, var(--wf-warn)) 8%, var(--rune-bg-raised, var(--wf-card)));
-  color: var(--rune-st-warn, var(--wf-warn));
-}
-.workflow-make .wf-node-live::before,
-.workflow-make .wf-node-live::after {
-  content: ""; position: absolute; top: 0; bottom: 0; width: 12px; z-index: 2; pointer-events: none;
-}
-.workflow-make .wf-node-live::before {
-  left: 0;
-  background: linear-gradient(to right, var(--rune-bg-inset, var(--wf-chip)), transparent);
-}
-.workflow-make .wf-node-live::after {
-  right: 0;
-  background: linear-gradient(to left, var(--rune-bg-inset, var(--wf-chip)), transparent);
-}
-.workflow-make .wf-node-live-marquee { display: block; height: 100%; white-space: nowrap; position: relative; }
-.workflow-make .wf-node-live-track {
-  display: inline-block;
-  padding: 3px 8px;
+.workflow-make .wf-node-live[data-tone="run"]  { color: var(--rune-ac-text, var(--wf-accent-text)); }
+.workflow-make .wf-node-live[data-tone="ok"]   { color: var(--rune-st-ok, var(--wf-ok)); }
+.workflow-make .wf-node-live[data-tone="err"]  { color: var(--rune-st-err, var(--wf-bad)); }
+.workflow-make .wf-node-live[data-tone="warn"] { color: var(--rune-st-warn, var(--wf-warn)); }
+
+.workflow-make .wf-node-live-text {
+  display: block;
+  padding: 3px 10px;
   white-space: nowrap;
-  animation: wf-node-marquee 14s linear infinite;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  animation: wf-node-live-rise 320ms cubic-bezier(0.22, 1, 0.36, 1);
 }
-.workflow-make .wf-node:not(.is-running) .wf-node-live-track {
-  /* Slow marquee for non-running cards so it doesn't feel restless. */
-  animation-duration: 24s;
-}
-@keyframes wf-node-marquee {
-  0%   { transform: translateX(0); }
-  100% { transform: translateX(-50%); }
+@keyframes wf-node-live-rise {
+  0%   { transform: translateY(100%); opacity: 0; }
+  60%  { opacity: 1; }
+  100% { transform: translateY(0); opacity: 1; }
 }
 
-.workflow-make .wf-node-port {
-  position: absolute; top: 50%; transform: translateY(-50%);
-  width: 6px; height: 6px;
-  background: var(--rune-bg-raised, var(--wf-card));
-  border: 1.5px solid var(--rune-line, var(--wf-line-strong));
-  border-radius: 50%; z-index: 1;
-}
-.workflow-make .wf-node-port-left { left: -4px; }
-.workflow-make .wf-node-port-right { right: -4px; }
-.workflow-make .wf-node.is-on .wf-node-port,
-.workflow-make .wf-node.is-running .wf-node-port {
-  border-color: var(--rune-ac, var(--wf-accent));
-}
+/* Port circles previously stuck out -4px past the card edge as
+ * 6px-radius half-circles, which the user read as decorative
+ * "semicircles" pinched onto the sides of the card ("不需要左右两侧
+ * 的半圆了"). Edges are wired by absolute SVG paths now, not
+ * port-anchored, so the visual cue is unnecessary. Hide them. */
+.workflow-make .wf-node-port { display: none; }
 
 /* Design-spec zoom buttons (−/percent/+/fit) — top-right of canvas. */
 .workflow-make .wf-canvas-zoom-btn {
@@ -4412,6 +4383,47 @@
   max-height: 320px;
   overflow-y: auto;
   /* No italic — readability matters more than decoration. */
+}
+/* Markdown rendered inside reasoning — reset margins so headings /
+ * lists / code blocks fit the compact body without heroic gaps. */
+.workflow-make .wf-reasoning-md > :first-child { margin-top: 0; }
+.workflow-make .wf-reasoning-md > :last-child  { margin-bottom: 0; }
+.workflow-make .wf-reasoning-md p,
+.workflow-make .wf-reasoning-md ul,
+.workflow-make .wf-reasoning-md ol,
+.workflow-make .wf-reasoning-md pre,
+.workflow-make .wf-reasoning-md blockquote {
+  margin: 6px 0;
+}
+.workflow-make .wf-reasoning-md ul,
+.workflow-make .wf-reasoning-md ol { padding-left: 18px; }
+.workflow-make .wf-reasoning-md h1,
+.workflow-make .wf-reasoning-md h2,
+.workflow-make .wf-reasoning-md h3,
+.workflow-make .wf-reasoning-md h4 {
+  font-size: 12.5px;
+  font-weight: 600;
+  margin: 8px 0 4px;
+  color: var(--wf-ink);
+}
+.workflow-make .wf-reasoning-md code {
+  font-family: var(--wf-font-mono);
+  font-size: 11px;
+  padding: 1px 4px;
+  background: var(--wf-bg-2, rgba(15, 23, 42, 0.04));
+  border-radius: 3px;
+}
+.workflow-make .wf-reasoning-md pre {
+  padding: 8px 10px;
+  background: var(--wf-bg-2, rgba(15, 23, 42, 0.04));
+  border: 1px solid var(--wf-line);
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 11px;
+}
+.workflow-make .wf-reasoning-md pre code {
+  padding: 0;
+  background: transparent;
 }
 .workflow-make.dark .wf-reasoning {
   border-left-color: rgba(255, 255, 255, 0.18);

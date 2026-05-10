@@ -2,6 +2,37 @@
 import { BrainCircuit, Check, Code2, Compass, Cpu, FlaskConical, Pause, Rocket, X } from 'lucide-react'
 import { Spin } from './spin'
 
+/** Distill a noisy planner-emitted title down to a clean short label.
+ *
+ * Backend `node.title` often arrives shaped like
+ *   "Plan · ## Goal 在本地 opencode 中实现…\n\n## Core req\n…"
+ * because the planner LLM doesn't follow a strict {title, body}
+ * schema and the workflow runtime ends up using the whole prompt as
+ * the title. We strip:
+ *   1. a leading `Plan · ` / `Coding · ` / `Build · ` etc. prefix
+ *      (the kind label is already shown as a chip);
+ *   2. any markdown header marks (`#`, `##`, `###`);
+ *   3. anything past the first non-blank line.
+ * Then truncate to ~28 chars with an ellipsis. The full text stays
+ * available via the cell's `title=` tooltip and the inspector. */
+function distillTitle(raw: string): string {
+  if (!raw) return ""
+  // Walk lines; skip blanks; on the first content line, trim and
+  // strip markdown leading markers.
+  for (const line of raw.split(/\r?\n/)) {
+    const t = line.trim()
+    if (!t) continue
+    let s = t
+    // Drop `Plan · ` / `Code · ` / `Build · ` style prefix.
+    s = s.replace(/^(?:Plan|Code|Coding|Build|Debug|Deploy|Explore|计划|编码|构建|调试|部署|探索)\s*[·:：-]\s*/u, "")
+    // Drop markdown header markers + a trailing colon.
+    s = s.replace(/^#+\s*/u, "").replace(/[：:]\s*$/u, "")
+    if (!s) continue
+    return s.length > 28 ? s.slice(0, 26).trimEnd() + "…" : s
+  }
+  return raw.length > 28 ? raw.slice(0, 26).trimEnd() + "…" : raw
+}
+
 export type NodeStatus = 'pending' | 'running' | 'completed' | 'failed' | 'paused'
 export type NodeType = 'coding' | 'build-flash' | 'debug' | 'deploy' | 'plan' | 'explore'
 
@@ -109,7 +140,15 @@ export function WorkflowNode({ id, title, type, status, summary, stale, liveStat
         <span className="wf-node-hd-kind">{cfg.label}</span>
       </div>
       <div className="wf-node-bd">
-        <div className="wf-node-name" title={title}>{title}</div>
+        {/* Card title — distilled into a clean short form because the
+          * planner LLM often dumps a whole markdown body into
+          * `title` (e.g. "Plan · ## Goal 在本地 opencode 中执行…"),
+          * which the user called out as ugly. We strip the leading
+          * `Plan · ` prefix when present, then take the first
+          * non-blank line and trim any markdown header markers (`#`,
+          * `##`). The full text is still available in the inspector
+          * and as the title attr for hover. */}
+        <div className="wf-node-name" title={title}>{distillTitle(title)}</div>
       </div>
       {stale && (
         <span className="wf-node-stale" title="Graph was edited after this node started — inputs may be out of date.">stale</span>
@@ -139,8 +178,11 @@ export function WorkflowNode({ id, title, type, status, summary, stale, liveStat
           <Spin size={10} tone="var(--wf-ok)" line={1.5} />
         </span>
       )}
-      {/* Always-visible scrolling status footer. The text duplicates so
-        * the marquee loops seamlessly; CSS handles the wrap-around. */}
+      {/* Live status footer — vertical-rise animation only when the
+        * status text actually changes. `key={statusLine}` makes React
+        * remount the inner span, which re-fires the CSS keyframe so
+        * new lines slide in from below. No background tint; tone is
+        * carried by the text colour alone. */}
       <div className="wf-node-live" data-tone={
         status === 'completed' ? 'ok'
         : status === 'failed' ? 'err'
@@ -148,13 +190,10 @@ export function WorkflowNode({ id, title, type, status, summary, stale, liveStat
         : run ? 'run'
         : 'idle'
       } aria-live="polite">
-        <span className="wf-node-live-marquee" data-text={statusLine}>
-          <span className="wf-node-live-track">{statusLine}　·　{statusLine}　·　</span>
+        <span key={statusLine} className="wf-node-live-text" title={statusLine}>
+          {statusLine}
         </span>
       </div>
-      {/* Edge dot ports (for edge connection rendering). */}
-      <span className="wf-node-port wf-node-port-left" aria-hidden />
-      <span className="wf-node-port wf-node-port-right" aria-hidden />
     </button>
   )
 }

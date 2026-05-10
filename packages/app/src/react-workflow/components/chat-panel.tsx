@@ -458,7 +458,15 @@ function ReasoningCard({ text, time }: { text: string; time?: { start: number; e
           <ChevronRight className="h-3 w-3 wf-reasoning-caret" strokeWidth={2} />
         )}
       </button>
-      {open && <div className="wf-reasoning-body whitespace-pre-wrap break-words">{text}</div>}
+      {/* Body — render through `Markdown` so reasoning that contains
+        * lists, code blocks, headers etc. shows real structure instead
+        * of a wall of plain text. The component already lives in this
+        * file's imports for the agent bubble. */}
+      {open && (
+        <div className="wf-reasoning-body wf-reasoning-md break-words">
+          <Markdown>{text}</Markdown>
+        </div>
+      )}
     </div>
   )
 }

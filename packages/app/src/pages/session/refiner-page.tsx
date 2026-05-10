@@ -10,6 +10,7 @@ import {
   Show,
 } from "solid-js"
 import { Portal } from "solid-js/web"
+import { Markdown } from "@opencode-ai/ui/markdown"
 import { useNavigate, useParams } from "@solidjs/router"
 import { useShellBridge } from "@/components/unified-shell/shell-bridge"
 import {
@@ -4626,25 +4627,31 @@ function RefinerLogsModal(props: {
                                         <Show when={call.system_prompt}>
                                           <div>
                                             <h5 class="rf-logs-sec-hd">System</h5>
-                                            <pre class="rf-logs-pre">{call.system_prompt}</pre>
+                                            <div class="rf-logs-md">
+                                              <Markdown text={call.system_prompt!} />
+                                            </div>
                                           </div>
                                         </Show>
                                         <div>
                                           <h5 class="rf-logs-sec-hd">User prompt</h5>
-                                          <pre class="rf-logs-pre">{call.user_prompt}</pre>
+                                          <div class="rf-logs-md">
+                                            <Markdown text={call.user_prompt} />
+                                          </div>
                                         </div>
                                         <Show when={call.reasoning_text}>
                                           <div>
                                             <h5 class="rf-logs-sec-hd">Reasoning</h5>
-                                            <pre class="rf-logs-pre rf-logs-pre-reasoning">
-                                              {call.reasoning_text}
-                                            </pre>
+                                            <div class="rf-logs-md rf-logs-md-reasoning">
+                                              <Markdown text={call.reasoning_text!} />
+                                            </div>
                                           </div>
                                         </Show>
                                         <Show when={call.response_text}>
                                           <div>
                                             <h5 class="rf-logs-sec-hd">Response</h5>
-                                            <pre class="rf-logs-pre">{call.response_text}</pre>
+                                            <div class="rf-logs-md">
+                                              <Markdown text={call.response_text!} />
+                                            </div>
                                           </div>
                                         </Show>
                                         <Show when={call.structured_output !== undefined}>
@@ -5557,6 +5564,23 @@ export default function RefinerPage() {
     return experienceByID().get(id)
   })
 
+  // All unique #tag values across the experience library, sorted by
+  // frequency desc. Powers the substrip's tag-dropdown filter so the
+  // user can pick a tag without first finding a card that has it
+  // (the previous design forced you to click an inline #chip).
+  const allTags = createMemo<Array<{ tag: string; count: number }>>(() => {
+    const counter = new Map<string, number>()
+    for (const e of overview()?.experiences ?? []) {
+      for (const t of e.categories ?? []) {
+        if (!t) continue
+        counter.set(t, (counter.get(t) ?? 0) + 1)
+      }
+    }
+    return [...counter.entries()]
+      .map(([tag, count]) => ({ tag, count }))
+      .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag))
+  })
+
   // Filtered experience list (applies kind/category/query/archived filters)
   const visibleExperiences = createMemo(() => {
     const all = overview()?.experiences ?? []
@@ -6069,13 +6093,58 @@ export default function RefinerPage() {
         onTab: (id: string) => setViewMode(id as "list" | "graph"),
         variant: "segmented",
         right: (
-          <RuneModelPicker
-            current={config()?.resolved ?? overview()?.model}
-            source={config()?.source}
-            kicker="MODEL"
-            onChange={updateModel}
-            onReset={resetModel}
-          />
+          <div class="rune-row rune-gap-2">
+            {/* Search input — narrow, ghost border (consistent with the
+              * Workflow substrip search). Filters by title, abstract,
+              * statement, task_type, categories, and observation text. */}
+            <div class="rune-search-input">
+              <span class="rune-search-icon" aria-hidden>
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="7" cy="7" r="4.5" />
+                  <path d="M11 11l3 3" />
+                </svg>
+              </span>
+              <input
+                type="text"
+                placeholder="搜索 exp…"
+                value={query()}
+                onInput={(e) => setQuery(e.currentTarget.value)}
+              />
+              <Show when={query()}>
+                <button
+                  type="button"
+                  class="rune-search-clear"
+                  aria-label="Clear search"
+                  onClick={() => setQuery("")}
+                >×</button>
+              </Show>
+            </div>
+            {/* Tag dropdown — picks a single #tag from the library's
+              * full set, ranked by frequency. Selecting a tag drives
+              * `activeTag` (same signal that inline chip clicks set),
+              * so list + graph both react. */}
+            <select
+              class="rune-tag-select"
+              value={activeTag() ?? ""}
+              onChange={(e) => {
+                const v = e.currentTarget.value
+                setActiveTag(v ? v : undefined)
+              }}
+              title="按 tag 过滤"
+            >
+              <option value="">所有 tag</option>
+              <For each={allTags()}>
+                {(t) => <option value={t.tag}>#{t.tag} · {t.count}</option>}
+              </For>
+            </select>
+            <RuneModelPicker
+              current={config()?.resolved ?? overview()?.model}
+              source={config()?.source}
+              kicker="MODEL"
+              onChange={updateModel}
+              onReset={resetModel}
+            />
+          </div>
         ),
       },
       railSubs: railCategorySubs(),
