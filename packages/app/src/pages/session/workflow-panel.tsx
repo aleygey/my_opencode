@@ -1687,9 +1687,28 @@ export function WorkflowRuntimePanel(props: {
     return (await res.json()) as T
   }
   const chats = createMemo<WorkflowAppProps["chats"]>(() => {
+    // Collect every session id that the React workflow side might want to
+    // render: root + every workflow node + every sand-table participant
+    // (planner / evaluator). Participants live OUTSIDE the workflow node
+    // graph, so the iteration over `nodes()` alone misses their chat —
+    // the right-pane InnerStreamPane needs `chats[plannerSessionID]` to
+    // populate the planner / evaluator stream views (#6 traceability).
+    const ids = new Set<string>([rootID()])
+    for (const node of nodes()) {
+      if (node?.session_id) ids.add(node.session_id)
+    }
+    for (const sand of Object.values(state.sand)) {
+      for (const part of sand?.participants ?? []) {
+        if (part.sessionID) ids.add(part.sessionID)
+      }
+    }
+    const nodeBySession = new Map<string, WorkflowNode>()
+    for (const node of nodes()) {
+      if (node?.session_id) nodeBySession.set(node.session_id, node)
+    }
     return Object.fromEntries(
-      [undefined as WorkflowNode | undefined, ...nodes()].map((node) => {
-        const id = node?.session_id ?? rootID()
+      [...ids].map((id) => {
+        const node = nodeBySession.get(id)
         return [
           id,
           buildRows({
@@ -1889,6 +1908,16 @@ export function WorkflowRuntimePanel(props: {
   const fetchSandTable = async (discussionID: string) => {
     const result = await request<SandTableDiscussion>(`/workflow/sand_table/${discussionID}`)
     setState("sand", discussionID, result)
+    // The planner / evaluator sub-sessions live OUTSIDE the workflow node
+    // graph (they're spawned by the orchestrator's `sand_table` tool, not
+    // registered as workflow nodes), so the regular per-node sync sweep
+    // doesn't pull their messages into `sync.data.message`. Poke each
+    // participant's session into the sync store now that we know its id —
+    // otherwise the InnerStreamPane is stuck on "Waiting for planner to
+    // start thinking…" forever, even after planner has produced output.
+    for (const part of result?.participants ?? []) {
+      if (part.sessionID) void sync.session.sync(part.sessionID).catch(() => undefined)
+    }
     return result
   }
   createEffect(() => {

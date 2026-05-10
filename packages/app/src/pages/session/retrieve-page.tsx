@@ -715,14 +715,19 @@ export default function RetrievePage() {
     setSelectedSession(urlMatch?.id ?? list[0].id)
   })
 
-  // Entries filtered to the selected session, oldest → newest (timeline order).
+  // Entries filtered to the selected session, oldest → newest (timeline
+  // order). Primary sort is `created_at` so the right-rail timeline always
+  // matches the actual conversation order — `turn_index` would normally
+  // agree with `created_at`, but dry-run probes share the previous turn
+  // index (see `runPipeline` in opencode/retrieve), so they'd otherwise
+  // appear out-of-order with the user's actual queries.
   const sessionEntries = createMemo(() => {
     const sid = selectedSession()
     if (!sid) return [] as RetrieveLogEntry[]
     return allEntries()
       .filter((e) => e.session_id === sid)
       .slice()
-      .sort((a, b) => a.turn_index - b.turn_index || a.created_at - b.created_at)
+      .sort((a, b) => a.created_at - b.created_at || a.turn_index - b.turn_index)
   })
 
   // Auto-pick first entry-with-recall when the session loads or changes.

@@ -4031,16 +4031,28 @@ function computeGraphLayoutForce(
   if (bodies.length === 0) return out
 
   const n = bodies.length
-  // Tuning: bigger graphs need more space per node + a longer spring. Bumped
-  // both repulsion and target spacing 1.6× from v1 because the previous
-  // settings let label boxes routinely overlap on dense subgraphs.
-  const area = width * height
-  const targetLen = Math.sqrt(area / Math.max(n, 1)) * 0.85
-  const kRep = targetLen * targetLen * 1.6
+  // Tuning: bigger graphs need more space per node + a longer spring. The
+  // previous settings (targetLen×0.85, kRep×1.6, RELAX_ITERS=60) routinely
+  // let Chinese labels overlap on 30+ node graphs because:
+  //   - targetLen was derived from the *container* area, but Chinese labels
+  //     can be 200+ px wide while the container's per-node budget was
+  //     ~100 px → labels physically can't fit at scale 1.
+  //   - the fit-to-canvas pass at the bottom then scaled positions DOWN
+  //     (labels stayed at fixed font size in viewBox coords) → overlap
+  //     re-introduced after relax already cleaned it up.
+  //
+  // New approach: compute the layout in a *virtual* canvas big enough to
+  // accommodate the average label width × node count, never down-scale at
+  // the end, and let the existing pan/zoom UI handle initial fit.
+  const avgLabelW = bodies.reduce((s, b) => s + b.labelW, 0) / Math.max(n, 1)
+  const perNodeArea = (avgLabelW + LABEL_OFFSET_X + LABEL_TAIL + 24) * (LABEL_HALF_H * 2 + 24) * 1.3
+  const virtualArea = Math.max(width * height, perNodeArea * n)
+  const targetLen = Math.sqrt(virtualArea / Math.max(n, 1)) * 0.95
+  const kRep = targetLen * targetLen * 2.2
   const kSpring = 0.045
   const damping = 0.82
   const maxStep = 22
-  const iterations = n < 20 ? 200 : n < 80 ? 280 : 340
+  const iterations = n < 20 ? 220 : n < 80 ? 320 : 420
   const centerPull = 0.002
 
   const adj: Array<[number, number]> = []
@@ -4128,7 +4140,10 @@ function computeGraphLayoutForce(
     y1: b.y - LABEL_HALF_H - 2,
     y2: b.y + LABEL_HALF_H + 2,
   })
-  const RELAX_ITERS = 60
+  // Bumped from 60 → 200 — dense graphs need more sweeps because each push
+  // can create a fresh overlap with a third node. We exit early when no
+  // movement occurs in an iteration, so the cost on sparse graphs is low.
+  const RELAX_ITERS = 200
   for (let iter = 0; iter < RELAX_ITERS; iter++) {
     let movedAny = false
     for (let i = 0; i < n; i++) {
@@ -4168,9 +4183,14 @@ function computeGraphLayoutForce(
     if (!movedAny) break
   }
 
-  // Fit to canvas: include label extents in the bounding box so the
-  // rightmost label doesn't get clipped by the canvas edge. The label box
-  // for body b runs from `b.x` to `b.x + LABEL_OFFSET_X + b.labelW + tail`.
+  // Translate-only fit: include label extents in the bounding box so the
+  // rightmost label doesn't get clipped by the canvas edge. We deliberately
+  // do NOT down-scale positions when the bbox exceeds the container —
+  // labels render at a fixed font size in viewBox px, so position-scaling
+  // would re-introduce label overlap that the relax pass just removed.
+  // Instead, the bodies extend beyond the viewBox; the consumer computes
+  // an initial fit-zoom (bounded below by ~0.4) so the user sees the whole
+  // graph at first paint and can scroll/zoom in to read individual labels.
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
   for (const b of bodies) {
     const lx2 = b.x + LABEL_OFFSET_X + b.labelW + LABEL_TAIL
@@ -4179,23 +4199,19 @@ function computeGraphLayoutForce(
     if (lx2 > maxX) maxX = lx2
     if (b.y + LABEL_HALF_H > maxY) maxY = b.y + LABEL_HALF_H
   }
-  const marginX = 36
-  const marginY = 24
   const bw = Math.max(maxX - minX, 1)
   const bh = Math.max(maxY - minY, 1)
-  const sx = (width - 2 * marginX) / bw
-  const sy = (height - 2 * marginY) / bh
-  // Cap at 1.0 so a sparse graph isn't blown up to fill the canvas.
-  const scale = Math.min(sx, sy, 1)
-  const ox = (width - bw * scale) / 2 - minX * scale
-  const oy = (height - bh * scale) / 2 - minY * scale
+  // Centre the bbox at the canvas centre so the initial pan=(0,0) view
+  // shows the graph centred (after the consumer applies its fit-zoom).
+  const ox = cx - (minX + bw / 2)
+  const oy = cy - (minY + bh / 2)
 
   for (const b of bodies) {
     out.set(b.id, {
       id: b.id,
       exp: b.exp,
-      x: b.x * scale + ox,
-      y: b.y * scale + oy,
+      x: b.x + ox,
+      y: b.y + oy,
     })
   }
   return out
@@ -4285,6 +4301,48 @@ function ExperienceGraphView(props: {
   // same screen→content mapping the hovercard already does.
   const [zoom, setZoom] = createSignal(1)
   const [pan, setPan] = createSignal({ x: 0, y: 0 })
+  // Whether the user has manually panned/zoomed since the last layout
+  // change. While false, layout updates re-fit the view automatically;
+  // once the user interacts we stop overwriting their viewport.
+  let userMovedView = false
+
+  // Compute the bbox of all body positions (already includes label extents
+  // via the layout's fit-translation). Returns null if empty.
+  const layoutBBox = createMemo(() => {
+    const m = layout()
+    if (m.size === 0) return null
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    for (const node of m.values()) {
+      const lx2 = node.x + 15 + 6 + 200 // approx label extent (right-skewed)
+      if (node.x < minX) minX = node.x
+      if (node.y - 11 < minY) minY = node.y - 11
+      if (lx2 > maxX) maxX = lx2
+      if (node.y + 11 > maxY) maxY = node.y + 11
+    }
+    return { minX, minY, maxX, maxY }
+  })
+
+  // Auto fit-zoom: the layout function no longer down-scales positions to
+  // the canvas (would defeat label-overlap relaxation), so we compute an
+  // initial zoom here that fits the whole graph in the viewport. Bounded
+  // below by 0.4 so users can still read labels at first paint; they can
+  // zoom in further. Re-fits on layout change unless the user has panned.
+  createEffect(() => {
+    const bb = layoutBBox()
+    const s = size()
+    if (!bb || userMovedView) return
+    const bw = Math.max(bb.maxX - bb.minX, 1)
+    const bh = Math.max(bb.maxY - bb.minY, 1)
+    const margin = 32
+    const sx = (s.w - 2 * margin) / bw
+    const sy = (s.h - 2 * margin) / bh
+    const z = Math.max(0.4, Math.min(1, Math.min(sx, sy)))
+    setZoom(z)
+    // Centre the bbox in the viewport at the new zoom.
+    const cx = (bb.minX + bb.maxX) / 2
+    const cy = (bb.minY + bb.maxY) / 2
+    setPan({ x: s.w / 2 - cx * z, y: s.h / 2 - cy * z })
+  })
   let svgRef: SVGSVGElement | undefined
   let dragState: { startX: number; startY: number; baseX: number; baseY: number } | null = null
 
@@ -4300,6 +4358,7 @@ function ExperienceGraphView(props: {
   }
   const onMouseMove = (e: MouseEvent) => {
     if (!dragState) return
+    userMovedView = true
     setPan({
       x: dragState.baseX + (e.clientX - dragState.startX),
       y: dragState.baseY + (e.clientY - dragState.startY),
@@ -4311,6 +4370,7 @@ function ExperienceGraphView(props: {
   const onWheel = (e: WheelEvent) => {
     if (!svgRef) return
     e.preventDefault()
+    userMovedView = true
     const rect = svgRef.getBoundingClientRect()
     const px = e.clientX - rect.left
     const py = e.clientY - rect.top
@@ -4324,9 +4384,29 @@ function ExperienceGraphView(props: {
     setZoom(nz)
     setPan({ x: px - cx * nz, y: py - cy * nz })
   }
+  // Reset view → re-arm the auto-fit effect so it re-centres on the next
+  // layout / size change (and immediately, via the createEffect rerun).
   const resetView = () => {
-    setZoom(1)
-    setPan({ x: 0, y: 0 })
+    userMovedView = false
+    // Trigger the auto-fit effect by reading layoutBBox(); it will set
+    // zoom + pan based on the current bbox.
+    const bb = layoutBBox()
+    const s = size()
+    if (!bb) {
+      setZoom(1)
+      setPan({ x: 0, y: 0 })
+      return
+    }
+    const bw = Math.max(bb.maxX - bb.minX, 1)
+    const bh = Math.max(bb.maxY - bb.minY, 1)
+    const margin = 32
+    const sx = (s.w - 2 * margin) / bw
+    const sy = (s.h - 2 * margin) / bh
+    const z = Math.max(0.4, Math.min(1, Math.min(sx, sy)))
+    setZoom(z)
+    const cx = (bb.minX + bb.maxX) / 2
+    const cy = (bb.minY + bb.maxY) / 2
+    setPan({ x: s.w / 2 - cx * z, y: s.h / 2 - cy * z })
   }
 
   onMount(() => {
