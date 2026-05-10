@@ -2585,6 +2585,16 @@
   flex: 1;
 }
 
+/* When a tool strip / reasoning bar is the direct child of a left-side
+ * row (no avatar precedes it), pad it leftward by `avatar (26) + gap
+ * (8) = 34px` so its left edge lines up with the agent bubble that
+ * sits next to an avatar in other rows. The user explicitly asked for
+ * the cards to align with the agent message column. */
+.workflow-make .wf-msg-left-content > .wf-reasoning,
+.workflow-make .wf-msg-left-content > .wf-tool-strip {
+  margin-left: 34px;
+}
+
 /* Avatar for agent/system */
 .workflow-make .wf-msg-avatar {
   display: flex;
@@ -4277,31 +4287,29 @@
   border-top-color: rgba(76, 111, 255, 0.12);
 }
 
-/* ── Reasoning row (compact one-liner + expandable body) ──
+/* ── Reasoning row ──
  *
- * Replaces the previous purple-tinted "Reasoning" card. The user
- * complained that reasoning + tools dominated the chat visually and
- * pushed the agent's actual reply down. Italic was also hurting CJK
- * readability. New design: a quiet one-line strip that uses the same
- * neutral tokens as everything else — only the body (when expanded)
- * uses a slightly lighter ink so it's still distinguishable from a
- * direct agent reply.
- */
+ * Quiet bar with a violet left accent so the user can tell-at-a-
+ * glance "this is the model's chain-of-thought" — distinct from the
+ * neutral grey accent on the tool strip. Expanded by default so the
+ * thinking is visible without an extra click. Body is plain weight,
+ * no italic (italic was hurting CJK readability). */
 .workflow-make .wf-reasoning {
   border-radius: 6px;
   border: 1px solid var(--wf-line);
   background: transparent;
   overflow: hidden;
+  border-left: 3px solid var(--wf-reasoning-accent, #8b7fc6);
 }
 .workflow-make .wf-reasoning--open {
-  background: var(--wf-bg-2, rgba(15, 23, 42, 0.02));
+  background: var(--wf-reasoning-tint, rgba(139, 127, 198, 0.04));
 }
 .workflow-make .wf-reasoning-head {
   display: flex;
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 4px 8px;
+  padding: 5px 10px;
   background: transparent;
   border: none;
   cursor: pointer;
@@ -4316,11 +4324,13 @@
 }
 .workflow-make .wf-reasoning-icon {
   flex-shrink: 0;
-  opacity: 0.7;
+  color: var(--wf-reasoning-accent, #8b7fc6);
+  opacity: 0.85;
 }
 .workflow-make .wf-reasoning-label {
   font-weight: 500;
   text-transform: lowercase;
+  color: var(--wf-reasoning-accent, #8b7fc6);
 }
 .workflow-make .wf-reasoning-dur {
   font-family: var(--wf-font-mono);
@@ -4334,34 +4344,49 @@
   opacity: 0.55;
 }
 .workflow-make .wf-reasoning-body {
-  padding: 6px 10px 8px;
+  padding: 8px 12px 10px;
   font-size: 12px;
-  line-height: 1.55;
+  line-height: 1.6;
   color: var(--wf-ink-soft);
   border-top: 1px solid var(--wf-line);
-  max-height: 280px;
+  max-height: 320px;
   overflow-y: auto;
   /* No italic — readability matters more than decoration. */
+}
+.workflow-make.dark .wf-reasoning {
+  border-left-color: rgba(180, 165, 240, 0.5);
+}
+.workflow-make.dark .wf-reasoning--open {
+  background: rgba(180, 165, 240, 0.05);
+}
+.workflow-make.dark .wf-reasoning-icon,
+.workflow-make.dark .wf-reasoning-label {
+  color: rgba(195, 180, 245, 0.85);
 }
 
 /* ── Tool strip (collapsed marquee) ──
  *
- * One quiet row per consecutive tool-call run. Renders below the
- * thinking/reasoning block. The lane is horizontally scrollable so
- * multi-step runs ("read app.tsx · grep foo · bash $ npm test")
- * don't wrap and bloat the chat. The strip uses neutral surface
- * tokens — only the spinner / status pip gets accent color. */
+ * One quiet row per consecutive tool-call run. Distinct from the
+ * reasoning bar above by using a neutral grey left accent (vs the
+ * violet on reasoning) and a wrench icon. The lane is horizontally
+ * scrollable so multi-step runs don't wrap and bloat the chat.
+ * Running state subtly thickens the left accent to draw the eye
+ * without using a strong colour. */
 .workflow-make .wf-tool-strip {
   border-radius: 6px;
   border: 1px solid var(--wf-line);
   background: transparent;
   overflow: hidden;
+  border-left: 3px solid var(--wf-line-strong);
 }
 .workflow-make .wf-tool-strip--open {
   background: var(--wf-bg-2, rgba(15, 23, 42, 0.02));
 }
 .workflow-make .wf-tool-strip--running {
-  border-color: var(--wf-line-strong);
+  border-left-color: var(--wf-ok-strong, #4d9e8a);
+}
+.workflow-make .wf-tool-strip[data-state="failed"] {
+  border-left-color: var(--wf-bad, #c55a5a);
 }
 .workflow-make .wf-tool-strip-head {
   display: flex;

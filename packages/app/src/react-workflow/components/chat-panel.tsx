@@ -427,14 +427,20 @@ export function ThinkingCard(props: { content: string; status: 'running' | 'comp
 
 /* ── Reasoning row ──
  *
- * Compact one-liner (icon · "reasoning" · duration · chevron) so the
- * agent's actual reply, not the model's chain-of-thought, dominates
- * the conversation visually. Clicking expands to a plain-weight body
- * (no italic — italic was hurting CJK readability and made reasoning
- * feel decorative rather than informational). */
+ * Compact bar (icon · "reasoning" · duration · chevron) followed by
+ * the body. Default is OPEN — the user said reasoning is the part
+ * they actually want to see by default; tool calls can stay
+ * collapsed because they're loud.
+ *
+ * Visual distinction from the tool strip: a subtle violet left
+ * accent + brain icon. The whole component still uses the shell's
+ * ink/dim tokens for typography, so it harmonises — it's just a
+ * thin coloured bar that says "this is the model's chain-of-
+ * thought" at a glance. No italic — italic was hurting CJK
+ * readability. */
 function ReasoningCard({ text, time }: { text: string; time?: { start: number; end?: number } }) {
   const duration = time?.end && time?.start ? `${((time.end - time.start) / 1000).toFixed(1)}s` : undefined
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(true)
   return (
     <div className={`wf-reasoning ${open ? "wf-reasoning--open" : ""}`}>
       <button

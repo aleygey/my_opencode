@@ -4292,6 +4292,11 @@ function RefinerLogsModal(props: {
   const [callOpen, setCallOpen] = createSignal<Set<string>>(new Set())
 
   // Group runs by session — most-recent activity first per session.
+  // PURE MEMO — does not write to any signal it reads (writing inside
+  // createMemo while also reading the same signal makes Solid log a
+  // reactive-loop warning and on some Solid versions ends up in a
+  // tight re-eval cycle that visually "freezes" the modal — that was
+  // the actual cause of the user's "卡住" report).
   const sessions = createMemo(() => {
     const map = new Map<
       string,
@@ -4316,10 +4321,28 @@ function RefinerLogsModal(props: {
         })
       }
     }
-    const arr = [...map.values()].sort((a, b) => b.latest - a.latest)
-    // Auto-select the top session if nothing picked yet.
+    return [...map.values()].sort((a, b) => b.latest - a.latest)
+  })
+
+  // Auto-select the top session whenever entries load and nothing is
+  // chosen yet. Effect, NOT memo — this is a side effect.
+  createEffect(() => {
+    const arr = sessions()
     if (!selectedSession() && arr.length > 0) setSelectedSession(arr[0].id)
-    return arr
+  })
+
+  // ESC closes the modal. Without this, the only way out was clicking
+  // the × button or the scrim background, which the user couldn't find
+  // when the empty-state "stuck" the modal in its initial layout.
+  onMount(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation()
+        props.onClose()
+      }
+    }
+    window.addEventListener("keydown", onKey, true)
+    onCleanup(() => window.removeEventListener("keydown", onKey, true))
   })
 
   const visibleRuns = createMemo(() => {
