@@ -4277,73 +4277,310 @@
   border-top-color: rgba(76, 111, 255, 0.12);
 }
 
-/* ── Reasoning card (distinct from tool calls) ── */
-.workflow-make .wf-reasoning-card {
-  border-radius: 8px;
-  border: 1px dashed rgba(138, 116, 193, 0.45);
-  background: linear-gradient(
-    180deg,
-    rgba(138, 116, 193, 0.06) 0%,
-    rgba(138, 116, 193, 0.02) 100%
-  );
+/* ── Reasoning row (compact one-liner + expandable body) ──
+ *
+ * Replaces the previous purple-tinted "Reasoning" card. The user
+ * complained that reasoning + tools dominated the chat visually and
+ * pushed the agent's actual reply down. Italic was also hurting CJK
+ * readability. New design: a quiet one-line strip that uses the same
+ * neutral tokens as everything else — only the body (when expanded)
+ * uses a slightly lighter ink so it's still distinguishable from a
+ * direct agent reply.
+ */
+.workflow-make .wf-reasoning {
+  border-radius: 6px;
+  border: 1px solid var(--wf-line);
+  background: transparent;
   overflow: hidden;
 }
-.workflow-make .wf-reasoning-header {
+.workflow-make .wf-reasoning--open {
+  background: var(--wf-bg-2, rgba(15, 23, 42, 0.02));
+}
+.workflow-make .wf-reasoning-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
-  padding: 6px 10px;
+  padding: 4px 8px;
   background: transparent;
   border: none;
   cursor: pointer;
   text-align: left;
-  color: #8a74c1;
-  transition: background-color 120ms ease;
+  color: var(--wf-dim);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  transition: color 120ms ease;
 }
-.workflow-make .wf-reasoning-header:hover {
-  background: rgba(138, 116, 193, 0.08);
+.workflow-make .wf-reasoning-head:hover {
+  color: var(--wf-ink-soft);
 }
 .workflow-make .wf-reasoning-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 5px;
-  background: rgba(138, 116, 193, 0.12);
-  color: #8a74c1;
   flex-shrink: 0;
+  opacity: 0.7;
 }
-.workflow-make .wf-reasoning-title {
-  font-size: 11.5px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  color: #8a74c1;
-  font-style: italic;
+.workflow-make .wf-reasoning-label {
+  font-weight: 500;
+  text-transform: lowercase;
 }
-.workflow-make .wf-reasoning-meta {
+.workflow-make .wf-reasoning-dur {
+  font-family: var(--wf-font-mono);
   font-size: 10px;
   color: var(--wf-dim);
-  margin-top: 1px;
+  opacity: 0.8;
+}
+.workflow-make .wf-reasoning-spacer { flex: 1; }
+.workflow-make .wf-reasoning-caret {
+  flex-shrink: 0;
+  opacity: 0.55;
 }
 .workflow-make .wf-reasoning-body {
-  padding: 8px 12px 10px 38px;
-  font-size: 11.5px;
+  padding: 6px 10px 8px;
+  font-size: 12px;
   line-height: 1.55;
   color: var(--wf-ink-soft);
-  font-style: italic;
-  border-top: 1px dashed rgba(138, 116, 193, 0.25);
+  border-top: 1px solid var(--wf-line);
+  max-height: 280px;
+  overflow-y: auto;
+  /* No italic — readability matters more than decoration. */
+}
+
+/* ── Tool strip (collapsed marquee) ──
+ *
+ * One quiet row per consecutive tool-call run. Renders below the
+ * thinking/reasoning block. The lane is horizontally scrollable so
+ * multi-step runs ("read app.tsx · grep foo · bash $ npm test")
+ * don't wrap and bloat the chat. The strip uses neutral surface
+ * tokens — only the spinner / status pip gets accent color. */
+.workflow-make .wf-tool-strip {
+  border-radius: 6px;
+  border: 1px solid var(--wf-line);
+  background: transparent;
+  overflow: hidden;
+}
+.workflow-make .wf-tool-strip--open {
+  background: var(--wf-bg-2, rgba(15, 23, 42, 0.02));
+}
+.workflow-make .wf-tool-strip--running {
+  border-color: var(--wf-line-strong);
+}
+.workflow-make .wf-tool-strip-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  color: var(--wf-ink-soft);
+  font-size: 11px;
+  transition: background 120ms ease;
+}
+.workflow-make .wf-tool-strip-head:hover {
+  background: var(--wf-bg-2, rgba(15, 23, 42, 0.03));
+}
+.workflow-make .wf-tool-strip-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--wf-dim);
+}
+.workflow-make .wf-tool-strip--running .wf-tool-strip-icon {
+  color: var(--wf-ink-soft);
+}
+.workflow-make .wf-tool-strip-label {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--wf-dim);
+  flex-shrink: 0;
+}
+.workflow-make .wf-tool-strip-lane {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-behavior: smooth;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.workflow-make .wf-tool-strip-lane::-webkit-scrollbar { display: none; }
+.workflow-make .wf-tool-strip-track {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  white-space: nowrap;
+  font-family: var(--wf-font-mono);
+  font-size: 11px;
+  color: var(--wf-ink-soft);
+}
+.workflow-make .wf-tool-strip-item {
+  display: inline-flex;
+  align-items: baseline;
+}
+.workflow-make .wf-tool-strip-item-text {
+  color: var(--wf-ink-soft);
+}
+.workflow-make .wf-tool-strip-item[data-status="running"] .wf-tool-strip-item-text {
+  color: var(--wf-ink);
+  font-weight: 500;
+}
+.workflow-make .wf-tool-strip-item[data-status="failed"] .wf-tool-strip-item-text {
+  color: var(--wf-bad, #c55a5a);
+}
+.workflow-make .wf-tool-strip-sep {
+  color: var(--wf-dim);
+  opacity: 0.55;
+  padding: 0 4px;
+}
+.workflow-make .wf-tool-strip-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  font-family: var(--wf-font-mono);
+  font-size: 10px;
+  color: var(--wf-dim);
+  margin-left: auto;
+}
+.workflow-make .wf-tool-strip-count-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--wf-ok-strong, #4d9e8a);
+  animation: wf-strip-pulse 1.4s ease-in-out infinite;
+}
+@keyframes wf-strip-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+.workflow-make .wf-tool-strip-count-fail {
+  color: var(--wf-bad, #c55a5a);
+}
+.workflow-make .wf-tool-strip-count-total {
+  opacity: 0.7;
+}
+.workflow-make .wf-tool-strip-caret {
+  flex-shrink: 0;
+  color: var(--wf-dim);
+  opacity: 0.6;
+}
+.workflow-make .wf-tool-strip-body {
+  border-top: 1px solid var(--wf-line);
+  padding: 4px 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Tool row (expanded detail inside ToolStrip) ── */
+.workflow-make .wf-tool-row {
+  border-bottom: 1px solid var(--wf-line);
+}
+.workflow-make .wf-tool-row:last-child {
+  border-bottom: none;
+}
+.workflow-make .wf-tool-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 10px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font-size: 11px;
+  color: var(--wf-ink-soft);
+  font-family: var(--wf-font-mono);
+  transition: background 100ms ease;
+}
+.workflow-make .wf-tool-row-head:hover {
+  background: var(--wf-bg-2, rgba(15, 23, 42, 0.03));
+}
+.workflow-make .wf-tool-row-name {
+  font-weight: 600;
+  color: var(--wf-ink);
+  flex-shrink: 0;
+}
+.workflow-make .wf-tool-row-line {
+  color: var(--wf-ink-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+.workflow-make .wf-tool-row-agent {
+  font-size: 10px;
+  color: var(--wf-ok-strong, #4d9e8a);
+  flex-shrink: 0;
+}
+.workflow-make .wf-tool-row-spacer { flex: 0 0 8px; }
+.workflow-make .wf-tool-row-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--wf-dim);
+  font-family: var(--wf-font-mono);
+}
+.workflow-make .wf-tool-row-meta-fail {
+  color: var(--wf-bad, #c55a5a);
+}
+.workflow-make .wf-tool-row--running .wf-tool-row-line {
+  color: var(--wf-ink);
+}
+.workflow-make .wf-tool-row--failed .wf-tool-row-name {
+  color: var(--wf-bad, #c55a5a);
+}
+.workflow-make .wf-tool-row-detail {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 18px;
+  padding: 0 6px;
+  border: 1px solid var(--wf-line);
+  background: transparent;
+  border-radius: 4px;
+  font-size: 10px;
+  color: var(--wf-ink-soft);
+  cursor: pointer;
+  flex-shrink: 0;
+  font-family: var(--wf-font-mono);
+}
+.workflow-make .wf-tool-row-detail:hover {
+  background: var(--wf-bg-2, rgba(15, 23, 42, 0.04));
+}
+.workflow-make .wf-tool-row-output {
+  margin: 0;
+  padding: 6px 10px 8px 10px;
+  font-family: var(--wf-font-mono);
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--wf-ink-soft);
+  background: var(--wf-bg-2, rgba(15, 23, 42, 0.03));
   max-height: 220px;
   overflow-y: auto;
 }
-.workflow-make.dark .wf-reasoning-card {
-  background: linear-gradient(
-    180deg,
-    rgba(138, 116, 193, 0.1) 0%,
-    rgba(138, 116, 193, 0.04) 100%
-  );
-  border-color: rgba(138, 116, 193, 0.4);
+.workflow-make.dark .wf-reasoning--open,
+.workflow-make.dark .wf-tool-strip--open {
+  background: rgba(255, 255, 255, 0.02);
+}
+.workflow-make.dark .wf-tool-strip-head:hover,
+.workflow-make.dark .wf-tool-row-head:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+.workflow-make.dark .wf-tool-row-output {
+  background: rgba(255, 255, 255, 0.02);
 }
 
 /* ── Tool call group (collapsed) ── */
