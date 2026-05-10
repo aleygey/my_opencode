@@ -764,8 +764,9 @@ export default function RetrievePage() {
   )
 
   // Map RetrieveLogEntry[] → TraceRecallEntry[] for the design module.
-  const traceEntries = createMemo<TraceRecallEntry[]>(() =>
-    sessionEntries().map((e) => {
+  const traceEntries = createMemo<TraceRecallEntry[]>(() => {
+    const titles = sessionTitleById()
+    return sessionEntries().map((e) => {
       const role = triggerForEntry(e)
       const intent =
         role === "tool"
@@ -784,6 +785,13 @@ export default function RetrievePage() {
         durationMs: e.duration_ms,
         source: e.layer,
         llmUsed: e.llm_used,
+        // Surface session info on every entry so the per-entry Logs
+        // modal can show "which session this recall came from" — fixes
+        // the "看不到 session" report. We pass id + best-effort title
+        // (resolved from sync.data.session, falls back to the trailing
+        // 8 chars of the id when the session record hasn't loaded).
+        sessionId: e.session_id,
+        sessionTitle: titles.get(e.session_id),
         hits: e.picked.map((p, i) => ({
           index: String(i + 1).padStart(2, "0"),
           cat: p.kind,
@@ -805,8 +813,8 @@ export default function RetrievePage() {
             }
           : undefined,
       }
-    }),
-  )
+    })
+  })
 
   // Build the substrip's right slot — Trace-specific actions: session picker,
   // model picker, refresh toggle, manual refresh. The session picker stays
@@ -946,6 +954,11 @@ export default function RetrievePage() {
       activeId={selectedEntry() ?? undefined}
       onPick={(id) => setSelectedEntry(id)}
       modelTag={configResource()?.resolved?.modelID}
+      // The Logs modal renders a "session" pill in its header; clicking
+      // it should jump to that session's chat/workflow view (which is
+      // where the recall actually fired). Routes are dir-scoped, so we
+      // build the URL from the current dir param.
+      onOpenSession={(sid) => navigate(`/${params.dir}/session/${sid}`)}
     />
   )
 }

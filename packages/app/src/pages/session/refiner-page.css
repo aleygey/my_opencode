@@ -3182,17 +3182,22 @@
 .rf-logs-scrim {
   position: fixed;
   inset: 0;
-  /* Stronger scrim + backdrop blur so the experience cards behind
-   * fade properly. Previous 0.42 alpha let card content read through
-   * the modal area which made the visual hierarchy ambiguous (user
-   * reported "层级有问题"). */
-  background: light-dark(rgba(15, 23, 42, 0.62), rgba(0, 0, 0, 0.72));
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
+  /* Heavy scrim + strong blur so the Experience Library cards (counts,
+   * tag chips, Library headline) don't read through the modal area —
+   * the previous 0.62/0.72 alpha + 4px blur left enough of the under-
+   * lying Knowledge page legible that the modal felt "muddy" and the
+   * user reported "+2 / -6" chips and "Experience Library" leaking
+   * through. The new values give the modal proper isolation. */
+  background: light-dark(rgba(15, 23, 42, 0.82), rgba(0, 0, 0, 0.88));
+  backdrop-filter: blur(10px) saturate(0.9);
+  -webkit-backdrop-filter: blur(10px) saturate(0.9);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 200;
+  /* Keep above any unified-shell overlays (rail = 80, substrip = 90,
+   * shell drawers = 200). The modal is the topmost foreground layer
+   * the user can summon, so it goes one tier above. */
+  z-index: 1100;
   padding: 24px;
 }
 .rf-logs-modal {
@@ -3200,15 +3205,26 @@
   flex-direction: column;
   width: min(1240px, 100%);
   height: min(800px, 100%);
-  background: var(--rune-bg-raised);
+  /* Fully opaque background — never `var(--rune-bg-raised)` directly,
+   * because in dark mode that token resolves through `light-dark()`
+   * AND the parent's stacking context which led to faint backdrop
+   * bleed in some flows. Hard-coding the surface tint here
+   * guarantees the modal body never composites with anything below it.
+   * The light-dark() pair matches `--rune-bg-raised` defaults in
+   * `unified-shell/tokens.css` (#FFFFFF / #161A22). */
+  background: light-dark(#FFFFFF, #161A22);
   border: 1px solid var(--rune-line);
   border-radius: var(--rune-r-lg, 10px);
-  /* Stronger shadow + ring lifts the modal cleanly off the blurred
+  /* Stronger shadow + ring lifts the modal cleanly off the heavy
    * backdrop. */
   box-shadow:
-    0 0 0 1px rgba(15, 23, 42, 0.06),
-    0 24px 60px rgba(15, 23, 42, 0.30);
+    0 0 0 1px rgba(15, 23, 42, 0.08),
+    0 32px 80px rgba(15, 23, 42, 0.48);
   overflow: hidden;
+  /* Modal owns its own stacking context — combined with the higher
+   * z-index on the scrim above, this keeps any sibling fixed/absolute
+   * elements (e.g. the rail) below the modal's children. */
+  isolation: isolate;
 }
 .rf-logs-hd {
   display: flex;

@@ -107,6 +107,13 @@ export type TraceRecallEntry = {
   source?: string
   hits: TraceHit[]
   llmUsed?: boolean
+  /** Originating session — surfaced in the Logs modal so the user can
+   *  see which conversation the recall belongs to and jump to it. The
+   *  Trace page can be viewed across sessions (the substrip session
+   *  picker) so this is NOT redundant with the URL session — the modal
+   *  must show the entry's own session, not the page's. */
+  sessionId?: string
+  sessionTitle?: string
   /** Optional verbatim retrieve-agent LLM trace — the system + user
    *  prompts, response text, reasoning, and the structured output the
    *  recall pipeline used to pick seeds. Surfaced via the per-card
@@ -131,6 +138,12 @@ export function TraceRecall(props: {
   emptyText?: string
   /** Optional substring of the model id, shown in the section meta. */
   modelTag?: string
+  /** Click handler for the "open session" link in the per-entry Logs
+   *  modal. When provided, the modal renders a clickable session pill
+   *  that calls this with the entry's `sessionId`. Without it, the pill
+   *  is still shown (so the user knows which session the recall is
+   *  from) but is not clickable. */
+  onOpenSession?: (sessionId: string) => void
 }) {
   const active = createMemo(() => props.entries.find((e) => e.id === props.activeId) ?? props.entries[0])
   // Tracks which entry's LLM trace is currently shown in the Logs
@@ -339,7 +352,11 @@ export function TraceRecall(props: {
 
       <Show when={logsEntry()}>
         {(entry) => (
-          <TraceLogsModal entry={entry()} onClose={() => setLogsEntry(null)} />
+          <TraceLogsModal
+            entry={entry()}
+            onClose={() => setLogsEntry(null)}
+            onOpenSession={props.onOpenSession}
+          />
         )}
       </Show>
     </div>
@@ -350,12 +367,24 @@ export function TraceRecall(props: {
  * recall entry. Surfaces the system prompt + user payload sent to the
  * model, the model's text/reasoning response, and the structured
  * output (seed selection) it produced. The user clicks the per-card
- * "logs" button in the right rail; this opens, scrim closes. */
+ * "logs" button in the right rail; this opens, scrim closes.
+ *
+ * Header layout (top → bottom):
+ *   row 1 — title + provider/model + duration + × close
+ *   row 2 — session pill (id + title, clickable when onOpenSession
+ *           is wired) + query excerpt. The user reported that opening
+ *           the Logs modal hid which session a recall came from; this
+ *           row brings it back so cross-session audits stay anchored. */
 function TraceLogsModal(props: {
   entry: TraceRecallEntry
   onClose: () => void
+  onOpenSession?: (sessionId: string) => void
 }) {
   const trace = () => props.entry.llmTrace
+  const sessionId = () => props.entry.sessionId
+  const sessionLabel = () =>
+    props.entry.sessionTitle?.trim() ||
+    (sessionId() ? `…${sessionId()!.slice(-8)}` : "")
   return (
     <Portal>
       <div
@@ -389,6 +418,36 @@ function TraceLogsModal(props: {
               ×
             </button>
           </div>
+
+          <Show when={sessionId() || props.entry.query}>
+            <div class="rt-logs-hd-sub">
+              <Show when={sessionId()}>
+                <span
+                  class="rt-logs-session"
+                  data-clickable={props.onOpenSession ? "true" : "false"}
+                  role={props.onOpenSession ? "button" : undefined}
+                  tabIndex={props.onOpenSession ? 0 : undefined}
+                  title={props.onOpenSession ? `Open session ${sessionId()}` : sessionId()}
+                  onClick={(ev) => {
+                    if (!props.onOpenSession) return
+                    ev.stopPropagation()
+                    props.onOpenSession(sessionId()!)
+                  }}
+                >
+                  <span class="rt-logs-session-i" aria-hidden>session</span>
+                  <span class="rt-logs-session-name">{sessionLabel()}</span>
+                  <Show when={props.onOpenSession}>
+                    <span class="rt-logs-session-go" aria-hidden>↗</span>
+                  </Show>
+                </span>
+              </Show>
+              <Show when={props.entry.query}>
+                <span class="rt-logs-query" title={props.entry.query}>
+                  {props.entry.query}
+                </span>
+              </Show>
+            </div>
+          </Show>
 
           <div class="rt-logs-body">
             <Show when={trace()?.error}>

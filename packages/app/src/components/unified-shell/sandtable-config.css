@@ -4,13 +4,13 @@
 .rune-stcfg-scrim {
   position: fixed;
   inset: 0;
-  background: light-dark(rgba(15, 23, 42, 0.62), rgba(0, 0, 0, 0.72));
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
+  background: light-dark(rgba(15, 23, 42, 0.82), rgba(0, 0, 0, 0.88));
+  backdrop-filter: blur(10px) saturate(0.9);
+  -webkit-backdrop-filter: blur(10px) saturate(0.9);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 200;
+  z-index: 1100;
   padding: 24px;
   font-family: var(--rune-font-sans);
   color: var(--rune-fg);
@@ -20,13 +20,14 @@
   flex-direction: column;
   width: min(560px, 100%);
   max-height: min(640px, 100%);
-  background: var(--rune-bg-raised);
+  background: light-dark(#FFFFFF, #161A22);
   border: 1px solid var(--rune-line);
   border-radius: var(--rune-r-lg, 10px);
   box-shadow:
-    0 0 0 1px rgba(15, 23, 42, 0.06),
-    0 24px 60px rgba(15, 23, 42, 0.30);
+    0 0 0 1px rgba(15, 23, 42, 0.08),
+    0 32px 80px rgba(15, 23, 42, 0.48);
   overflow: hidden;
+  isolation: isolate;
 }
 .rune-stcfg-hd {
   display: flex;
