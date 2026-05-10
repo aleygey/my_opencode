@@ -9,6 +9,7 @@ import type { Msg as ChatMsg } from "./components/chat-panel"
 import type { SlashCommand } from "./commands"
 import type { Task } from "./components/task-sidebar"
 import { NodeSessionView } from "./components/node-session-view"
+import { EventsPanel } from "./components/events-panel"
 import {
   SandTableSessionView,
   type SandTableDiscussion,
@@ -776,96 +777,63 @@ export function WorkflowApp(props: WorkflowAppProps) {
             </div>
             )}
 
-            {/* Events tab body — vertical timeline of workflow runtime
-              * events. Each entry shows time, kind dot (color-coded by
-              * event kind), the source agent/system, and the node link
-              * if applicable. Falls back to per-node executionLog if no
-              * snapshot events are passed (legacy mode). */}
+            {/* Events tab body — node-aware timeline.
+              *
+              * Replaces the previous flat chronological list with a
+              * grouped-by-node view (swimlane overview + per-node
+              * collapsible cards) so the user can see WHAT EACH NODE
+              * DID rather than just a wall of timestamps. The classic
+              * flat timeline is one click away via the "Timeline"
+              * toggle inside the panel. Legacy fallback (active
+              * node's executionLog) only kicks in when no snapshot
+              * events have been pre-projected; in normal use this is
+              * always the snapshot-events path. */}
             {(props.view ?? "canvas") === "events" && (
-            <div className="wf-events-pane">
-              {(() => {
+              (() => {
                 const events = props.workflowEvents ?? []
-                if (events.length > 0) {
-                  // Sort newest-first so the user sees latest activity at
-                  // the top of the timeline.
-                  const sorted = [...events].sort((a, b) => b.time - a.time)
-                  return (
-                    <ol className="wf-timeline">
-                      {sorted.map((ev) => {
-                        const date = new Date(ev.time)
-                        const time = date.toLocaleTimeString([], {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                          second: "2-digit",
-                        })
-                        const tone = ev.kind.includes("error") || ev.kind.includes("fail")
-                          ? "err"
-                          : ev.kind.includes("complete") || ev.kind.includes("done") || ev.kind.includes("success")
-                            ? "ok"
-                            : ev.kind.includes("start") || ev.kind.includes("running")
-                              ? "run"
-                              : ev.kind.includes("pause") || ev.kind.includes("wait")
-                                ? "warn"
-                                : "idle"
-                        return (
-                          <li key={String(ev.id)} className="wf-timeline-row">
-                            <span className="wf-timeline-time">{time}</span>
-                            <span className="wf-timeline-spine" aria-hidden>
-                              <span className={`wf-timeline-dot wf-timeline-dot--${tone}`} />
-                            </span>
-                            <div className="wf-timeline-body">
-                              <div className="wf-timeline-headline">
-                                <span className={`wf-timeline-kind wf-timeline-kind--${tone}`}>
-                                  {ev.kind}
+                if (events.length === 0) {
+                  // Legacy fallback: surface the active node's
+                  // executionLog when no workflow snapshot events are
+                  // available (e.g. tests / minimal harnesses).
+                  const log = (detail?.executionLog ?? []) as string[]
+                  if (log.length > 0) {
+                    return (
+                      <div className="wf-events-pane">
+                        <ol className="wf-timeline">
+                          {log.map((line, i) => {
+                            const cleaned = line.replace(/^\[\d+\]\s*/, "")
+                            return (
+                              <li key={i} className="wf-timeline-row">
+                                <span className="wf-timeline-time">
+                                  {String(i + 1).padStart(2, "0")}
                                 </span>
-                                <span className="wf-timeline-source">{ev.source}</span>
-                                {ev.nodeTitle && (
-                                  <button
-                                    type="button"
-                                    className="wf-timeline-node"
-                                    onClick={() => ev.nodeID && setPick(ev.nodeID)}
-                                  >
-                                    → {ev.nodeTitle}
-                                  </button>
-                                )}
-                              </div>
-                              <div className="wf-timeline-summary">{ev.summary}</div>
-                            </div>
-                          </li>
-                        )
-                      })}
-                    </ol>
-                  )
-                }
-                // Legacy fallback: show active node's executionLog
-                const log = (detail?.executionLog ?? []) as string[]
-                if (log.length === 0) {
-                  return (
-                    <div className="wf-events-empty">
-                      No events yet — run the workflow to populate the timeline.
-                    </div>
-                  )
+                                <span className="wf-timeline-spine" aria-hidden>
+                                  <span className="wf-timeline-dot wf-timeline-dot--idle" />
+                                </span>
+                                <div className="wf-timeline-body">
+                                  <div className="wf-timeline-summary">{cleaned}</div>
+                                </div>
+                              </li>
+                            )
+                          })}
+                        </ol>
+                      </div>
+                    )
+                  }
                 }
                 return (
-                  <ol className="wf-timeline">
-                    {log.map((line, i) => {
-                      const cleaned = line.replace(/^\[\d+\]\s*/, "")
-                      return (
-                        <li key={i} className="wf-timeline-row">
-                          <span className="wf-timeline-time">{String(i + 1).padStart(2, "0")}</span>
-                          <span className="wf-timeline-spine" aria-hidden>
-                            <span className="wf-timeline-dot wf-timeline-dot--idle" />
-                          </span>
-                          <div className="wf-timeline-body">
-                            <div className="wf-timeline-summary">{cleaned}</div>
-                          </div>
-                        </li>
-                      )
-                    })}
-                  </ol>
+                  <EventsPanel
+                    events={events}
+                    nodes={allNodes.map((n) => ({
+                      id: n.id,
+                      title: n.title,
+                      type: n.type,
+                      status: n.status,
+                    }))}
+                    onSelectNode={(nodeID) => setPick(nodeID)}
+                  />
                 )
-              })()}
-            </div>
+              })()
             )}
 
             {/* Dynamic node / sand-table tab body — renders inside the

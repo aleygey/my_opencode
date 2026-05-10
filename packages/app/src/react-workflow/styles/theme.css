@@ -7718,3 +7718,437 @@
   opacity: 0.55;
   cursor: not-allowed;
 }
+
+/* ── Events panel — node-aware redesign ──
+ * Replaces the flat single-spine timeline with: (1) a stats / mode
+ * toggle bar at the top, (2) a compact swimlane visual, (3) a
+ * grouped accordion of per-node event cards. Existing flat-timeline
+ * styles (.wf-timeline-*) remain in use for the "Timeline" toggle
+ * mode and for the legacy executionLog fallback. */
+
+/* — top stats + toggle bar — */
+.workflow-make .wf-events-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 0 0 14px 0;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--rune-line-faint, var(--wf-line));
+}
+.workflow-make .wf-events-bar-stats {
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+  flex-wrap: wrap;
+  flex: 1;
+  min-width: 0;
+}
+.workflow-make .wf-events-bar-stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+}
+.workflow-make .wf-events-bar-stat-v {
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--rune-fg, var(--wf-ink));
+  font-variant-numeric: tabular-nums;
+}
+.workflow-make .wf-events-bar-stat-l {
+  font-size: 10.5px;
+  font-weight: 500;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+  color: var(--rune-fg-faint, var(--wf-dim));
+}
+.workflow-make .wf-events-bar-range {
+  font-family: var(--rune-font-mono);
+  font-size: 10.5px;
+  color: var(--rune-fg-faint, var(--wf-dim));
+  font-variant-numeric: tabular-nums;
+}
+.workflow-make .wf-events-bar-range-sep {
+  margin: 0 4px;
+  opacity: 0.55;
+}
+
+/* segmented toggle — same vocab as the chat-panel mode pickers */
+.workflow-make .wf-events-bar-toggle {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border: 1px solid var(--rune-line-faint, var(--wf-line));
+  border-radius: 999px;
+  background: var(--rune-bg-inset, var(--wf-chip));
+}
+.workflow-make .wf-events-bar-toggle-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 550;
+  color: var(--rune-fg-mute, var(--wf-dim));
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.workflow-make .wf-events-bar-toggle-btn:hover {
+  color: var(--rune-fg, var(--wf-ink));
+}
+.workflow-make .wf-events-bar-toggle-btn[data-active="true"] {
+  background: var(--rune-bg-raised, var(--wf-card));
+  color: var(--rune-fg, var(--wf-ink));
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+/* — swimlane overview — */
+.workflow-make .wf-events-swim {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 12px 14px;
+  margin-bottom: 16px;
+  border: 1px solid var(--rune-line-faint, var(--wf-line));
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--rune-bg-base, white) 96%, transparent);
+}
+.workflow-make .wf-events-swim-axis {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--rune-font-mono);
+  font-size: 10px;
+  color: var(--rune-fg-faint, var(--wf-dim));
+  padding: 0 calc(120px + 12px) 4px 120px;
+  font-variant-numeric: tabular-nums;
+  border-bottom: 1px dashed var(--rune-line-faint, var(--wf-line));
+}
+.workflow-make .wf-events-swim-rows {
+  display: flex;
+  flex-direction: column;
+}
+.workflow-make .wf-events-lane {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 12px;
+  align-items: center;
+  height: 26px;
+  padding: 0 0 0 0;
+  border-radius: 6px;
+  transition: background 100ms ease;
+}
+.workflow-make .wf-events-lane[data-clickable="true"] {
+  cursor: pointer;
+}
+.workflow-make .wf-events-lane[data-clickable="true"]:hover {
+  background: var(--rune-bg-inset, var(--wf-chip));
+}
+.workflow-make .wf-events-lane-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding-left: 4px;
+}
+.workflow-make .wf-events-lane-label-i {
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+}
+.workflow-make .wf-events-lane[data-tone="ok"] .wf-events-lane-label-i { color: var(--rune-st-ok); }
+.workflow-make .wf-events-lane[data-tone="err"] .wf-events-lane-label-i { color: var(--rune-st-err); }
+.workflow-make .wf-events-lane[data-tone="warn"] .wf-events-lane-label-i { color: var(--rune-st-warn); }
+.workflow-make .wf-events-lane[data-tone="run"] .wf-events-lane-label-i { color: var(--rune-ac); }
+.workflow-make .wf-events-lane[data-tone="idle"] .wf-events-lane-label-i { color: var(--rune-fg-faint); }
+.workflow-make .wf-events-lane-label-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 550;
+  color: var(--rune-fg, var(--wf-ink));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.workflow-make .wf-events-lane-label-count {
+  flex-shrink: 0;
+  font-family: var(--rune-font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--rune-fg-faint, var(--wf-dim));
+  background: var(--rune-bg-inset, var(--wf-chip));
+  padding: 1px 5px;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+}
+.workflow-make .wf-events-lane-track {
+  position: relative;
+  height: 12px;
+  border-radius: 999px;
+  background: var(--rune-bg-inset, var(--wf-chip));
+}
+.workflow-make .wf-events-lane-window {
+  position: absolute;
+  top: 50%;
+  height: 2px;
+  border-radius: 999px;
+  transform: translateY(-50%);
+  background: var(--rune-line, color-mix(in oklab, var(--rune-fg-faint) 30%, transparent));
+  opacity: 0.7;
+}
+.workflow-make .wf-events-lane[data-tone="ok"] .wf-events-lane-window { background: color-mix(in oklab, var(--rune-st-ok) 45%, transparent); }
+.workflow-make .wf-events-lane[data-tone="err"] .wf-events-lane-window { background: color-mix(in oklab, var(--rune-st-err) 45%, transparent); }
+.workflow-make .wf-events-lane[data-tone="warn"] .wf-events-lane-window { background: color-mix(in oklab, var(--rune-st-warn) 45%, transparent); }
+.workflow-make .wf-events-lane[data-tone="run"] .wf-events-lane-window { background: color-mix(in oklab, var(--rune-ac) 45%, transparent); }
+.workflow-make .wf-events-lane-dot {
+  position: absolute;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--rune-fg-dim);
+  box-shadow: 0 0 0 1.5px var(--rune-bg-base, white);
+}
+.workflow-make .wf-events-lane-dot--ok { background: var(--rune-st-ok); }
+.workflow-make .wf-events-lane-dot--err { background: var(--rune-st-err); }
+.workflow-make .wf-events-lane-dot--warn { background: var(--rune-st-warn); }
+.workflow-make .wf-events-lane-dot--run {
+  background: var(--rune-ac);
+  animation: wf-events-pulse 1.6s ease-in-out infinite;
+}
+.workflow-make .wf-events-lane-dot--idle { background: var(--rune-fg-faint, var(--wf-dim)); }
+@keyframes wf-events-pulse {
+  0%, 100% { box-shadow: 0 0 0 1.5px var(--rune-bg-base, white), 0 0 0 0 var(--rune-ac-edge); }
+  50%      { box-shadow: 0 0 0 1.5px var(--rune-bg-base, white), 0 0 0 4px transparent; }
+}
+
+/* — grouped accordion (per-node event cards) — */
+.workflow-make .wf-events-grps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.workflow-make .wf-events-grp {
+  border: 1px solid var(--rune-line-faint, var(--wf-line));
+  border-radius: 10px;
+  background: var(--rune-bg-raised, var(--wf-card));
+  overflow: hidden;
+  transition: border-color 120ms ease;
+}
+.workflow-make .wf-events-grp[data-open="true"] {
+  border-color: var(--rune-line, var(--wf-line-strong));
+}
+.workflow-make .wf-events-grp[data-tone="run"][data-open="true"] {
+  border-color: color-mix(in oklab, var(--rune-ac) 45%, var(--rune-line));
+}
+.workflow-make .wf-events-grp[data-tone="err"][data-open="true"] {
+  border-color: color-mix(in oklab, var(--rune-st-err) 45%, var(--rune-line));
+}
+.workflow-make .wf-events-grp-hd {
+  display: grid;
+  grid-template-columns: 14px 14px minmax(0, 1fr) auto auto auto auto auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+}
+.workflow-make .wf-events-grp-hd:hover {
+  background: color-mix(in oklab, var(--rune-bg-inset) 55%, transparent);
+}
+.workflow-make .wf-events-grp-hd-chev {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--rune-fg-faint, var(--wf-dim));
+}
+.workflow-make .wf-events-grp-hd-i {
+  width: 12px;
+  height: 12px;
+}
+.workflow-make .wf-events-grp[data-tone="ok"] .wf-events-grp-hd-i { color: var(--rune-st-ok); }
+.workflow-make .wf-events-grp[data-tone="err"] .wf-events-grp-hd-i { color: var(--rune-st-err); }
+.workflow-make .wf-events-grp[data-tone="warn"] .wf-events-grp-hd-i { color: var(--rune-st-warn); }
+.workflow-make .wf-events-grp[data-tone="run"] .wf-events-grp-hd-i { color: var(--rune-ac); }
+.workflow-make .wf-events-grp[data-tone="idle"] .wf-events-grp-hd-i { color: var(--rune-fg-faint); }
+.workflow-make .wf-events-grp-hd-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  color: var(--rune-fg, var(--wf-ink));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.workflow-make .wf-events-grp-hd-type {
+  font-family: var(--rune-font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--rune-fg-faint, var(--wf-dim));
+  background: var(--rune-bg-inset, var(--wf-chip));
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.workflow-make .wf-events-grp-hd-count {
+  font-family: var(--rune-font-mono);
+  font-size: 10.5px;
+  color: var(--rune-fg-mute, var(--wf-dim));
+  font-variant-numeric: tabular-nums;
+}
+.workflow-make .wf-events-grp-hd-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--rune-font-mono);
+  font-size: 10px;
+  color: var(--rune-fg-faint, var(--wf-dim));
+  font-variant-numeric: tabular-nums;
+}
+.workflow-make .wf-events-grp-hd-time-sep {
+  opacity: 0.55;
+}
+.workflow-make .wf-events-grp-hd-time-dur {
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--rune-bg-inset, var(--wf-chip));
+  color: var(--rune-fg-mute);
+  font-weight: 600;
+}
+.workflow-make .wf-events-grp-hd-bar {
+  position: relative;
+  width: 80px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--rune-bg-inset, var(--wf-chip));
+  overflow: hidden;
+}
+.workflow-make .wf-events-grp-hd-bar-fill {
+  position: absolute;
+  top: 50%;
+  height: 2px;
+  border-radius: 999px;
+  transform: translateY(-50%);
+  background: color-mix(in oklab, var(--rune-fg-faint) 35%, transparent);
+}
+.workflow-make .wf-events-grp[data-tone="ok"] .wf-events-grp-hd-bar-fill { background: color-mix(in oklab, var(--rune-st-ok) 40%, transparent); }
+.workflow-make .wf-events-grp[data-tone="err"] .wf-events-grp-hd-bar-fill { background: color-mix(in oklab, var(--rune-st-err) 40%, transparent); }
+.workflow-make .wf-events-grp[data-tone="warn"] .wf-events-grp-hd-bar-fill { background: color-mix(in oklab, var(--rune-st-warn) 40%, transparent); }
+.workflow-make .wf-events-grp[data-tone="run"] .wf-events-grp-hd-bar-fill { background: color-mix(in oklab, var(--rune-ac) 40%, transparent); }
+.workflow-make .wf-events-grp-hd-bar-tick {
+  position: absolute;
+  top: 50%;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--rune-fg-dim);
+}
+.workflow-make .wf-events-grp-hd-bar-tick--ok { background: var(--rune-st-ok); }
+.workflow-make .wf-events-grp-hd-bar-tick--err { background: var(--rune-st-err); }
+.workflow-make .wf-events-grp-hd-bar-tick--warn { background: var(--rune-st-warn); }
+.workflow-make .wf-events-grp-hd-bar-tick--run { background: var(--rune-ac); }
+.workflow-make .wf-events-grp-hd-bar-tick--idle { background: var(--rune-fg-faint); }
+.workflow-make .wf-events-grp-hd-open {
+  font-size: 10.5px;
+  font-weight: 550;
+  color: var(--rune-ac-text, var(--rune-ac));
+  text-decoration: none;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.workflow-make .wf-events-grp-hd-open:hover {
+  background: var(--rune-ac-soft, var(--wf-ok-soft));
+  text-decoration: underline;
+}
+
+/* — per-node event list — */
+.workflow-make .wf-events-grp-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 12px 8px 12px;
+  border-top: 1px dashed var(--rune-line-faint, var(--wf-line));
+  display: flex;
+  flex-direction: column;
+}
+.workflow-make .wf-events-grp-row {
+  display: grid;
+  grid-template-columns: 72px 10px minmax(0, 1fr);
+  gap: 10px;
+  padding: 7px 0;
+  align-items: start;
+  border-bottom: 1px dashed color-mix(in oklab, var(--rune-line-faint) 60%, transparent);
+}
+.workflow-make .wf-events-grp-row:last-child {
+  border-bottom: 0;
+}
+.workflow-make .wf-events-grp-row-time {
+  font-family: var(--rune-font-mono);
+  font-size: 10.5px;
+  color: var(--rune-fg-faint, var(--wf-dim));
+  font-variant-numeric: tabular-nums;
+  padding-top: 2px;
+  text-align: right;
+}
+.workflow-make .wf-events-grp-row-dot {
+  width: 6px;
+  height: 6px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--rune-fg-dim);
+  justify-self: center;
+}
+.workflow-make .wf-events-grp-row-dot--ok { background: var(--rune-st-ok); }
+.workflow-make .wf-events-grp-row-dot--err { background: var(--rune-st-err); }
+.workflow-make .wf-events-grp-row-dot--warn { background: var(--rune-st-warn); }
+.workflow-make .wf-events-grp-row-dot--run { background: var(--rune-ac); }
+.workflow-make .wf-events-grp-row-dot--idle { background: var(--rune-fg-faint); }
+.workflow-make .wf-events-grp-row-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.workflow-make .wf-events-grp-row-headline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.workflow-make .wf-events-grp-row-kind {
+  font-family: var(--rune-font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: var(--rune-r-sm, 4px);
+  background: var(--rune-bg-inset);
+  color: var(--rune-fg-dim);
+}
+.workflow-make .wf-events-grp-row-kind--ok { color: var(--rune-st-ok); background: color-mix(in oklab, var(--rune-st-ok) 12%, transparent); }
+.workflow-make .wf-events-grp-row-kind--err { color: var(--rune-st-err); background: color-mix(in oklab, var(--rune-st-err) 12%, transparent); }
+.workflow-make .wf-events-grp-row-kind--warn { color: var(--rune-st-warn); background: color-mix(in oklab, var(--rune-st-warn) 12%, transparent); }
+.workflow-make .wf-events-grp-row-kind--run { color: var(--rune-ac); background: var(--rune-ac-soft); }
+.workflow-make .wf-events-grp-row-source {
+  font-size: 10.5px;
+  color: var(--rune-fg-mute, var(--wf-dim));
+}
+.workflow-make .wf-events-grp-row-summary {
+  font-size: 11.5px;
+  color: var(--rune-fg, var(--wf-ink));
+  line-height: 1.5;
+  word-break: break-word;
+}
