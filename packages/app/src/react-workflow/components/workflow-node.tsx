@@ -1,37 +1,7 @@
 /** @jsxImportSource react */
 import { BrainCircuit, Check, Code2, Compass, Cpu, FlaskConical, Pause, Rocket, X } from 'lucide-react'
 import { Spin } from './spin'
-
-/** Distill a noisy planner-emitted title down to a clean short label.
- *
- * Backend `node.title` often arrives shaped like
- *   "Plan · ## Goal 在本地 opencode 中实现…\n\n## Core req\n…"
- * because the planner LLM doesn't follow a strict {title, body}
- * schema and the workflow runtime ends up using the whole prompt as
- * the title. We strip:
- *   1. a leading `Plan · ` / `Coding · ` / `Build · ` etc. prefix
- *      (the kind label is already shown as a chip);
- *   2. any markdown header marks (`#`, `##`, `###`);
- *   3. anything past the first non-blank line.
- * Then truncate to ~28 chars with an ellipsis. The full text stays
- * available via the cell's `title=` tooltip and the inspector. */
-function distillTitle(raw: string): string {
-  if (!raw) return ""
-  // Walk lines; skip blanks; on the first content line, trim and
-  // strip markdown leading markers.
-  for (const line of raw.split(/\r?\n/)) {
-    const t = line.trim()
-    if (!t) continue
-    let s = t
-    // Drop `Plan · ` / `Code · ` / `Build · ` style prefix.
-    s = s.replace(/^(?:Plan|Code|Coding|Build|Debug|Deploy|Explore|计划|编码|构建|调试|部署|探索)\s*[·:：-]\s*/u, "")
-    // Drop markdown header markers + a trailing colon.
-    s = s.replace(/^#+\s*/u, "").replace(/[：:]\s*$/u, "")
-    if (!s) continue
-    return s.length > 28 ? s.slice(0, 26).trimEnd() + "…" : s
-  }
-  return raw.length > 28 ? raw.slice(0, 26).trimEnd() + "…" : raw
-}
+import { distillTitle } from '../utils/distill-title'
 
 export type NodeStatus = 'pending' | 'running' | 'completed' | 'failed' | 'paused'
 export type NodeType = 'coding' | 'build-flash' | 'debug' | 'deploy' | 'plan' | 'explore'

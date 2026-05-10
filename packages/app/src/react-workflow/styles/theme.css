@@ -7350,13 +7350,18 @@
 }
 .workflow-make .wf-insp-collapse-caret[data-open="false"] { transform: rotate(-90deg); }
 
-/* Inspector section header — design-spec uppercase label, no caret. */
+/* Inspector section header — switched from UPPERCASE 0.07em to
+ * title-case 550 with tight tracking, matching the unified-shell
+ * kicker treatment ("Modules" / "Tasks"). The all-caps version
+ * read thin and old-school; user feedback "字体也是丑". */
 .workflow-make .wf-insp-sec-hd {
   font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  color: var(--rune-fg-dim, var(--wf-dim));
+  font-weight: 550;
+  font-variation-settings: "wght" 550;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--rune-fg-mute, var(--wf-ink-soft));
+  font-feature-settings: "ss01" 1, "cv11" 1;
 }
 
 /* Inspector edit pencil button (right of header). */

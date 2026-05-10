@@ -35,6 +35,7 @@ import { useShellBridge } from "@/components/unified-shell/shell-bridge"
 import { RuneModelPicker } from "@/components/unified-shell/model-picker"
 import { RuneAgentPicker } from "@/components/unified-shell/agent-picker"
 import { SandTableConfigDialog } from "@/components/unified-shell/sandtable-config"
+import { distillTitle } from "@/react-workflow/utils/distill-title"
 import { getSessionContextMetrics } from "@/components/session/session-context-metrics"
 import { useProviders } from "@/hooks/use-providers"
 import { useComments } from "@/context/comments"
@@ -2110,7 +2111,10 @@ export default function Page() {
           ...(snap ? [{ id: "events", name: "Events", count: snap?.events?.length }] : []),
           ...store.workflowOpenTabs.map((t) => ({
             id: `${t.kind}:${t.id}`,
-            name: t.title.length > 18 ? `${t.title.slice(0, 16)}…` : t.title,
+            // Distill the planner-emitted title before truncation so
+            // the substrip tab shows a clean task name instead of a
+            // raw "Plan · ## Goal …" prefix.
+            name: distillTitle(t.title, 18),
             onClose: () => {
               setStore(
                 "workflowOpenTabs",

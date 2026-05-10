@@ -1,8 +1,9 @@
 /** @jsxImportSource react */
 import { useState } from 'react'
-import { Pencil, BrainCircuit, Activity, Crosshair, Timer, Cpu, Terminal, Layers, Sparkles, RotateCcw, FileText } from 'lucide-react'
+import { Pencil, BrainCircuit, Activity, Crosshair, Timer, Cpu, Terminal, Layers, Sparkles } from 'lucide-react'
 import type { Detail } from '../app'
 import { Spin } from './spin'
+import { distillTitle } from '../utils/distill-title'
 
 interface Flow {
   goal: string
@@ -392,8 +393,15 @@ export function EnhancedInspectorPanel(props: Props) {
       <div className="wf-inspector-header">
         <div className="flex min-w-0 items-center gap-2">
           <Layers className="h-4 w-4 flex-none text-[var(--wf-dim)]" strokeWidth={1.8} />
-          <span className="truncate text-[13px] font-semibold tracking-[-0.01em] text-[var(--wf-ink)]">
-            {d ? `Node · ${d.title}` : 'Inspector'}
+          <span
+            className="truncate text-[13px] font-semibold tracking-[-0.01em] text-[var(--wf-ink)]"
+            title={d?.title ?? "Inspector"}
+          >
+            {/* Distill the planner-emitted title (it's often the whole
+              * prompt body, not a clean task name). Same util the
+              * canvas node uses, so the two surfaces agree. Full
+              * text remains in the title= tooltip. */}
+            {d ? `Node · ${distillTitle(d.title, 38)}` : 'Inspector'}
           </span>
         </div>
         {d && (
@@ -422,9 +430,15 @@ export function EnhancedInspectorPanel(props: Props) {
               node is selected; otherwise the page hints "select a node". */}
           {d ? (
             <section className="space-y-2">
-              <div className="wf-insp-sec-hd">SELECTED NODE</div>
+              <div className="wf-insp-sec-hd">Selected node</div>
               <dl className="wf-kv">
-                <dt>id</dt><dd className="font-mono">{d.id}</dd>
+                {/* `id` (long sand-table:UUID) was high-noise / low-signal
+                  * — dropped. The id is recoverable in the URL / events
+                  * tab if anyone needs it for debugging. `re-run` and
+                  * `logs` action buttons also dropped: re-run isn't
+                  * meaningful for a completed plan node, and logs are
+                  * already exposed via the canvas Events tab + the
+                  * dynamic node tab's session view. */}
                 <dt>kind</dt><dd>{d.type}</dd>
                 <dt>state</dt>
                 <dd className="flex items-center gap-1.5">
@@ -437,7 +451,11 @@ export function EnhancedInspectorPanel(props: Props) {
                   <span className="capitalize">{d.status}</span>
                 </dd>
                 {d.duration && (<><dt>dur</dt><dd>{d.duration}</dd></>)}
-                {d.result && (<><dt>result</dt><dd>{d.result}</dd></>)}
+                {/* "result" was ambiguous (current state vs final
+                  * checkpoint?). Rename to "outcome" — it's the
+                  * checkpoint emitted when the node finished, not the
+                  * live state (which `state` already shows). */}
+                {d.result && (<><dt>outcome</dt><dd>{d.result}</dd></>)}
                 <dt>model</dt>
                 <dd>
                   <button
@@ -450,16 +468,6 @@ export function EnhancedInspectorPanel(props: Props) {
                   </button>
                 </dd>
               </dl>
-              <div className="flex items-center gap-2 pt-1">
-                <button type="button" className="wf-insp-action">
-                  <RotateCcw className="h-3 w-3" strokeWidth={1.8} />
-                  re-run
-                </button>
-                <button type="button" className="wf-insp-action">
-                  <FileText className="h-3 w-3" strokeWidth={1.8} />
-                  logs
-                </button>
-              </div>
             </section>
           ) : (
             <section className="wf-insp-empty">
@@ -472,9 +480,9 @@ export function EnhancedInspectorPanel(props: Props) {
           {/* ── LLM Route — design-spec: count + click-to-reroute hint right. */}
           <section className="space-y-2">
             <div className="wf-insp-sec-hd flex items-center gap-2">
-              <span>LLM ROUTE</span>
+              <span>LLM route</span>
               <span className="font-mono text-[var(--wf-ink)]">· {props.agents.length}</span>
-              <span className="ml-auto text-[10px] font-normal normal-case tracking-normal text-[var(--wf-dim)]">
+              <span className="ml-auto text-[10px] font-normal tracking-normal text-[var(--wf-dim)]">
                 click to reroute
               </span>
             </div>
