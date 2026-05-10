@@ -1,0 +1,46 @@
+.rune-agent-trigger {
+  max-width: 210px;
+}
+
+.rune-agent-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: var(--rune-st-ok);
+  flex: none;
+}
+
+.rune-agent-menu {
+  gap: 2px;
+}
+
+.rune-agent-item {
+  align-items: flex-start;
+}
+
+.rune-agent-item-main {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rune-agent-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rune-agent-item-desc {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--rune-fg-dim);
+  font-size: 10.5px;
+  font-weight: 400;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}

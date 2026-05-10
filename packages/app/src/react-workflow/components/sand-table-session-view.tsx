@@ -300,6 +300,107 @@ function InnerStreamMessage({
   )
 }
 
+/* ── Role tab body (Plan / Evaluation) ──
+ *
+ * Shows the role's final artifact (plan markdown or evaluation
+ * markdown) followed by that role's inner-session stream so the
+ * user can audit how the agent arrived at it. Replaces the previous
+ * dual-panel design (separate artifact tab + footer InnerStreamPane).
+ *
+ * For evaluator, multiple rounds accumulate into one flat
+ * `innerMessages` array — we group them on the fly by inserting a
+ * "Round N" divider whenever a round number transition is detected
+ * via the optional `round` field. The user pointed out evaluator
+ * "可能有多个" sessions worth of activity. */
+function RoleTabBody({
+  role,
+  hasArtifact,
+  artifactText,
+  participant,
+  innerMessages,
+  thinkingRole,
+  round,
+  model,
+  emptyHint,
+}: {
+  role: "planner" | "evaluator"
+  hasArtifact: boolean
+  artifactText: string
+  participant?: { sessionID: string; model: { providerID: string; modelID: string } }
+  innerMessages?: InnerMsg[]
+  thinkingRole?: Role | null
+  round: number
+  model?: string
+  emptyHint: string
+}) {
+  const tone = roleTone[role]
+  const stream = innerMessages ?? []
+  const hasStream = stream.length > 0
+  const isThinking = thinkingRole === role
+  const fullSessionID = participant?.sessionID
+
+  if (!hasArtifact && !hasStream && !isThinking) {
+    return <EmptyHint>{emptyHint}</EmptyHint>
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      {/* Artifact (final plan / evaluation text) — rendered first so
+        * the user sees the conclusion at a glance, then can scroll
+        * down to see the reasoning that produced it. */}
+      {hasArtifact && (
+        <section>
+          <div className="wf-sand-section-hd">
+            <span
+              className="wf-sand-section-hd-pip"
+              style={{ background: tone.text }}
+              aria-hidden
+            />
+            <span>{role === "planner" ? "Plan" : "Evaluation"}</span>
+            {model && (
+              <span className="wf-sand-section-hd-meta font-mono">{model}</span>
+            )}
+          </div>
+          <div className="wf-sand-doc">
+            <Markdown>{artifactText}</Markdown>
+          </div>
+        </section>
+      )}
+
+      {/* Inner-session stream — reasoning + tool calls + agent text. */}
+      {(hasStream || isThinking) && (
+        <section>
+          <div className="wf-sand-section-hd">
+            <span
+              className="wf-sand-section-hd-pip"
+              style={{ background: tone.text, opacity: 0.55 }}
+              aria-hidden
+            />
+            <span>{role === "planner" ? "Planner session" : "Evaluator session"}</span>
+            {fullSessionID && (
+              <span
+                className="wf-sand-section-hd-meta font-mono"
+                title={fullSessionID}
+              >
+                {fullSessionID.slice(0, 8)}…
+              </span>
+            )}
+          </div>
+          {hasStream ? (
+            <div className="wf-sand-inner-rows">
+              {stream.map((m) => (
+                <InnerStreamMessage key={m.id} m={m} tone={tone} />
+              ))}
+            </div>
+          ) : isThinking ? (
+            <AgentThinkingPanel role={role} round={round} model={model} />
+          ) : null}
+        </section>
+      )}
+    </div>
+  )
+}
+
 /* ── Left panel tabs ── */
 type LeftTab = "plan" | "evaluation" | "context"
 
@@ -582,41 +683,39 @@ export function SandTableSessionView(props: Props) {
               </LeftTabButton>
             </div>
 
-            {/* Tab body */}
+            {/* Tab body — artifact (plan/eval text) + the corresponding
+              * agent's session stream rendered inline beneath it.
+              * Previous design split these into TWO panels (artifact tab
+              * on top, separate `InnerStreamPane` footer below) which the
+              * user pointed out was redundant: "左下的两个应该合并成一个，
+              * 就是用于查看对应 session 的". Now each role-tab is the
+              * one viewer for that role. */}
             <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
               {tab === "plan" && (
-                hasPlan ? (
-                  <div className="wf-sand-doc">
-                    <Markdown>{planText}</Markdown>
-                  </div>
-                ) : thinkingRole === "planner" ? (
-                  // Planner is composing and hasn't posted yet. Mirror its
-                  // activity here so the Plan tab isn't empty during round 1.
-                  // Note: we explicitly do NOT render the evaluator's thinking
-                  // panel here — the Plan tab is about the planner's artifact.
-                  <AgentThinkingPanel
-                    role="planner"
-                    round={props.discussion.round || 1}
-                    model={plannerModel}
-                  />
-                ) : (
-                  <EmptyHint>暂无计划 — 等待 planner 开始草拟。</EmptyHint>
-                )
+                <RoleTabBody
+                  role="planner"
+                  hasArtifact={hasPlan}
+                  artifactText={planText}
+                  participant={participantsByRole.planner}
+                  innerMessages={props.innerMessages?.planner}
+                  thinkingRole={thinkingRole}
+                  round={props.discussion.round || 1}
+                  model={plannerModel}
+                  emptyHint="暂无计划 — 等待 planner 开始草拟。"
+                />
               )}
               {tab === "evaluation" && (
-                hasEval ? (
-                  <div className="wf-sand-doc">
-                    <Markdown>{evalText}</Markdown>
-                  </div>
-                ) : thinkingRole === "evaluator" ? (
-                  <AgentThinkingPanel
-                    role="evaluator"
-                    round={props.discussion.round || 1}
-                    model={evaluatorModel}
-                  />
-                ) : (
-                  <EmptyHint>暂无评估 — evaluator 会在首轮计划出现后响应。</EmptyHint>
-                )
+                <RoleTabBody
+                  role="evaluator"
+                  hasArtifact={hasEval}
+                  artifactText={evalText}
+                  participant={participantsByRole.evaluator}
+                  innerMessages={props.innerMessages?.evaluator}
+                  thinkingRole={thinkingRole}
+                  round={props.discussion.round || 1}
+                  model={evaluatorModel}
+                  emptyHint="暂无评估 — evaluator 会在首轮计划出现后响应。"
+                />
               )}
               {tab === "context" && (
                 <ContextTabBody
@@ -625,28 +724,6 @@ export function SandTableSessionView(props: Props) {
                 />
               )}
             </div>
-
-            {/* Inner-session live stream — replaces the static participants
-              * footer. Switches between planner / evaluator inner sessions
-              * via two-tab segmented; renders reasoning, agent text and
-              * tool calls inline so the user can watch the current agent
-              * think in real time. */}
-            {(participantsByRole.planner || participantsByRole.evaluator) && (
-              <InnerStreamPane
-                participants={{
-                  planner: participantsByRole.planner ? {
-                    sessionID: participantsByRole.planner.sessionID,
-                    model: `${participantsByRole.planner.model.providerID}/${participantsByRole.planner.model.modelID}`,
-                  } : undefined,
-                  evaluator: participantsByRole.evaluator ? {
-                    sessionID: participantsByRole.evaluator.sessionID,
-                    model: `${participantsByRole.evaluator.model.providerID}/${participantsByRole.evaluator.model.modelID}`,
-                  } : undefined,
-                }}
-                innerMessages={props.innerMessages}
-                activeRole={thinkingRole === "evaluator" ? "evaluator" : "planner"}
-              />
-            )}
           </div>
 
           <SplitBar axis="x" {...left.bind} />

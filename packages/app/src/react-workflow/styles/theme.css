@@ -2107,6 +2107,45 @@
   line-height: 1.5;
 }
 .workflow-make .wf-sand-inner-row:last-child { border-bottom: 0; }
+
+/* Section header inside the merged role tab body — small pip dot
+ * + label + optional model/sessionID meta. Matches the design
+ * vocabulary used elsewhere ("subdued small caps + chip"). */
+.workflow-make .wf-sand-section-hd {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--wf-dim);
+}
+.workflow-make .wf-sand-section-hd-pip {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+}
+.workflow-make .wf-sand-section-hd-meta {
+  margin-left: auto;
+  font-family: var(--wf-font-mono);
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--wf-dim);
+}
+/* Inner-stream rows wrapper used inside the merged role tab body. */
+.workflow-make .wf-sand-inner-rows {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--wf-line);
+  border-radius: 6px;
+  background: var(--wf-bg-2, rgba(15, 23, 42, 0.02));
+  overflow: hidden;
+}
 .workflow-make .wf-sand-inner-role {
   font-size: 9px;
   font-weight: 600;

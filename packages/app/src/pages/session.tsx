@@ -32,6 +32,7 @@ import { useNavigate, useSearchParams } from "@solidjs/router"
 import { NewSessionView, SessionHeader } from "@/components/session"
 import { useShellBridge } from "@/components/unified-shell/shell-bridge"
 import { RuneModelPicker } from "@/components/unified-shell/model-picker"
+import { RuneAgentPicker } from "@/components/unified-shell/agent-picker"
 import { getSessionContextMetrics } from "@/components/session/session-context-metrics"
 import { useProviders } from "@/hooks/use-providers"
 import { useComments } from "@/context/comments"
@@ -1976,6 +1977,15 @@ export default function Page() {
       .sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0))
       .slice(0, 60)
   })
+  const rootAgentOptions = createMemo(() =>
+    local.agent
+      .list()
+      .filter((agent) => agent.mode !== "subagent")
+      .map((agent) => ({
+        name: agent.name,
+        description: agent.description,
+      })),
+  )
   // Heuristic for "running": session updated within the last 60s. We don't
   // have an explicit running flag on the session record, so freshness is
   // the proxy. Stable for the rail badge signal.
@@ -2128,6 +2138,11 @@ export default function Page() {
                 }
               />
             </div>
+            <RuneAgentPicker
+              current={local.agent.current()?.name}
+              agents={rootAgentOptions()}
+              onChange={(agent) => local.agent.set(agent)}
+            />
             <RuneModelPicker
               current={(() => {
                 const m = local.model.current()

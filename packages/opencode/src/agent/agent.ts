@@ -418,11 +418,28 @@ export const layer = Layer.effect(
 
         const list = Effect.fnUntraced(function* () {
           const cfg = yield* config.get()
+          // Default-agent resolution priority:
+          //   1. explicit `default_agent` from config (user override),
+          //   2. `orchestrator` if it exists and is not hidden — this is
+          //      the agent the workflow runtime drives by default and
+          //      what the user expects when first landing on a workflow
+          //      page (the previous fallback to "build" / iteration
+          //      order caused the "默认不是 orchestrator" complaint),
+          //   3. first non-subagent, non-hidden agent in iteration order.
+          const orchestratorAgent = agents["orchestrator"]
+          const fallbackOrch =
+            orchestratorAgent && orchestratorAgent.hidden !== true
+              ? "orchestrator"
+              : undefined
+          const defaultName =
+            cfg.default_agent ??
+            fallbackOrch ??
+            Object.values(agents).find((a) => a.mode !== "subagent" && a.hidden !== true)?.name
           return pipe(
             agents,
             values(),
             sortBy(
-              [(x) => (cfg.default_agent ? x.name === cfg.default_agent : x.name === "build"), "desc"],
+              [(x) => x.name === defaultName, "desc"],
               [(x) => x.name, "asc"],
             ),
           )
