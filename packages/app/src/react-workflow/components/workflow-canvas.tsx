@@ -755,7 +755,14 @@ export function WorkflowCanvas({ root, chains, tail, selectedNodeId, onNodeSelec
           {root && (
             <>
               <RootAgentCard root={root} chainCount={chains.length} onClick={onRootClick} />
-              <BranchConnector count={chains.length} status={root.status} />
+              {/* Only draw the trunk/junction connector when there's at
+               * least one downstream chain. With zero nodes the
+               * connector's `count <= 1` branch was rendering a stray
+               * 40px vertical line in the middle of an otherwise empty
+               * canvas (user-reported "莫名其妙的线"). */}
+              {chains.length > 0 && (
+                <BranchConnector count={chains.length} status={root.status} />
+              )}
             </>
           )}
 

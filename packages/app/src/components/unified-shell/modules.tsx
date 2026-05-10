@@ -288,7 +288,15 @@ export function TraceRecall(props: {
                      * trace-gated button was hard to find). When this
                      * particular recall didn't run an LLM call (heuristic
                      * fallback / 0-candidate / dry-run), the modal shows
-                     * a clear "no trace" empty state instead of nothing. */}
+                     * a clear "no trace" empty state instead of nothing.
+                     *
+                     * Uses `on:click` (native, NOT Solid's delegated
+                     * `onClick`) — Solid's delegated dispatch was firing
+                     * the parent `<div role="button">` row-pick handler
+                     * BEFORE this child's stopPropagation took effect, so
+                     * the user's click selected the row but the modal
+                     * never opened. Native binding + stopImmediatePropagation
+                     * fixes that. */}
                     <button
                       type="button"
                       class="rt-rsess-logs-btn"
@@ -298,7 +306,9 @@ export function TraceRecall(props: {
                           ? "查看本次召回的 retrieve agent LLM 推理记录"
                           : "本次召回没有 LLM trace（heuristic / 老版本日志）"
                       }
-                      onClick={(ev) => {
+                      on:click={(ev: MouseEvent) => {
+                        ev.preventDefault()
+                        ev.stopImmediatePropagation()
                         ev.stopPropagation()
                         setLogsEntry(r)
                       }}

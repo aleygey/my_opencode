@@ -709,18 +709,27 @@ function WorkflowScreen() {
           )}
       </Match>
       <Match when={true}>
-        {/* Empty-state landing — redesigned to match the unified shell
-         * tokens. The previous version used a generic Tailwind palette
-         * with hard borders + emerald accents, which clashed with the
-         * rest of the redesigned UI. This version sits inside a
-         * `.rune-shell` host so it inherits all the typography +
-         * surface tokens, and the cards use the same soft 1px-line +
-         * rounded corner treatment as the workflow node cards. */}
+        {/* Empty-state landing — uses the unified shell *tokens* but
+         * NOT the `.rune-shell` class itself, because that class is
+         * `display: grid` with rail+main columns and was squishing the
+         * whole landing into the 224px rail column (user feedback:
+         * "整体被压缩到左侧了"). The container below is a normal flex
+         * box that just consumes the rune-* CSS variables. */}
         <div
-          class="rune-shell flex h-dvh w-screen items-center justify-center px-6"
-          style={{ background: "var(--rune-bg-base)", color: "var(--rune-fg)" }}
+          class="rune-empty-host"
+          style={{
+            background: "var(--rune-bg-base)",
+            color: "var(--rune-fg)",
+            "font-family": "var(--rune-font-sans)",
+            display: "flex",
+            "align-items": "center",
+            "justify-content": "center",
+            "min-height": "100dvh",
+            width: "100vw",
+            padding: "24px",
+          }}
         >
-          <div class="w-full max-w-3xl">
+          <div style={{ width: "100%", "max-width": "640px" }}>
             <div class="mx-auto max-w-xl text-center">
               <div
                 class="mx-auto mb-5 inline-flex h-12 w-12 items-center justify-center rounded-full"
