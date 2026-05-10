@@ -10,6 +10,7 @@ import { Provider } from "../provider"
 import { ModelID, ProviderID } from "../provider/schema"
 import { Bus } from "../bus"
 import { BusEvent } from "../bus/bus-event"
+import { Config } from "../config"
 import { Log } from "../util"
 
 const log = Log.create({ service: "tool.sand-table" })
@@ -43,6 +44,18 @@ interface Participant {
   model: { providerID: ProviderID; modelID: ModelID }
 }
 
+/* User-supplied per-call overrides accepted by the new
+ * `discussionStart` route. Mirrors the persisted config shape so the
+ * UI can use the same form for both. All fields optional — anything
+ * left unset just keeps the previously-resolved (config / current /
+ * default) value. */
+interface StartOverrides {
+  planner_model?: { providerID: string; modelID: string }
+  evaluator_model?: { providerID: string; modelID: string }
+  planner_agent?: string
+  evaluator_agent?: string
+}
+
 interface DiscussionState {
   id: string
   topic: string
@@ -50,10 +63,21 @@ interface DiscussionState {
   messages: DiscussionMessage[]
   round: number
   maxRounds: number
-  status: "running" | "approved" | "completed" | "failed"
+  status: "awaiting_start" | "running" | "approved" | "completed" | "failed"
   participants: Participant[]
   currentPlan?: string
   evaluation?: string
+  /* When `confirm_before_start` is set, the tool execute parks here
+   * after creating the discussion shell and waits for the UI to call
+   * `discussionStart`. The resolver is captured at await time so the
+   * route handler can hand back the user-chosen overrides + flip the
+   * status to "running". Cleared once consumed. */
+  pendingStart?: (overrides: StartOverrides) => void
+  /* Last-resolved planner/evaluator agent names — surfaced to the UI
+   * so the confirmation form can pre-fill from the persisted config
+   * before the user makes their choice. */
+  resolvedPlannerAgent?: string
+  resolvedEvaluatorAgent?: string
 }
 
 export const SandTableParticipantSchema = z.object({
@@ -79,11 +103,17 @@ export const SandTableDiscussionSchema = z.object({
   context: z.string(),
   round: z.number(),
   max_rounds: z.number(),
-  status: z.enum(["running", "approved", "completed", "failed"]),
+  status: z.enum(["awaiting_start", "running", "approved", "completed", "failed"]),
   participants: SandTableParticipantSchema.array(),
   current_plan: z.string().optional(),
   last_evaluation: z.string().optional(),
   messages: SandTableMessageSchema.array(),
+  /* Surfaced when status === "awaiting_start" so the UI can pre-fill
+   * the confirmation form with whatever was already resolved from the
+   * persisted config (`experimental.sand_table.{planner_agent,
+   * evaluator_agent}`). Absent for any other status. */
+  resolved_planner_agent: z.string().optional(),
+  resolved_evaluator_agent: z.string().optional(),
 })
 
 // ── In-memory state ────────────────────────────────────────────────────────
@@ -120,7 +150,28 @@ function serialize(state: DiscussionState) {
     current_plan: state.currentPlan,
     last_evaluation: state.evaluation,
     messages: state.messages,
+    resolved_planner_agent: state.resolvedPlannerAgent,
+    resolved_evaluator_agent: state.resolvedEvaluatorAgent,
   }
+}
+
+/* Start an awaiting-confirmation discussion with optional per-call
+ * overrides. Resolves the parked promise inside the tool's execute
+ * — the tool then folds these overrides into its planner/evaluator
+ * resolution and proceeds to runRounds. Returns the updated state
+ * (still in `awaiting_start` for a tick — the tool flips it to
+ * `running` once it picks up the resolver). */
+export function discussionStart(
+  id: string,
+  overrides: StartOverrides = {},
+) {
+  const state = discussions.get(id) ?? discussionsByCallID.get(id)
+  if (!state) return undefined
+  if (!state.pendingStart) return serialize(state)
+  const resolver = state.pendingStart
+  state.pendingStart = undefined
+  resolver(overrides)
+  return serialize(state)
 }
 
 export function discussionGet(id: string) {
@@ -164,23 +215,35 @@ const ModelAssignment = z.object({
   modelID: z.string(),
 })
 
+/* Model resolution priority (highest to lowest):
+ *   1. tool-call `params.models.planner / .evaluator` (explicit override
+ *      passed by the orchestrator),
+ *   2. project config `experimental.sand_table.planner_model /
+ *      .evaluator_model` (persisted user choice),
+ *   3. the orchestrator's currently-active model (`currentModel`),
+ *   4. provider default (`provider.defaultModel()`).
+ * Evaluator falls back to the resolved planner if neither override
+ * nor config is set, matching the previous behaviour. */
 function resolveModels(
   provider: Provider.Interface,
   overrides?: { planner?: z.infer<typeof ModelAssignment>; evaluator?: z.infer<typeof ModelAssignment> },
   currentModel?: { providerID: ProviderID; modelID: ModelID },
+  configModels?: { planner?: { providerID: string; modelID: string }; evaluator?: { providerID: string; modelID: string } },
 ) {
   return Effect.gen(function* () {
-    const planner = overrides?.planner
+    const plannerOverride = overrides?.planner ?? configModels?.planner
+    const planner = plannerOverride
       ? {
-          providerID: ProviderID.make(overrides.planner.providerID),
-          modelID: ModelID.make(overrides.planner.modelID),
+          providerID: ProviderID.make(plannerOverride.providerID),
+          modelID: ModelID.make(plannerOverride.modelID),
         }
       : currentModel ?? (yield* provider.defaultModel())
 
-    const evaluator = overrides?.evaluator
+    const evaluatorOverride = overrides?.evaluator ?? configModels?.evaluator
+    const evaluator = evaluatorOverride
       ? {
-          providerID: ProviderID.make(overrides.evaluator.providerID),
-          modelID: ModelID.make(overrides.evaluator.modelID),
+          providerID: ProviderID.make(evaluatorOverride.providerID),
+          modelID: ModelID.make(evaluatorOverride.modelID),
         }
       : planner
 
@@ -369,6 +432,11 @@ function runParticipant(
   participant: Participant,
   prompt: string,
   abort: AbortSignal,
+  /** Agent name to drive the participant. Defaults to the bundled
+   *  `sandtable` agent which scopes tools to msg_read/msg_write only.
+   *  Overrideable via `experimental.sand_table.{planner,evaluator}_agent`
+   *  so users can plug in their own agent definition. */
+  agentName: string = "sandtable",
 ) {
   return Effect.acquireUseRelease(
     Effect.sync(() => {
@@ -397,7 +465,7 @@ function runParticipant(
               messageID,
               sessionID: participant.sessionID,
               model: participant.model,
-              agent: "sandtable",
+              agent: agentName,
               tools: {
                 msg_read: true,
                 msg_write: true,
@@ -440,6 +508,7 @@ export const SandTableTool = Tool.define(
   Effect.gen(function* () {
     const session = yield* Session.Service
     const provider = yield* Provider.Service
+    const config = yield* Config.Service
     return {
       description: DESCRIPTION,
       parameters,
@@ -456,33 +525,39 @@ export const SandTableTool = Tool.define(
             modelID: msg.info.modelID,
           }
 
-          const models = yield* resolveModels(provider, params.models, currentModel)
+          // Read persisted sand-table config (per-project). Tool-call
+          // params still take priority, so the orchestrator can
+          // override on a per-call basis if it wants.
+          const cfg = yield* config.get()
+          const stCfg = cfg?.experimental?.sand_table
+          // mutable so the awaiting_start confirmation step below can fold
+          // in user-chosen overrides before runRounds picks them up.
+          let plannerAgent = stCfg?.planner_agent ?? "sandtable"
+          let evaluatorAgent = stCfg?.evaluator_agent ?? "sandtable"
+
+          let models = yield* resolveModels(
+            provider,
+            params.models,
+            currentModel,
+            {
+              planner: stCfg?.planner_model,
+              evaluator: stCfg?.evaluator_model,
+            },
+          )
 
           log.info("sand_table starting", {
             discussionID,
             topic: params.topic,
             planner: `${models.planner.providerID}/${models.planner.modelID}`,
             evaluator: `${models.evaluator.providerID}/${models.evaluator.modelID}`,
+            confirm_before_start: !!stCfg?.confirm_before_start,
           })
 
-          // Planner session is long-lived — it iterates its own plan across
-          // rounds, so it NEEDS the prior context (its last draft + the
-          // evaluator's feedback) to produce a revised draft. Creating it
-          // once and reusing is correct.
-          const plannerSession = yield* session.create({
-            parentID: ctx.sessionID,
-            title: `Sand Table Planner (@sandtable)`,
-            permission: [
-              { permission: "msg_read", pattern: "*", action: "allow" },
-              { permission: "msg_write", pattern: "*", action: "allow" },
-              { permission: "*" as const, pattern: "*", action: "deny" },
-            ],
-          })
-
-          // Evaluator session is created PER ROUND (see loop below). Starting
-          // state has no evaluator yet; participants[] gets the current
-          // round's evaluator pushed in as each round starts, and stays
-          // pointing at the most recent one for observability.
+          // Build the discussion state FIRST — before creating any
+          // participant sessions — so the UI has something to render
+          // while we wait for the user to confirm. Participants are
+          // pushed in as their sessions get created (planner here for
+          // the immediate-start path, or after the confirm gate below).
           const state: DiscussionState = {
             id: discussionID,
             topic: params.topic,
@@ -490,10 +565,10 @@ export const SandTableTool = Tool.define(
             messages: [],
             round: 0,
             maxRounds: params.max_rounds,
+            // Default to "running"; flipped to "awaiting_start" below
+            // if the user has opted into the pre-confirmation flow.
             status: "running",
-            participants: [
-              { role: "planner", sessionID: plannerSession.id, model: models.planner },
-            ],
+            participants: [],
           }
           discussions.set(discussionID, state)
           // Register under the tool call ID as a secondary key so the
@@ -510,6 +585,75 @@ export const SandTableTool = Tool.define(
             metadata: { sandTableID: discussionID },
           })
 
+          // ── Pre-start confirmation gate ─────────────────────────────
+          // When `experimental.sand_table.confirm_before_start` is set,
+          // park here until the UI calls `discussionStart(id, overrides)`.
+          // The orchestrator's tool call is still pending during the wait
+          // (we never returned), so when the user picks the planner /
+          // evaluator agent + model and clicks "Start", we apply the
+          // overrides and the agent picks up the final plan only after
+          // that confirmation. Skipped entirely when the flag is off, so
+          // the existing "agent calls sand_table → run immediately"
+          // behaviour is preserved.
+          if (stCfg?.confirm_before_start) {
+            state.status = "awaiting_start"
+            state.resolvedPlannerAgent = plannerAgent
+            state.resolvedEvaluatorAgent = evaluatorAgent
+
+            const overrides = yield* Effect.promise(
+              () =>
+                new Promise<StartOverrides>((resolve) => {
+                  state.pendingStart = resolve
+                }),
+            )
+
+            // Fold in user-chosen overrides. Tool-call `params.models`
+            // still wins over both config + UI overrides, matching the
+            // documented priority in resolveModels().
+            if (overrides.planner_agent) plannerAgent = overrides.planner_agent
+            if (overrides.evaluator_agent) evaluatorAgent = overrides.evaluator_agent
+
+            models = yield* resolveModels(
+              provider,
+              params.models,
+              currentModel,
+              {
+                planner: overrides.planner_model ?? stCfg?.planner_model,
+                evaluator: overrides.evaluator_model ?? stCfg?.evaluator_model,
+              },
+            )
+
+            state.resolvedPlannerAgent = plannerAgent
+            state.resolvedEvaluatorAgent = evaluatorAgent
+            state.status = "running"
+
+            log.info("sand_table confirmed", {
+              discussionID,
+              planner: `${models.planner.providerID}/${models.planner.modelID}`,
+              evaluator: `${models.evaluator.providerID}/${models.evaluator.modelID}`,
+              plannerAgent,
+              evaluatorAgent,
+            })
+          }
+
+          // Planner session is long-lived — it iterates its own plan across
+          // rounds, so it NEEDS the prior context (its last draft + the
+          // evaluator's feedback) to produce a revised draft. Creating it
+          // once and reusing is correct. Created AFTER the confirmation
+          // gate so the agent / model the user picked is what drives it.
+          const plannerSession = yield* session.create({
+            parentID: ctx.sessionID,
+            title: `Sand Table Planner (@${plannerAgent})`,
+            permission: [
+              { permission: "msg_read", pattern: "*", action: "allow" },
+              { permission: "msg_write", pattern: "*", action: "allow" },
+              { permission: "*" as const, pattern: "*", action: "deny" },
+            ],
+          })
+          state.participants = [
+            { role: "planner", sessionID: plannerSession.id, model: models.planner },
+          ]
+
           const runRounds = Effect.gen(function* () {
             for (let round = 1; round <= params.max_rounds; round++) {
               if (ctx.abort.aborted) {
@@ -522,7 +666,7 @@ export const SandTableTool = Tool.define(
 
               // Step 1: Planner generates/revises plan
               const planner = state.participants.find((p) => p.role === "planner")!
-              yield* runParticipant(planner, plannerPrompt(state), ctx.abort)
+              yield* runParticipant(planner, plannerPrompt(state), ctx.abort, plannerAgent)
 
               // sp.prompt awaits the planner's full LLM turn; any msg_write
               // it called has already landed in state.messages. Take the
@@ -546,7 +690,7 @@ export const SandTableTool = Tool.define(
               // from the rubric in EVALUATOR_SYSTEM.
               const evaluatorSession = yield* session.create({
                 parentID: ctx.sessionID,
-                title: `Sand Table Evaluator · round ${round} (@sandtable)`,
+                title: `Sand Table Evaluator · round ${round} (@${evaluatorAgent})`,
                 permission: [
                   { permission: "msg_read", pattern: "*", action: "allow" },
                   { permission: "msg_write", pattern: "*", action: "allow" },
@@ -566,7 +710,7 @@ export const SandTableTool = Tool.define(
                 ...state.participants.filter((p) => p.role !== "evaluator"),
                 evaluator,
               ]
-              yield* runParticipant(evaluator, evaluatorPrompt(state), ctx.abort)
+              yield* runParticipant(evaluator, evaluatorPrompt(state), ctx.abort, evaluatorAgent)
 
               // Same as planner above: msg_write has already landed; take
               // the last one for this round.

@@ -170,11 +170,20 @@ function warmSessions(input: {
   if (ids.length === 0) return Promise.resolve()
   return Promise.all(
     ids.map((sessionID) =>
-      retry(() => input.sdk.session.get({ sessionID })).then((x) => {
-        const session = x.data
-        if (!session?.id) return
-        mergeSession(input.setStore, session)
-      }),
+      retry(() => input.sdk.session.get({ sessionID }))
+        .then((x) => {
+          const session = x.data
+          if (!session?.id) return
+          mergeSession(input.setStore, session)
+        })
+        // Permissions/questions/audits may reference a session the server
+        // has since deleted (e.g. workflow root abandoned). Swallow the
+        // 404 per-session so one stale ref doesn't break the whole batch.
+        .catch((err: unknown) => {
+          const name = err && typeof err === "object" && "name" in err ? (err as { name?: string }).name : undefined
+          if (name === "NotFoundError") return
+          throw err
+        }),
     ),
   ).then(() => undefined)
 }

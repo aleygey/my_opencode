@@ -611,15 +611,13 @@ const buildRows = (input: {
   snap: WorkflowSnapshot
   node?: WorkflowNode
 }) => {
-  const rows: Row[] = [
-    {
-      id: "sys",
-      role: "system",
-      label: "System",
-      time: fmt(input.snap.workflow.time?.updated),
-      body: `${cap(input.snap.workflow.status)} · ${cap(input.snap.runtime.phase)}${input.node ? ` · ${input.node.title}` : ""}`,
-    },
-  ]
+  // Previously the chat list opened with a synthetic "System · STATUS ·
+  // PHASE" row built from the workflow snapshot. The user pointed out
+  // it carries no real information — the same status / phase already
+  // appears in the shell header's STAGE/NODES meta strip. Dropping the
+  // pseudo-row gives the agent's reply more visual room and avoids the
+  // "no useful title" feeling.
+  const rows: Row[] = []
   for (const msg of input.messages) {
     const parts = input.parts[msg.id] ?? []
     if (msg.role === "user") {
@@ -1595,6 +1593,11 @@ export function WorkflowRuntimePanel(props: {
   tasks?: WorkflowAppProps["tasks"]
   activeTaskId?: string
   onTaskSelect?: (taskID: string) => void
+  /** Design-spec workflow tab from the unified shell substrip:
+   *  canvas / chat / events. Default canvas. Dynamic node / sand-table
+   *  tabs use the form `node:<id>` / `sand:<id>` — those values pass
+   *  through here untouched and are interpreted downstream in WorkflowApp. */
+  workflowTab?: string
 }) {
   const sync = useSync()
   const dialog = useDialog()
@@ -1682,9 +1685,28 @@ export function WorkflowRuntimePanel(props: {
     return (await res.json()) as T
   }
   const chats = createMemo<WorkflowAppProps["chats"]>(() => {
+    // Collect every session id that the React workflow side might want to
+    // render: root + every workflow node + every sand-table participant
+    // (planner / evaluator). Participants live OUTSIDE the workflow node
+    // graph, so the iteration over `nodes()` alone misses their chat —
+    // the right-pane InnerStreamPane needs `chats[plannerSessionID]` to
+    // populate the planner / evaluator stream views (#6 traceability).
+    const ids = new Set<string>([rootID()])
+    for (const node of nodes()) {
+      if (node?.session_id) ids.add(node.session_id)
+    }
+    for (const sand of Object.values(state.sand)) {
+      for (const part of sand?.participants ?? []) {
+        if (part.sessionID) ids.add(part.sessionID)
+      }
+    }
+    const nodeBySession = new Map<string, WorkflowNode>()
+    for (const node of nodes()) {
+      if (node?.session_id) nodeBySession.set(node.session_id, node)
+    }
     return Object.fromEntries(
-      [undefined as WorkflowNode | undefined, ...nodes()].map((node) => {
-        const id = node?.session_id ?? rootID()
+      [...ids].map((id) => {
+        const node = nodeBySession.get(id)
         return [
           id,
           buildRows({
@@ -1884,6 +1906,16 @@ export function WorkflowRuntimePanel(props: {
   const fetchSandTable = async (discussionID: string) => {
     const result = await request<SandTableDiscussion>(`/workflow/sand_table/${discussionID}`)
     setState("sand", discussionID, result)
+    // The planner / evaluator sub-sessions live OUTSIDE the workflow node
+    // graph (they're spawned by the orchestrator's `sand_table` tool, not
+    // registered as workflow nodes), so the regular per-node sync sweep
+    // doesn't pull their messages into `sync.data.message`. Poke each
+    // participant's session into the sync store now that we know its id —
+    // otherwise the InnerStreamPane is stuck on "Waiting for planner to
+    // start thinking…" forever, even after planner has produced output.
+    for (const part of result?.participants ?? []) {
+      if (part.sessionID) void sync.session.sync(part.sessionID).catch(() => undefined)
+    }
     return result
   }
   createEffect(() => {
@@ -1910,6 +1942,24 @@ export function WorkflowRuntimePanel(props: {
     const plan = sandPlan()
     if (!plan && allNodes.length === 0) return undefined
 
+    // Index events by node_id so each node card can show its latest
+    // slave-agent activity in the bottom marquee. We pick the most
+    // recent event and project a short status string from it.
+    const liveStatusByNode = new Map<string, string>()
+    const allEvents = props.snapshot.events ?? []
+    const sorted = [...allEvents].sort((a, b) => b.time_created - a.time_created)
+    for (const ev of sorted) {
+      if (!ev.node_id) continue
+      if (liveStatusByNode.has(ev.node_id)) continue
+      const p = (ev.payload ?? {}) as Record<string, unknown>
+      const txt =
+        (typeof p["status"] === "string" && (p["status"] as string)) ||
+        (typeof p["message"] === "string" && (p["message"] as string)) ||
+        (typeof p["reason"] === "string" && (p["reason"] as string)) ||
+        ev.kind
+      liveStatusByNode.set(ev.node_id, `${ev.kind} · ${txt}`)
+    }
+
     const renderable = (node: WorkflowNode): ChainNode => {
       const startRev = node.graph_rev_at_start
       const stale =
@@ -1919,7 +1969,14 @@ export function WorkflowRuntimePanel(props: {
         title: node.title,
         type: nodeKind(node) === "build" ? "build-flash" : (nodeKind(node) as "coding" | "debug" | "deploy"),
         status: tone(node.status),
-        session: node.session_id ?? props.snapshot.workflow.session_id,
+        // Don't fall back to the root session id when a node hasn't
+        // started yet — that lookup chain caused NodeSessionView to render
+        // the MASTER session's messages for unstarted child nodes (the
+        // user reported clicking a not-yet-running node and seeing the
+        // orchestrator's chat). When session is undefined, the chat
+        // panel renders an empty state, which is the correct UX.
+        session: node.session_id ?? undefined,
+        liveStatus: liveStatusByNode.get(node.id),
         stale,
       }
     }
@@ -2243,7 +2300,13 @@ export function WorkflowRuntimePanel(props: {
         title: node.title,
         type: nodeKind(node) === "build" ? "build-flash" : (nodeKind(node) as "coding" | "debug" | "deploy"),
         status: tone(node.status),
-        session: node.session_id ?? props.snapshot.workflow.session_id,
+        // Don't fall back to the root session id when a node hasn't
+        // started yet — that lookup chain caused NodeSessionView to render
+        // the MASTER session's messages for unstarted child nodes (the
+        // user reported clicking a not-yet-running node and seeing the
+        // orchestrator's chat). When session is undefined, the chat
+        // panel renders an empty state, which is the correct UX.
+        session: node.session_id ?? undefined,
         stale,
       }
     }
@@ -2360,7 +2423,13 @@ export function WorkflowRuntimePanel(props: {
         title: node.title,
         type: nodeKind(node) === "build" ? "build-flash" : (nodeKind(node) as "coding" | "debug" | "deploy"),
         status: tone(node.status),
-        session: node.session_id ?? props.snapshot.workflow.session_id,
+        // Don't fall back to the root session id when a node hasn't
+        // started yet — that lookup chain caused NodeSessionView to render
+        // the MASTER session's messages for unstarted child nodes (the
+        // user reported clicking a not-yet-running node and seeing the
+        // orchestrator's chat). When session is undefined, the chat
+        // panel renders an empty state, which is the correct UX.
+        session: node.session_id ?? undefined,
         summary: modelReady(node) ? [modelLabel(node)] : ["route model"],
         stale,
       }
@@ -2813,6 +2882,35 @@ export function WorkflowRuntimePanel(props: {
     setState("sand", discussionID, result)
   }
 
+  /* Confirms the awaiting_start pause emitted by sand_table when
+   * `experimental.sand_table.confirm_before_start` is set. The user
+   * picks planner / evaluator agent + model in the inline confirm panel
+   * (rendered by SandTableSessionView when status === "awaiting_start"),
+   * we POST the chosen overrides; the backend resolves the parked
+   * promise inside the tool and the rounds begin. The polling loop
+   * already running for "running" status takes over from there, so we
+   * just need to seed the immediate response so the UI stops showing
+   * the confirm panel without waiting for the next poll tick. */
+  const startSandTable = async (
+    nodeID: string,
+    overrides: {
+      planner_model?: { providerID: string; modelID: string }
+      evaluator_model?: { providerID: string; modelID: string }
+      planner_agent?: string
+      evaluator_agent?: string
+    },
+  ) => {
+    const detail = detailsWithPlan()[nodeID]
+    const discussionID =
+      typeof detail?.stateJson?.sand_table_id === "string" ? detail.stateJson.sand_table_id : undefined
+    if (!discussionID) return
+    const result = await request<SandTableDiscussion>(`/workflow/sand_table/${discussionID}/start`, {
+      method: "POST",
+      body: overrides,
+    })
+    setState("sand", discussionID, result)
+  }
+
   // ── Question & Permission polling ──────────────────────────────────
 
   const [pendingQuestions, setPendingQuestions] = createStore<any[]>([])
@@ -2972,6 +3070,10 @@ export function WorkflowRuntimePanel(props: {
         title: props.snapshot.workflow.title,
         status: status(),
         env: env(),
+        // Design-spec sub-tab from the unified shell substrip. Dynamic
+        // tabs (node:<id> / sand:<id>) pass through; WorkflowApp treats
+        // any non-fixed value as "canvas" + sets sessionNode internally.
+        view: ((props.workflowTab ?? "canvas") as "canvas" | "chat" | "events"),
         model: currentModel(),
         models: choices().map((item) => item.label),
         workspace: sdk.directory,
@@ -2985,6 +3087,34 @@ export function WorkflowRuntimePanel(props: {
         flow: flow(),
         agents: agents(),
         tokenStats: tokenStats(),
+        // Pre-project workflow events for the timeline tab — sort happens
+        // in the React side; here we just pick the right fields and join
+        // with the node title so each row can deep-link.
+        workflowEvents: (props.snapshot.events ?? []).map((ev) => {
+          const node = ev.node_id
+            ? props.snapshot.nodes.find((n) => n.id === ev.node_id)
+            : undefined
+          // Build a human-readable summary from the payload — the kind
+          // alone is too terse, but the full payload is too noisy. Pick
+          // a few common fields if present.
+          const p = (ev.payload ?? {}) as Record<string, unknown>
+          const summaryBits: string[] = []
+          for (const k of ["status", "reason", "message", "result", "error"]) {
+            const v = p[k]
+            if (typeof v === "string" && v.length > 0) {
+              summaryBits.push(`${k}=${v.length > 60 ? v.slice(0, 60) + "…" : v}`)
+            }
+          }
+          return {
+            id: ev.id,
+            kind: ev.kind,
+            source: ev.source,
+            nodeID: ev.node_id ?? undefined,
+            nodeTitle: node?.title,
+            summary: summaryBits.length > 0 ? summaryBits.join(" · ") : ev.kind,
+            time: ev.time_created,
+          }
+        }),
         chats: chatsWithDialogs(),
         chatExtraCommands: chatExtraCommands(),
         sandTables: sandTables(),
@@ -3026,6 +3156,9 @@ export function WorkflowRuntimePanel(props: {
         onPermissionReply: replyPermission,
         onSandTableSend: (nodeID, text) => {
           void sendSandTable(nodeID, text).catch(() => undefined)
+        },
+        onSandTableStart: (nodeID, overrides) => {
+          void startSandTable(nodeID, overrides).catch(() => undefined)
         },
         // History pagination for the master (root) session. Without these
         // the ChatPanel "Load earlier messages" button runs out of

@@ -125,6 +125,24 @@ const RetrieveLogEntrySchema = z.object({
   error: z.string().optional(),
   duration_ms: z.number(),
   created_at: z.number(),
+  /* Optional verbatim trace of the seed-selection LLM call. Populated
+   * for every entry where the retrieve agent actually invoked an LLM
+   * (i.e. `llm_used === true`). Surfaces the exact prompt + response
+   * to the UI so the user can audit how the recall agent decided what
+   * to pick. Old log entries from before this field existed simply
+   * omit it. */
+  llm_trace: z
+    .object({
+      provider_id: z.string().optional(),
+      model_id: z.string().optional(),
+      system_prompt: z.string().optional(),
+      user_prompt: z.string(),
+      response_text: z.string().optional(),
+      reasoning_text: z.string().optional(),
+      structured_output: z.unknown().optional(),
+      error: z.string().optional(),
+    })
+    .optional(),
 })
 export type RetrieveLogEntry = z.infer<typeof RetrieveLogEntrySchema>
 
@@ -470,6 +488,8 @@ function createStructuredOutputTool(input: {
   })
 }
 
+type LlmTrace = NonNullable<RetrieveLogEntry["llm_trace"]>
+
 async function llmSeedSelect(input: {
   candidates: CandidateSummary[]
   agentName: string
@@ -477,8 +497,19 @@ async function llmSeedSelect(input: {
   userText?: string
   workflowID?: string
 }): Promise<
-  | { ok: true; seeds: Array<{ id: string; reason: string }>; modelInfo: ResolvedModel; reason: string }
-  | { ok: false; reason: "no_model" | "no_language" | "llm_error" | "no_seeds"; modelInfo?: ResolvedModel }
+  | {
+      ok: true
+      seeds: Array<{ id: string; reason: string }>
+      modelInfo: ResolvedModel
+      reason: string
+      trace: LlmTrace
+    }
+  | {
+      ok: false
+      reason: "no_model" | "no_language" | "llm_error" | "no_seeds"
+      modelInfo?: ResolvedModel
+      trace?: LlmTrace
+    }
 > {
   if (input.candidates.length === 0) return { ok: false, reason: "no_seeds" }
 
@@ -509,6 +540,7 @@ async function llmSeedSelect(input: {
 
   let seeds: Array<{ id: string; reason: string }> = []
   let topReason = ""
+  let structuredOutput: unknown = undefined
 
   const schema = ProviderTransform.schema(
     resolved.model,
@@ -534,6 +566,7 @@ async function llmSeedSelect(input: {
       StructuredOutput: createStructuredOutputTool({
         schema,
         onSuccess(output) {
+          structuredOutput = output
           const parsed = RetrieveSeedOutputSchema.safeParse(output)
           if (!parsed.success) {
             log.warn("retrieve seed output failed schema", {
@@ -561,21 +594,47 @@ async function llmSeedSelect(input: {
     stopWhen: stepCountIs(3),
   } satisfies Parameters<typeof generateText>[0]
 
+  // Capture the LLM call's text + reasoning for the audit trail
+  // surfaced via the Trace UI's "Logs" button. We always record the
+  // request side (prompt) so the user sees the exact input even when
+  // the model fails or returns nothing.
+  const trace: LlmTrace = {
+    provider_id: resolved.model.providerID,
+    model_id: resolved.model.api.id,
+    system_prompt: resolved.agent.prompt,
+    user_prompt: JSON.stringify(userPayload, null, 2),
+  }
+
   try {
     if ((language as any).doStream) {
       const result = streamText({ ...params, onError: () => {} })
       for await (const _ of result.fullStream) {
         // drain
       }
+      try {
+        trace.response_text = await result.text
+      } catch {
+        // some providers don't expose `.text` reliably for tool-only flows
+      }
+      try {
+        trace.reasoning_text = await result.reasoningText
+      } catch {
+        // reasoning is optional — provider may not emit it
+      }
     } else {
-      await generateText(params)
+      const result = await generateText(params)
+      trace.response_text = (result as { text?: string }).text
+      trace.reasoning_text = (result as { reasoningText?: string }).reasoningText
     }
   } catch (error) {
     log.warn("retrieve LLM call failed", { error })
-    return { ok: false, reason: "llm_error", modelInfo: resolved }
+    trace.error = error instanceof Error ? error.message : String(error)
+    return { ok: false, reason: "llm_error", modelInfo: resolved, trace }
   }
 
-  return { ok: true, seeds, modelInfo: resolved, reason: topReason }
+  if (structuredOutput !== undefined) trace.structured_output = structuredOutput
+
+  return { ok: true, seeds, modelInfo: resolved, reason: topReason, trace }
 }
 
 function heuristicSeedSelect(candidates: CandidateSummary[]): Array<{ id: string; reason: string }> {
@@ -631,8 +690,10 @@ function renderSystemBlock(
   const tag = opts.tag ?? "retrieved_experiences"
   const intro =
     opts.intro ??
-    "These reusable experiences were selected for this turn based on the conversation. " +
-      "Use them as soft guidance — they describe rules, conventions, or knowledge from prior interactions in this workspace."
+    "These experiences were selected for this turn because they directly match the current task's context. " +
+      "Treat them as authoritative project rules — strongly prefer following each `rule` and `detail` line below unless the user explicitly contradicts them in this exact turn. " +
+      "These are not optional reminders; they are accumulated working knowledge that the team has decided applies whenever the matching context appears. " +
+      "If a rule seems to conflict with what the user just asked, surface the conflict to the user before deviating."
   const lines: string[] = []
   lines.push(`<${tag}>`)
   lines.push(intro)
@@ -725,6 +786,7 @@ async function pickBaseline(
   const all = await Refiner.experiences()
   const filtered = all
     .filter((e) => !e.archived)
+    .filter((e) => ((e as any).review_status ?? "approved") !== "rejected")
     .filter((e) => BASELINE_KINDS.has(e.kind))
     .filter((e) => layerMatches((e as any).target_layer ?? "both", layer))
 
@@ -813,12 +875,14 @@ async function runPipeline(input: PipelineInput): Promise<{
   let modelInfo: RetrieveLogEntry["model"]
   let llmUsed = false
   let candidateCount = 0
+  let llmTrace: RetrieveLogEntry["llm_trace"]
 
   try {
     // Stage 1 — coarse filter
     const all = await Refiner.experiences()
     const candidates = all
       .filter((e) => !e.archived)
+      .filter((e) => ((e as any).review_status ?? "approved") !== "rejected")
       .filter((e) => layerMatches((e as any).target_layer ?? "both", layer))
     candidateCount = candidates.length
     const summaries = candidates.map(summarize)
@@ -834,6 +898,7 @@ async function runPipeline(input: PipelineInput): Promise<{
         workflowID: input.workflowID,
       })
       let pickedSeeds: Array<{ id: string; reason: string; source: PickSource }>
+      llmTrace = seedRes.trace
       if (seedRes.ok) {
         llmUsed = true
         modelInfo = seedRes.modelInfo
@@ -944,6 +1009,7 @@ async function runPipeline(input: PipelineInput): Promise<{
     llm_used: llmUsed,
     error: entryError,
     duration_ms,
+    llm_trace: llmTrace,
   }
 
   const result: RetrieveResult = {

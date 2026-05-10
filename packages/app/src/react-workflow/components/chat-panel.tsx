@@ -152,6 +152,94 @@ const roleStyle: Record<Role, { border: string; iconBg: string; iconColor: strin
 }
 
 /* ── Format tool content: extract key info, avoid raw JSON ── */
+/* ── Tool one-liner ──
+ *
+ * Turns a (name, input) pair into a single short human line — the
+ * "what is this tool actually doing?" view. The chat-panel renders
+ * one of these per tool inside the collapsed `ToolStrip`. Format
+ * choice mirrors what the user would have typed in a terminal /
+ * editor whenever possible (e.g. `$ ls -la`, `read app.tsx`,
+ * `grep "foo" src/`), because the user said they don't want to look
+ * at JSON schemas — they want to know *what was done*.
+ *
+ * Falls back to `name(<first-string-arg>)` so a never-seen-before
+ * tool still gets a readable line. */
+function toolOneLiner(name: string, input?: Record<string, unknown>): string {
+  const args = (input ?? {}) as Record<string, unknown>
+  const str = (k: string) => {
+    const v = args[k]
+    return typeof v === "string" ? v : undefined
+  }
+  const trim = (s: string, n = 80) =>
+    s.length > n ? s.slice(0, n - 1).trimEnd() + "…" : s
+  const file = str("filePath") ?? str("file_path") ?? str("path") ?? str("file")
+  switch (name) {
+    case "bash":
+    case "shell": {
+      const cmd = str("command") ?? str("cmd") ?? ""
+      return cmd ? `$ ${trim(cmd)}` : "$ (command)"
+    }
+    case "read":
+      return file ? `read ${trim(file, 60)}` : "read"
+    case "write":
+      return file ? `write ${trim(file, 60)}` : "write"
+    case "edit":
+    case "str_replace_editor":
+      return file ? `edit ${trim(file, 60)}` : "edit"
+    case "grep": {
+      const pattern = str("pattern") ?? ""
+      const where = str("path") ?? str("include") ?? ""
+      return `grep ${pattern ? `"${trim(pattern, 40)}"` : ""}${where ? ` ${trim(where, 40)}` : ""}`.trim() || "grep"
+    }
+    case "glob": {
+      const pattern = str("pattern") ?? ""
+      return pattern ? `glob ${trim(pattern, 60)}` : "glob"
+    }
+    case "list":
+    case "ls":
+      return file ? `ls ${trim(file, 60)}` : "ls"
+    case "task": {
+      const desc = str("description") ?? str("subagent_type") ?? ""
+      return desc ? `task: ${trim(desc, 50)}` : "task"
+    }
+    case "sand_table": {
+      const topic = str("topic") ?? str("goal") ?? ""
+      return topic ? `plan: ${trim(topic, 50)}` : "plan"
+    }
+    case "webfetch":
+    case "web_fetch":
+    case "fetch": {
+      const url = str("url") ?? ""
+      return url ? `fetch ${trim(url, 50)}` : "fetch"
+    }
+    case "websearch":
+    case "web_search":
+      return `search ${trim(str("query") ?? "", 60)}`.trim()
+    default: {
+      // Workflow tools — strip the prefix and use the verb.
+      if (name.startsWith("workflow_")) {
+        const verb = name.slice("workflow_".length)
+        const node = str("node_id") ?? str("nodeId") ?? str("id") ?? ""
+        return node ? `${verb} ${trim(node, 24)}` : verb
+      }
+      // Refiner / retrieve / serial / scheduler tools
+      if (name.startsWith("refiner_") || name.startsWith("retrieve_") || name.startsWith("serial_") || name.startsWith("scheduler_") || name.startsWith("knowledge_")) {
+        const verb = name.replace(/^[^_]+_/, "")
+        const target =
+          str("port") ?? str("path") ?? str("query") ?? str("id") ?? str("text") ?? ""
+        return target ? `${verb} ${trim(target, 40)}` : verb
+      }
+      // Generic — first string arg.
+      for (const v of Object.values(args)) {
+        if (typeof v === "string" && v.trim()) {
+          return `${name} ${trim(v, 50)}`
+        }
+      }
+      return name
+    }
+  }
+}
+
 function formatToolContent(name: string, raw: string): string {
   if (!raw) return ''
   try {
@@ -211,59 +299,71 @@ export function FormattedContent({ text }: { text: string }) {
   return <>{text}</>
 }
 
-/* ── Tool call card ── */
+/* ── Tool call card (expanded detail row inside ToolStrip) ──
+ *
+ * Two stacked rows:
+ *   1. Header — name + one-liner (the same line shown in the strip,
+ *      so the user can match strip-rows to detail-rows by eye) +
+ *      duration + status chip.
+ *   2. Output — the actual return / stdout, shown as a monospace
+ *      block. Truncated to a max-height; when content is long, click
+ *      the row to toggle full output. Empty for tools that haven't
+ *      produced output yet.
+ *
+ * The big visual change vs the previous layout: no big tinted icon
+ * box, no JSON dump for the input — input is rendered inline as a
+ * one-liner so the user sees the actual *intent* of the call, not
+ * its schema. */
 export function ToolCallCard({ tool, content, onDetail }: { tool: ToolCall; content: string; onDetail?: (sessionId: string) => void }) {
+  const [outOpen, setOutOpen] = useState(false)
   const display = useMemo(() => formatToolContent(tool.name, content), [tool.name, content])
-  const isTask = tool.name === 'task'
-  const taskDesc = isTask && tool.input?.description ? String(tool.input.description) : undefined
+  const oneLiner = useMemo(() => toolOneLiner(tool.name, tool.input), [tool.name, tool.input])
+  const isTask = tool.name === "task"
   const taskAgent = isTask && tool.input?.subagent_type ? String(tool.input.subagent_type) : undefined
-
   return (
-    <div className={`wf-tool-call wf-tool-call--${tool.status} ${isTask ? 'wf-tool-call--task' : ''}`}>
-      <div className="wf-tool-call-header">
-        <div className={`wf-tool-call-icon wf-tool-call-icon--${tool.status}`}>
-          {tool.status === 'running' ? (
-            <div className="wf-breathing-spinner">
-              {isTask ? <Bot className="h-3.5 w-3.5" strokeWidth={2} /> : <Cog className="h-3.5 w-3.5" strokeWidth={2} />}
-            </div>
-          ) : tool.status === 'completed' ? (
-            <CheckCircle2 className="h-3.5 w-3.5" strokeWidth={2} />
+    <div className={`wf-tool-row wf-tool-row--${tool.status}`}>
+      <button
+        type="button"
+        className="wf-tool-row-head"
+        onClick={() => setOutOpen((v) => !v)}
+        title={display ? (outOpen ? "收起输出" : "查看实际输出") : undefined}
+      >
+        <span className="wf-tool-row-name">{tool.name}</span>
+        <span className="wf-tool-row-line">{oneLiner}</span>
+        {isTask && taskAgent && <span className="wf-tool-row-agent">@{taskAgent}</span>}
+        <span className="wf-tool-row-spacer" />
+        <span className="wf-tool-row-meta">
+          {tool.status === "running" ? (
+            <>
+              <Spin size={9} tone="var(--wf-dim)" line={1.4} />
+              <span>running</span>
+            </>
+          ) : tool.status === "failed" ? (
+            <span className="wf-tool-row-meta-fail">failed</span>
           ) : (
-            <XCircle className="h-3.5 w-3.5" strokeWidth={2} />
+            <>
+              <Check className="h-2.5 w-2.5" strokeWidth={2.4} />
+              <span>{tool.duration ?? "done"}</span>
+            </>
           )}
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="wf-tool-call-name">
-            {isTask ? (taskDesc ?? 'Subagent Task') : tool.name}
-          </div>
-          <div className="wf-tool-call-meta">
-            {isTask && taskAgent && <span className="wf-tool-call-agent">@{taskAgent}</span>}
-            {tool.status === 'running' ? (isTask ? 'Agent working...' : 'Executing...') :
-             tool.status === 'completed' ? `Done${tool.duration ? ` · ${tool.duration}` : ''}` :
-             'Failed'}
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          {isTask && tool.sessionId && onDetail && (
-            <button
-              className="wf-tool-call-detail-btn"
-              onClick={() => onDetail(tool.sessionId!)}
-              title="View subagent session"
-            >
-              <Eye className="h-3 w-3" strokeWidth={2} />
-              Detail
-            </button>
-          )}
-          <div className={`wf-tool-call-status wf-tool-call-status--${tool.status}`}>
-            {tool.status === 'running' && <Spin size={12} tone={isTask ? 'var(--wf-ok)' : '#b07a2e'} line={1.5} />}
-            {tool.status === 'running' ? 'Running' :
-             tool.status === 'completed' ? 'Done' : 'Error'}
-          </div>
-        </div>
-      </div>
-
-      {display && (
-        <div className="wf-tool-call-output whitespace-pre-wrap break-all">{display}</div>
+        </span>
+        {isTask && tool.sessionId && onDetail && (
+          <button
+            type="button"
+            className="wf-tool-row-detail"
+            onClick={(ev) => {
+              ev.stopPropagation()
+              onDetail(tool.sessionId!)
+            }}
+            title="View subagent session"
+          >
+            <Eye className="h-2.5 w-2.5" strokeWidth={2} />
+            session
+          </button>
+        )}
+      </button>
+      {outOpen && display && (
+        <pre className="wf-tool-row-output whitespace-pre-wrap break-all">{display}</pre>
       )}
     </div>
   )
@@ -325,31 +425,47 @@ export function ThinkingCard(props: { content: string; status: 'running' | 'comp
   )
 }
 
-/* ── Reasoning card ── */
+/* ── Reasoning row ──
+ *
+ * Compact bar (icon · "reasoning" · duration · chevron) followed by
+ * the body. Default is OPEN — the user said reasoning is the part
+ * they actually want to see by default; tool calls can stay
+ * collapsed because they're loud.
+ *
+ * Visual distinction from the tool strip: a subtle violet left
+ * accent + brain icon. The whole component still uses the shell's
+ * ink/dim tokens for typography, so it harmonises — it's just a
+ * thin coloured bar that says "this is the model's chain-of-
+ * thought" at a glance. No italic — italic was hurting CJK
+ * readability. */
 function ReasoningCard({ text, time }: { text: string; time?: { start: number; end?: number } }) {
   const duration = time?.end && time?.start ? `${((time.end - time.start) / 1000).toFixed(1)}s` : undefined
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(true)
   return (
-    <div className="wf-reasoning-card">
+    <div className={`wf-reasoning ${open ? "wf-reasoning--open" : ""}`}>
       <button
         type="button"
-        className="wf-reasoning-header"
+        className="wf-reasoning-head"
         onClick={() => setOpen((v) => !v)}
       >
-        <div className="wf-reasoning-icon">
-          <Brain className="h-3.5 w-3.5" strokeWidth={2} />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="wf-reasoning-title">Reasoning</div>
-          <div className="wf-reasoning-meta">{duration ? duration : 'Internal reasoning'}</div>
-        </div>
-        {open
-          ? <ChevronDown className="h-3.5 w-3.5 flex-shrink-0 opacity-60" strokeWidth={2} />
-          : <ChevronRight className="h-3.5 w-3.5 flex-shrink-0 opacity-60" strokeWidth={2} />
-        }
+        <Brain className="h-3 w-3 wf-reasoning-icon" strokeWidth={1.8} aria-hidden />
+        <span className="wf-reasoning-label">reasoning</span>
+        {duration && <span className="wf-reasoning-dur">{duration}</span>}
+        <span className="wf-reasoning-spacer" />
+        {open ? (
+          <ChevronDown className="h-3 w-3 wf-reasoning-caret" strokeWidth={2} />
+        ) : (
+          <ChevronRight className="h-3 w-3 wf-reasoning-caret" strokeWidth={2} />
+        )}
       </button>
+      {/* Body — render through `Markdown` so reasoning that contains
+        * lists, code blocks, headers etc. shows real structure instead
+        * of a wall of plain text. The component already lives in this
+        * file's imports for the agent bubble. */}
       {open && (
-        <div className="wf-reasoning-body whitespace-pre-wrap break-all">{text}</div>
+        <div className="wf-reasoning-body wf-reasoning-md break-words">
+          <Markdown>{text}</Markdown>
+        </div>
       )}
     </div>
   )
@@ -430,53 +546,103 @@ function StepFinishCard({ reason, cost, tokens }: { reason: string; cost: number
   )
 }
 
-/* ── Collapsed tool call group ── */
-function ToolCallGroup({ items, onDetail }: { items: Msg[]; onDetail?: (sessionId: string) => void }) {
+/* ── Collapsed tool strip ──
+ *
+ * Replaces the old card-per-tool layout for runs of consecutive tool
+ * calls. The user explicitly asked for a "single line under thinking"
+ * with a marquee-style view that doesn't flood the conversation, plus
+ * an expand affordance to inspect each tool's actual command + result.
+ *
+ * Layout:
+ *   [⚙] $ ls -la · read app.tsx · grep "foo" …          [3] [▸]
+ *
+ * The lane shows recent one-liners separated by ` · `; on overflow it
+ * scrolls horizontally so the latest stays visible (auto-scroll-right
+ * effect via scrollLeft on update). Click the chevron to expand into
+ * a vertical list of compact `ToolCallCard`s, where each tool shows
+ * its formatted input (command, file, …) and a preview of the actual
+ * output (server return / bash stdout / etc.) — that's the "保留观察
+ * 的入口" the user asked for. */
+function ToolStrip({ items, onDetail }: { items: Msg[]; onDetail?: (sessionId: string) => void }) {
   const [open, setOpen] = useState(false)
-  const completed = items.filter(m => m.toolCall?.status === 'completed').length
-  const failed = items.filter(m => m.toolCall?.status === 'failed').length
-  const toolNames = items.map(m => m.toolCall?.name ?? '').filter(Boolean)
-  const uniqueNames = [...new Set(toolNames)]
-  const preview = uniqueNames.slice(0, 3).join(', ') + (uniqueNames.length > 3 ? ` +${uniqueNames.length - 3}` : '')
+  const laneRef = useRef<HTMLDivElement>(null)
+  const completed = items.filter((m) => m.toolCall?.status === "completed").length
+  const failed = items.filter((m) => m.toolCall?.status === "failed").length
+  const running = items.filter((m) => m.toolCall?.status === "running").length
+  const total = items.length
+
+  // Auto-scroll the lane to the right whenever a new tool one-liner
+  // is appended, so the most recent action is always visible.
+  useEffect(() => {
+    const el = laneRef.current
+    if (!el) return
+    el.scrollLeft = el.scrollWidth
+  }, [items.length, items[items.length - 1]?.toolCall?.status])
 
   return (
-    <div className="wf-tool-group">
+    <div
+      className={`wf-tool-strip ${open ? "wf-tool-strip--open" : ""} ${running > 0 ? "wf-tool-strip--running" : ""}`}
+      data-state={running > 0 ? "running" : failed > 0 ? "failed" : "completed"}
+    >
       <button
-        className="wf-tool-group-header"
-        onClick={() => setOpen(v => !v)}
+        type="button"
+        className="wf-tool-strip-head"
+        onClick={() => setOpen((v) => !v)}
+        title={open ? "收起工具调用" : "展开查看每次工具调用的实际命令与结果"}
       >
-        <div className="wf-tool-group-icon">
-          <Wrench className="h-3.5 w-3.5" strokeWidth={1.8} />
-        </div>
-        <div className="min-w-0 flex-1">
-          <span className="wf-tool-group-title">
-            {items.length} tool calls
-          </span>
-          <span className="wf-tool-group-summary">{preview}</span>
-        </div>
-        <div className="wf-tool-group-badges">
-          {completed > 0 && (
-            <span className="wf-tool-group-badge wf-tool-group-badge--ok">
-              <CheckCircle2 className="h-3 w-3" strokeWidth={2} />
-              {completed}
-            </span>
+        <span className="wf-tool-strip-icon" aria-hidden>
+          {running > 0 ? (
+            <div className="wf-breathing-spinner">
+              <Wrench className="h-3 w-3" strokeWidth={1.8} />
+            </div>
+          ) : failed > 0 ? (
+            <XCircle className="h-3 w-3" strokeWidth={1.8} />
+          ) : (
+            <Wrench className="h-3 w-3" strokeWidth={1.8} />
           )}
+        </span>
+        <span className="wf-tool-strip-label">tools</span>
+        <div className="wf-tool-strip-lane" ref={laneRef}>
+          <div className="wf-tool-strip-track">
+            {items.map((m, idx) => {
+              const tc = m.toolCall!
+              const line = toolOneLiner(tc.name, tc.input)
+              return (
+                <span
+                  key={m.id}
+                  className="wf-tool-strip-item"
+                  data-status={tc.status}
+                >
+                  <span className="wf-tool-strip-item-text">{line}</span>
+                  {idx < items.length - 1 && (
+                    <span className="wf-tool-strip-sep" aria-hidden> · </span>
+                  )}
+                </span>
+              )
+            })}
+          </div>
+        </div>
+        <span className="wf-tool-strip-count">
+          {running > 0 && <span className="wf-tool-strip-count-dot" data-tone="run" aria-hidden />}
+          {completed > 0 && <span>{completed}</span>}
           {failed > 0 && (
-            <span className="wf-tool-group-badge wf-tool-group-badge--bad">
-              <XCircle className="h-3 w-3" strokeWidth={2} />
-              {failed}
-            </span>
+            <span className="wf-tool-strip-count-fail">×{failed}</span>
           )}
-        </div>
-        {open
-          ? <ChevronDown className="h-3.5 w-3.5 text-[var(--wf-dim)] flex-shrink-0" strokeWidth={2} />
-          : <ChevronRight className="h-3.5 w-3.5 text-[var(--wf-dim)] flex-shrink-0" strokeWidth={2} />
-        }
+          <span className="wf-tool-strip-count-total">/{total}</span>
+        </span>
+        <span className="wf-tool-strip-caret" aria-hidden>
+          {open ? <ChevronDown className="h-3 w-3" strokeWidth={2} /> : <ChevronRight className="h-3 w-3" strokeWidth={2} />}
+        </span>
       </button>
       {open && (
-        <div className="wf-tool-group-body wf-fade-in">
-          {items.map(item => (
-            <ToolCallCard key={item.id} tool={item.toolCall!} content={item.content} onDetail={onDetail} />
+        <div className="wf-tool-strip-body wf-fade-in">
+          {items.map((item) => (
+            <ToolCallCard
+              key={item.id}
+              tool={item.toolCall!}
+              content={item.content}
+              onDetail={onDetail}
+            />
           ))}
         </div>
       )}
@@ -493,13 +659,13 @@ function groupMessages(messages: Msg[]): GroupedItem[] {
   const result: GroupedItem[] = []
   let toolBuf: Msg[] = []
 
+  // Always group consecutive tool calls into a strip — even one-tool
+  // runs become a one-liner row instead of a full card. The user
+  // doesn't want the chat to keep being flooded by tool boxes; the
+  // strip preserves the observation entry-point via its expand button.
   const flushTools = () => {
     if (toolBuf.length === 0) return
-    if (toolBuf.length >= 3 && toolBuf.every(m => m.toolCall?.status !== 'running')) {
-      result.push({ type: 'tool-group', items: [...toolBuf] })
-    } else {
-      toolBuf.forEach(item => result.push({ type: 'msg', item }))
-    }
+    result.push({ type: 'tool-group', items: [...toolBuf] })
     toolBuf = []
   }
 
@@ -580,6 +746,27 @@ export function ChatPanel(props: Props) {
     el.style.height = 'auto'
     el.style.height = `${Math.min(el.scrollHeight, 120)}px`
   }, [])
+
+  /* Re-run autoResize ONLY when the textarea's parent WIDTH changes
+   * (the inspector splitbar drag changes width; the canvas/chat splitbar
+   * drag changes height — height changes must not trigger autoResize
+   * because that creates a feedback loop where the composer appears to
+   * "lift" / bounce. Watching the parent (not the textarea itself) avoids
+   * the self-triggered loop. */
+  useEffect(() => {
+    const el = textareaRef.current
+    const parent = el?.parentElement?.parentElement // .composer__field → .composer
+    if (!el || !parent || typeof ResizeObserver === 'undefined') return
+    let lastWidth = parent.clientWidth
+    const ro = new ResizeObserver(() => {
+      const w = parent.clientWidth
+      if (w === lastWidth) return // height-only change → ignore
+      lastWidth = w
+      autoResize()
+    })
+    ro.observe(parent)
+    return () => ro.disconnect()
+  }, [autoResize])
 
   // Scroll: instant on first render or bulk load, smooth on incremental new messages
   // Only trigger when message count actually changes (not on reference changes)
@@ -955,7 +1142,26 @@ export function ChatPanel(props: Props) {
         ref={messagesRef}
       >
         {(() => {
-          const allGroups = groupMessages(props.messages)
+          // Hide internal orchestration prompts from the chat. These are
+          // long JSON+prompt blobs that workflow-panel.tsx generates when
+          // the user clicks "Create graph", "Run", or approves a plan —
+          // they're necessary instructions to the LLM but render as
+          // confusing user text in chat. We detect them by the canonical
+          // first-line markers used by `runApprovedPlan` / `executeWorkflow`
+          // / `revisePlanWithContext` (workflow-panel.tsx). Add a new
+          // marker here when a new internal-send call is added.
+          const INTERNAL_PROMPT_MARKERS = [
+            'The user approved this workflow plan',
+            'Create the workflow graph from the latest approved plan',
+            'Execution routing is confirmed for workflow node',
+            'Revise the current workflow plan using this additional context',
+          ]
+          const visibleMessages = props.messages.filter((m) => {
+            if (m.role !== 'user') return true
+            const head = (m.content ?? '').split('\n', 1)[0] ?? ''
+            return !INTERNAL_PROMPT_MARKERS.some((p) => head.startsWith(p))
+          })
+          const allGroups = groupMessages(visibleMessages)
           const truncated = allGroups.length > visibleCount
           const groups = truncated ? allGroups.slice(-visibleCount) : allGroups
           // The button serves two staged purposes:
@@ -995,12 +1201,12 @@ export function ChatPanel(props: Props) {
               </button>
             )}
             {groups.map((group, i) => {
-          // ── Tool group (collapsed) — left ──
+          // ── Tool strip (collapsed marquee) — left ──
           if (group.type === 'tool-group') {
             return (
               <div key={`tg-${i}`} className="wf-msg-row wf-msg-row--left wf-slide-up" style={{ animationDelay: `${i * 30}ms` }}>
                 <div className="wf-msg-left-content">
-                  <ToolCallGroup items={group.items} onDetail={props.onTaskDetail} />
+                  <ToolStrip items={group.items} onDetail={props.onTaskDetail} />
                 </div>
               </div>
             )
@@ -1246,6 +1452,42 @@ export function ChatPanel(props: Props) {
 
       {/* Input */}
       <div className="wf-chat-input-bar">
+        {/* Composer chips — real built-in slash commands surfaced as
+          * one-click chips so the user doesn't need to type `/`. Each
+          * chip inserts its trigger into the textarea and focuses it;
+          * the existing slash-command popover handles resolution from
+          * there.
+          *
+          * The design template's prototype chips were /plan, /retrieve,
+          * /tool, attach — those weren't backed by real commands in this
+          * runtime. We now show the actual server-registered commands
+          * (compact / fork / new / model / undo / redo) plus /notrack
+          * as the privacy opt-out, capped to 4 to keep the row tidy. */}
+        <div className="wf-chat-chips" aria-label="Quick commands">
+          {(['compact', 'fork', 'notrack', 'model'] as const).map((cmd) => (
+            <button
+              key={cmd}
+              type="button"
+              className="wf-chat-chip"
+              onClick={() => {
+                setMsg('/' + cmd + ' ')
+                if (textareaRef.current) {
+                  textareaRef.current.focus()
+                  textareaRef.current.style.height = 'auto'
+                  textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 120)}px`
+                }
+              }}
+              title={
+                cmd === 'compact' ? 'Compact: summarise + compress this conversation'
+                : cmd === 'fork' ? 'Fork this session into a new branch'
+                : cmd === 'notrack' ? 'Send this turn without recording it to the experience library'
+                : 'Open the model picker'
+              }
+            >
+              /{cmd}
+            </button>
+          ))}
+        </div>
         <div className="wf-chat-input-wrap" style={{ position: 'relative' }}>
           {/* Slash popover — floats above the input bar */}
           <SlashPopover

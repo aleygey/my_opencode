@@ -10,6 +10,7 @@ import {
   FileText,
   Layers,
   MessageSquarePlus,
+  Play,
   ScrollText,
   Send,
   Sparkles,
@@ -38,7 +39,13 @@ export type SandTableDiscussion = {
   context: string
   round: number
   max_rounds: number
-  status: "running" | "approved" | "completed" | "failed"
+  /* `awaiting_start` is the pre-confirmation pause emitted by the
+   * backend when `experimental.sand_table.confirm_before_start` is on.
+   * The orchestrator's tool call is still pending; the user picks
+   * planner / evaluator agent + model in the confirm panel below and
+   * clicks Start, which flips this to `running` and lets the rounds
+   * proceed. */
+  status: "awaiting_start" | "running" | "approved" | "completed" | "failed"
   participants: Array<{
     role: "planner" | "evaluator"
     sessionID: string
@@ -50,6 +57,21 @@ export type SandTableDiscussion = {
   current_plan?: string
   last_evaluation?: string
   messages: SandTableMessage[]
+  /* Surfaced when status === "awaiting_start" so the confirm form can
+   * pre-fill from the persisted config (`experimental.sand_table.{
+   * planner_agent, evaluator_agent }`) without an extra round-trip. */
+  resolved_planner_agent?: string
+  resolved_evaluator_agent?: string
+}
+
+/* Per-call overrides accepted by `POST /workflow/sand_table/:id/start`.
+ * Mirrors `StartOverrides` on the backend — anything left undefined
+ * keeps the previously-resolved value from config. */
+export type SandTableStartOverrides = {
+  planner_model?: { providerID: string; modelID: string }
+  evaluator_model?: { providerID: string; modelID: string }
+  planner_agent?: string
+  evaluator_agent?: string
 }
 
 type Props = {
@@ -60,6 +82,31 @@ type Props = {
   onBack: () => void
   onStop?: () => void
   onSend: (text: string) => void
+  /* Available primary agents the user can pick for planner / evaluator.
+   *  Defaults to ["sandtable"] when not provided — same fallback as the
+   *  config dialog. The bundled `sandtable` agent is always implicitly
+   *  available; this list typically also includes the orchestrator and
+   *  any user-defined non-subagent / non-hidden agents. */
+  agentOptions?: string[]
+  /* Available models in `providerID/modelID` form (matches the chat
+   *  panel's model picker). Empty list ⇒ no model dropdown is rendered
+   *  in the confirm panel; the round will use the orchestrator's
+   *  current model by default. */
+  modelOptions?: string[]
+  /* Called when the user confirms the awaiting_start pause. Fires the
+   *  POST /workflow/sand_table/:id/start with the chosen overrides;
+   *  parent is responsible for the actual HTTP call + state refresh. */
+  onStart?: (overrides: SandTableStartOverrides) => void
+  /** Per-role inner-session messages — the planner/evaluator agents
+   *  each run their own inner session with reasoning + tool calls
+   *  before posting back to the sand-table thread. The bottom-left
+   *  stream pane renders these live so the user can watch the
+   *  current agent think. Keyed by role; missing key means no
+   *  inner session yet. */
+  innerMessages?: {
+    planner?: Array<{ id: string; role: string; text?: string; tool?: string; out?: string; t?: string; dur?: string; stream?: boolean }>
+    evaluator?: Array<{ id: string; role: string; text?: string; tool?: string; out?: string; t?: string; dur?: string; stream?: boolean }>
+  }
 }
 
 const roleTitle: Record<Role, string> = {
@@ -132,6 +179,261 @@ function RoundsIndicator({ round, max }: { round: number; max: number }) {
         {round}
         <span className="text-[var(--wf-dim)]">/{max}</span>
       </span>
+    </div>
+  )
+}
+
+/* ── Inner-session live stream pane (bottom-left) ──
+ * Shows the current planner or evaluator agent's INNER session in
+ * real time — including reasoning, tool calls, and streamed text — so
+ * the user can watch the agent think before its output lands in the
+ * main discussion thread. Switches between planner / evaluator via
+ * a two-button segmented bar at the top. */
+function InnerStreamPane({
+  participants,
+  innerMessages,
+  activeRole,
+}: {
+  participants: {
+    planner?: { sessionID: string; model: string }
+    evaluator?: { sessionID: string; model: string }
+  }
+  innerMessages?: Props["innerMessages"]
+  activeRole: "planner" | "evaluator"
+}) {
+  const [role, setRole] = useState<"planner" | "evaluator">(activeRole)
+  // Auto-follow: when the externally-active role changes (e.g. evaluator
+  // takes over from planner mid-round), switch the stream view to it
+  // so the user always sees the freshest agent.
+  const lastActive = useRef(activeRole)
+  useEffect(() => {
+    if (activeRole !== lastActive.current) {
+      setRole(activeRole)
+      lastActive.current = activeRole
+    }
+  }, [activeRole])
+  const messages = role === "planner"
+    ? (innerMessages?.planner ?? [])
+    : (innerMessages?.evaluator ?? [])
+  const part = participants[role]
+  const tone = roleTone[role]
+  const RoleIcon = tone.icon
+  const end = useRef<HTMLDivElement>(null)
+  // Auto-scroll on new messages.
+  useEffect(() => {
+    end.current?.scrollIntoView({ behavior: "smooth", block: "end" })
+  }, [messages.length, role])
+
+  return (
+    <div className="wf-sand-inner-stream">
+      <div className="wf-sand-inner-stream-tabs" role="tablist">
+        {(["planner", "evaluator"] as const).map((r) => {
+          const p = participants[r]
+          if (!p) return null
+          const t = roleTone[r]
+          const Icon = t.icon
+          return (
+            <button
+              key={r}
+              type="button"
+              role="tab"
+              aria-selected={role === r}
+              className="wf-sand-inner-stream-tab"
+              data-active={role === r ? "true" : "false"}
+              onClick={() => setRole(r)}
+            >
+              <span
+                className="flex h-4 w-4 items-center justify-center rounded-md"
+                style={{ background: t.bg, color: t.text }}
+              >
+                <Icon className="h-2.5 w-2.5" strokeWidth={1.8} />
+              </span>
+              {roleTitle[r]}
+            </button>
+          )
+        })}
+      </div>
+      <div className="wf-sand-inner-stream-meta" title={part?.sessionID}>
+        <RoleIcon className="h-3 w-3" strokeWidth={1.8} style={{ color: tone.text }} />
+        <span className="font-mono">{part?.model ?? "—"}</span>
+        <span className="ml-auto font-mono text-[10px]">
+          {part ? `${part.sessionID.slice(0, 8)}…` : "—"}
+        </span>
+      </div>
+      <div className="wf-sand-inner-stream-body">
+        {messages.length === 0 ? (
+          <div className="wf-sand-inner-stream-empty">
+            <Spin size={11} line={1.6} tone={tone.text} />
+            <span>Waiting for {roleTitle[role].toLowerCase()} to start thinking…</span>
+          </div>
+        ) : (
+          <>
+            {messages.map((m) => (
+              <InnerStreamMessage key={m.id} m={m} tone={tone} />
+            ))}
+            <div ref={end} />
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+type InnerMsg = {
+  id: string
+  role: string
+  text?: string
+  tool?: string
+  out?: string
+  t?: string
+  dur?: string
+  stream?: boolean
+}
+
+function InnerStreamMessage({
+  m,
+  tone,
+}: {
+  m: InnerMsg
+  tone: { text: string; bubble: string; bubbleBorder: string }
+}) {
+  if (m.role === "tool") {
+    return (
+      <div className="wf-sand-inner-row">
+        <span className="wf-sand-inner-role wf-sand-inner-role-tool">tool</span>
+        <span className="wf-sand-inner-tool-cmd">{m.tool ?? "(?)"}</span>
+        {m.dur && <span className="wf-sand-inner-meta">{m.dur}</span>}
+        {m.t && <span className="wf-sand-inner-meta">{m.t}</span>}
+        {m.out && (
+          <pre className="wf-sand-inner-tool-out">{m.out.slice(0, 300)}</pre>
+        )}
+      </div>
+    )
+  }
+  if (m.role === "reason" || m.role === "thinking") {
+    return (
+      <div className="wf-sand-inner-row">
+        <span className="wf-sand-inner-role wf-sand-inner-role-reason">thinking</span>
+        {m.dur && <span className="wf-sand-inner-meta">{m.dur}</span>}
+        <div className="wf-sand-inner-reason">{m.text}</div>
+      </div>
+    )
+  }
+  // agent / system / default
+  return (
+    <div className="wf-sand-inner-row">
+      <span
+        className="wf-sand-inner-role wf-sand-inner-role-agent"
+        style={{ color: tone.text }}
+      >
+        {m.role === "system" ? "system" : "agent"}
+      </span>
+      {m.t && <span className="wf-sand-inner-meta">{m.t}</span>}
+      <div className="wf-sand-inner-agent">
+        {m.text}
+        {m.stream && <span className="wf-sand-inner-caret" />}
+      </div>
+    </div>
+  )
+}
+
+/* ── Role tab body (Plan / Evaluation) ──
+ *
+ * Shows the role's final artifact (plan markdown or evaluation
+ * markdown) followed by that role's inner-session stream so the
+ * user can audit how the agent arrived at it. Replaces the previous
+ * dual-panel design (separate artifact tab + footer InnerStreamPane).
+ *
+ * For evaluator, multiple rounds accumulate into one flat
+ * `innerMessages` array — we group them on the fly by inserting a
+ * "Round N" divider whenever a round number transition is detected
+ * via the optional `round` field. The user pointed out evaluator
+ * "可能有多个" sessions worth of activity. */
+function RoleTabBody({
+  role,
+  hasArtifact,
+  artifactText,
+  participant,
+  innerMessages,
+  thinkingRole,
+  round,
+  model,
+  emptyHint,
+}: {
+  role: "planner" | "evaluator"
+  hasArtifact: boolean
+  artifactText: string
+  participant?: { sessionID: string; model: { providerID: string; modelID: string } }
+  innerMessages?: InnerMsg[]
+  thinkingRole?: Role | null
+  round: number
+  model?: string
+  emptyHint: string
+}) {
+  const tone = roleTone[role]
+  const stream = innerMessages ?? []
+  const hasStream = stream.length > 0
+  const isThinking = thinkingRole === role
+  const fullSessionID = participant?.sessionID
+
+  if (!hasArtifact && !hasStream && !isThinking) {
+    return <EmptyHint>{emptyHint}</EmptyHint>
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      {/* Artifact (final plan / evaluation text) — rendered first so
+        * the user sees the conclusion at a glance, then can scroll
+        * down to see the reasoning that produced it. */}
+      {hasArtifact && (
+        <section>
+          <div className="wf-sand-section-hd">
+            <span
+              className="wf-sand-section-hd-pip"
+              style={{ background: tone.text }}
+              aria-hidden
+            />
+            <span>{role === "planner" ? "Plan" : "Evaluation"}</span>
+            {model && (
+              <span className="wf-sand-section-hd-meta font-mono">{model}</span>
+            )}
+          </div>
+          <div className="wf-sand-doc">
+            <Markdown>{artifactText}</Markdown>
+          </div>
+        </section>
+      )}
+
+      {/* Inner-session stream — reasoning + tool calls + agent text. */}
+      {(hasStream || isThinking) && (
+        <section>
+          <div className="wf-sand-section-hd">
+            <span
+              className="wf-sand-section-hd-pip"
+              style={{ background: tone.text, opacity: 0.55 }}
+              aria-hidden
+            />
+            <span>{role === "planner" ? "Planner session" : "Evaluator session"}</span>
+            {fullSessionID && (
+              <span
+                className="wf-sand-section-hd-meta font-mono"
+                title={fullSessionID}
+              >
+                {fullSessionID.slice(0, 8)}…
+              </span>
+            )}
+          </div>
+          {hasStream ? (
+            <div className="wf-sand-inner-rows">
+              {stream.map((m) => (
+                <InnerStreamMessage key={m.id} m={m} tone={tone} />
+              ))}
+            </div>
+          ) : isThinking ? (
+            <AgentThinkingPanel role={role} round={round} model={model} />
+          ) : null}
+        </section>
+      )}
     </div>
   )
 }
@@ -223,6 +525,7 @@ export function SandTableSessionView(props: Props) {
   }
 
   const run = props.nodeStatus === "running" || props.discussion.status === "running"
+  const awaiting = props.discussion.status === "awaiting_start"
 
   const participantsByRole = useMemo(
     () =>
@@ -418,41 +721,39 @@ export function SandTableSessionView(props: Props) {
               </LeftTabButton>
             </div>
 
-            {/* Tab body */}
+            {/* Tab body — artifact (plan/eval text) + the corresponding
+              * agent's session stream rendered inline beneath it.
+              * Previous design split these into TWO panels (artifact tab
+              * on top, separate `InnerStreamPane` footer below) which the
+              * user pointed out was redundant: "左下的两个应该合并成一个，
+              * 就是用于查看对应 session 的". Now each role-tab is the
+              * one viewer for that role. */}
             <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
               {tab === "plan" && (
-                hasPlan ? (
-                  <div className="wf-sand-doc">
-                    <Markdown>{planText}</Markdown>
-                  </div>
-                ) : thinkingRole === "planner" ? (
-                  // Planner is composing and hasn't posted yet. Mirror its
-                  // activity here so the Plan tab isn't empty during round 1.
-                  // Note: we explicitly do NOT render the evaluator's thinking
-                  // panel here — the Plan tab is about the planner's artifact.
-                  <AgentThinkingPanel
-                    role="planner"
-                    round={props.discussion.round || 1}
-                    model={plannerModel}
-                  />
-                ) : (
-                  <EmptyHint>暂无计划 — 等待 planner 开始草拟。</EmptyHint>
-                )
+                <RoleTabBody
+                  role="planner"
+                  hasArtifact={hasPlan}
+                  artifactText={planText}
+                  participant={participantsByRole.planner}
+                  innerMessages={props.innerMessages?.planner}
+                  thinkingRole={thinkingRole}
+                  round={props.discussion.round || 1}
+                  model={plannerModel}
+                  emptyHint="暂无计划 — 等待 planner 开始草拟。"
+                />
               )}
               {tab === "evaluation" && (
-                hasEval ? (
-                  <div className="wf-sand-doc">
-                    <Markdown>{evalText}</Markdown>
-                  </div>
-                ) : thinkingRole === "evaluator" ? (
-                  <AgentThinkingPanel
-                    role="evaluator"
-                    round={props.discussion.round || 1}
-                    model={evaluatorModel}
-                  />
-                ) : (
-                  <EmptyHint>暂无评估 — evaluator 会在首轮计划出现后响应。</EmptyHint>
-                )
+                <RoleTabBody
+                  role="evaluator"
+                  hasArtifact={hasEval}
+                  artifactText={evalText}
+                  participant={participantsByRole.evaluator}
+                  innerMessages={props.innerMessages?.evaluator}
+                  thinkingRole={thinkingRole}
+                  round={props.discussion.round || 1}
+                  model={evaluatorModel}
+                  emptyHint="暂无评估 — evaluator 会在首轮计划出现后响应。"
+                />
               )}
               {tab === "context" && (
                 <ContextTabBody
@@ -461,32 +762,6 @@ export function SandTableSessionView(props: Props) {
                 />
               )}
             </div>
-
-            {/* Participants footer */}
-            {(participantsByRole.planner || participantsByRole.evaluator) && (
-              <div className="wf-sand-participants-footer">
-                {(["planner", "evaluator"] as const).map((role) => {
-                  const p = participantsByRole[role]
-                  if (!p) return null
-                  const tone = roleTone[role]
-                  const Icon = tone.icon
-                  return (
-                    <div key={role} className="wf-sand-participant-row">
-                      <div
-                        className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-md"
-                        style={{ background: tone.bg, color: tone.text }}
-                      >
-                        <Icon className="h-2.5 w-2.5" strokeWidth={1.8} />
-                      </div>
-                      <span className="text-[10.5px] font-semibold text-[var(--wf-ink)]">{roleTitle[role]}</span>
-                      <span className="ml-auto truncate font-mono text-[10px] text-[var(--wf-dim)]" title={p.sessionID}>
-                        {p.sessionID.slice(0, 8)}…
-                      </span>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
           </div>
 
           <SplitBar axis="x" {...left.bind} />
@@ -513,7 +788,14 @@ export function SandTableSessionView(props: Props) {
             {/* Thread body */}
             <div className="min-h-0 flex-1 overflow-y-auto">
               <div className="mx-auto w-full max-w-[1160px] px-4 py-4">
-                {revealedMessages.length === 0 && !thinkingRole ? (
+                {awaiting ? (
+                  <AwaitingStartPanel
+                    discussion={props.discussion}
+                    agentOptions={props.agentOptions ?? []}
+                    modelOptions={props.modelOptions ?? []}
+                    onStart={props.onStart}
+                  />
+                ) : revealedMessages.length === 0 && !thinkingRole ? (
                   <EmptyHint>
                     Waiting for the planner to propose an approach. You can add context below to steer the discussion.
                   </EmptyHint>
@@ -880,6 +1162,179 @@ function TopicHero({ topic }: { topic: string }) {
           )}
         </button>
       )}
+    </div>
+  )
+}
+
+/* ── Awaiting-start confirmation panel ──
+ *
+ * Rendered into the dialogue thread column when
+ * `discussion.status === "awaiting_start"`. Lets the user override the
+ * planner / evaluator agent + model BEFORE the rounds begin — useful
+ * when the persisted config is wrong for this particular topic, or
+ * when the user just wants to verify the routing before paying for
+ * inference. Submitting calls `onStart(overrides)`, which the parent
+ * wires to `POST /workflow/sand_table/:id/start`. The orchestrator's
+ * tool call stays parked while the user picks; once Start fires the
+ * backend resolves the parked promise, flips status to running, and
+ * the polling loop picks up the first round shortly after. */
+function AwaitingStartPanel({
+  discussion,
+  agentOptions,
+  modelOptions,
+  onStart,
+}: {
+  discussion: SandTableDiscussion
+  agentOptions: string[]
+  modelOptions: string[]
+  onStart?: (overrides: SandTableStartOverrides) => void
+}) {
+  const [plannerAgent, setPlannerAgent] = useState<string>(
+    discussion.resolved_planner_agent ?? "",
+  )
+  const [evaluatorAgent, setEvaluatorAgent] = useState<string>(
+    discussion.resolved_evaluator_agent ?? "",
+  )
+  const [plannerModel, setPlannerModel] = useState<string>("")
+  const [evaluatorModel, setEvaluatorModel] = useState<string>("")
+  const [submitting, setSubmitting] = useState(false)
+
+  // The bundled `sandtable` agent is always available even if the
+  // backend's agent list omits it (e.g. when no custom agent is
+  // configured). We also dedupe in case the backend already includes it.
+  const agents = useMemo(() => {
+    const set = new Set<string>(["sandtable", ...agentOptions])
+    return [...set]
+  }, [agentOptions])
+
+  const splitModel = (v: string): { providerID: string; modelID: string } | undefined => {
+    if (!v) return undefined
+    const slash = v.indexOf("/")
+    if (slash < 0) return undefined
+    return { providerID: v.slice(0, slash), modelID: v.slice(slash + 1) }
+  }
+
+  const submit = async () => {
+    if (!onStart) return
+    setSubmitting(true)
+    try {
+      onStart({
+        planner_agent: plannerAgent || undefined,
+        evaluator_agent: evaluatorAgent || undefined,
+        planner_model: splitModel(plannerModel),
+        evaluator_model: splitModel(evaluatorModel),
+      })
+    } finally {
+      // Don't reset submitting — backend flips status to running and
+      // this panel unmounts. If the call errors, parent should refetch
+      // and we'll re-render with submitting fresh.
+    }
+  }
+
+  return (
+    <div className="wf-sand-await">
+      <div className="wf-sand-await-head">
+        <div className="wf-sand-await-pip" aria-hidden />
+        <div className="flex flex-col gap-0.5">
+          <span className="wf-sand-await-title">等待确认</span>
+          <span className="wf-sand-await-sub">
+            选择 planner / evaluator 的 agent 与 model，确认后开始 sand-table 推演。
+          </span>
+        </div>
+      </div>
+
+      <div className="wf-sand-await-grid">
+        {/* Planner column */}
+        <fieldset className="wf-sand-await-card">
+          <legend className="wf-sand-await-card-legend">
+            <Bot className="h-3 w-3" strokeWidth={2} style={{ color: roleTone.planner.text }} />
+            Planner
+          </legend>
+          <label className="wf-sand-await-field">
+            <span>Agent</span>
+            <select
+              value={plannerAgent}
+              onChange={(e) => setPlannerAgent(e.target.value)}
+            >
+              <option value="">默认 (sandtable)</option>
+              {agents.map((a) => (
+                <option key={`p-${a}`} value={a}>
+                  {a}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="wf-sand-await-field">
+            <span>Model</span>
+            <select
+              value={plannerModel}
+              onChange={(e) => setPlannerModel(e.target.value)}
+            >
+              <option value="">默认 (orchestrator current)</option>
+              {modelOptions.map((m) => (
+                <option key={`p-${m}`} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          </label>
+        </fieldset>
+
+        {/* Evaluator column */}
+        <fieldset className="wf-sand-await-card">
+          <legend className="wf-sand-await-card-legend">
+            <BrainCircuit
+              className="h-3 w-3"
+              strokeWidth={2}
+              style={{ color: roleTone.evaluator.text }}
+            />
+            Evaluator
+          </legend>
+          <label className="wf-sand-await-field">
+            <span>Agent</span>
+            <select
+              value={evaluatorAgent}
+              onChange={(e) => setEvaluatorAgent(e.target.value)}
+            >
+              <option value="">默认 (sandtable)</option>
+              {agents.map((a) => (
+                <option key={`e-${a}`} value={a}>
+                  {a}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="wf-sand-await-field">
+            <span>Model</span>
+            <select
+              value={evaluatorModel}
+              onChange={(e) => setEvaluatorModel(e.target.value)}
+            >
+              <option value="">沿用 planner</option>
+              {modelOptions.map((m) => (
+                <option key={`e-${m}`} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          </label>
+        </fieldset>
+      </div>
+
+      <div className="wf-sand-await-foot">
+        <span className="wf-sand-await-hint">
+          留空表示使用配置默认值。orchestrator 在 tool 调用时仍可显式覆盖。
+        </span>
+        <button
+          type="button"
+          className="wf-sand-await-start"
+          disabled={submitting || !onStart}
+          onClick={() => void submit()}
+        >
+          <Play className="h-3 w-3" strokeWidth={2.5} fill="currentColor" />
+          {submitting ? "Starting…" : "Start"}
+        </button>
+      </div>
     </div>
   )
 }

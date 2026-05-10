@@ -189,6 +189,93 @@ if (!skipInstall) {
   await $`bun install --os="*" --cpu="*" @opentui/core@${pkg.dependencies["@opentui/core"]}`
   await $`bun install --os="*" --cpu="*" @parcel/watcher@${pkg.dependencies["@parcel/watcher"]}`
 }
+
+// ── Serial helper sidecar ─────────────────────────────────────────────
+// We can't link `serialport` into the main bun-compiled binary because
+// bun 1.3.10 doesn't implement `uv_default_loop`, which serialport's
+// NAPI bindings need at load time (oven-sh/bun#18546). Instead we
+// build a small Node-targeted helper script and ship it alongside the
+// main binary together with a flat node_modules tree containing
+// `serialport` + its transitive deps. The main binary spawns this
+// helper on first serial use and forwards SerialPort operations over
+// stdio JSON-RPC. See `src/serial/serial.helper.ts` and
+// `src/serial/serial.bun.ts` for the helper and driver respectively.
+console.log("Building serial helper")
+const stagedSerialHelper = path.join(dir, "dist", ".serial-helper-staged")
+await $`rm -rf ${stagedSerialHelper}`
+await $`mkdir -p ${stagedSerialHelper}`
+// Bundle helper.js once. `serialport` (+ its `@serialport/*` deps) is
+// loaded at runtime from the shipped node_modules — keeping it
+// external lets prebuilds resolve correctly via node-gyp-build on the
+// target host.
+const serialportExternals = [
+  "serialport",
+  "@serialport/bindings-cpp",
+  "@serialport/binding-mock",
+  "@serialport/bindings-interface",
+  "@serialport/parser-byte-length",
+  "@serialport/parser-cctalk",
+  "@serialport/parser-delimiter",
+  "@serialport/parser-inter-byte-timeout",
+  "@serialport/parser-packet-length",
+  "@serialport/parser-readline",
+  "@serialport/parser-ready",
+  "@serialport/parser-regex",
+  "@serialport/parser-slip-encoder",
+  "@serialport/parser-spacepacket",
+  "@serialport/stream",
+  "node-addon-api",
+  "node-gyp-build",
+  "debug",
+  "ms",
+]
+await Bun.build({
+  target: "node",
+  entrypoints: ["./src/serial/serial.helper.ts"],
+  outdir: stagedSerialHelper,
+  format: "cjs",
+  external: serialportExternals,
+  minify: false,
+})
+// Rename the bundled file to `helper.js` so the driver's locator can
+// find it without knowing about bun's <basename>.js convention.
+const bundledHelperJs = path.join(stagedSerialHelper, "serial.helper.js")
+const finalHelperJs = path.join(stagedSerialHelper, "helper.js")
+if (fs.existsSync(bundledHelperJs)) {
+  await fs.promises.rename(bundledHelperJs, finalHelperJs)
+}
+// Use `npm install` (not bun) for the helper's node_modules: bun's
+// default install layout is isolated (.bun/), which doesn't give us
+// a flat tree we can copy. We want classic flat node_modules so the
+// helper can `require("serialport")` and node-gyp-build can find the
+// platform prebuild without any path tricks.
+await $`mkdir -p ${stagedSerialHelper}`
+await Bun.file(path.join(stagedSerialHelper, "package.json")).write(
+  JSON.stringify(
+    {
+      name: "opencode-serial-helper",
+      version: Script.version,
+      private: true,
+      dependencies: { serialport: pkg.optionalDependencies.serialport },
+    },
+    null,
+    2,
+  ),
+)
+console.log("Installing serialport for helper (bun --linker=hoisted, all-platform prebuilds)")
+// We use `bun install --linker=hoisted` to produce a CLASSIC flat
+// node_modules tree. Bun's default isolated linker stashes transitive
+// deps under `node_modules/.bun/<name>+<version>/`, which would force
+// the helper to walk symlinks at runtime. Hoisted layout matches what
+// node_modules typically looks like under npm/yarn — `serialport`
+// requires `@serialport/...` packages directly from `<helper>/node_modules`.
+//
+// `--ignore-scripts` skips serialport's postinstall (which would try
+// to rebuild bindings from source). We only want the prebuilt binaries
+// that ship inside `@serialport/bindings-cpp` — every platform's
+// prebuild lives in the same package (prebuildify style), so a single
+// install satisfies all cross-compiled targets.
+await $`bun install --linker=hoisted --ignore-scripts --no-save`.cwd(stagedSerialHelper)
 for (const item of targets) {
   const name = [
     pkg.name,
@@ -355,6 +442,25 @@ for (const item of targets) {
       2,
     ),
   )
+
+  // Stage the serial helper next to the binary. Layout:
+  //   dist/<name>/bin/opencode
+  //   dist/<name>/serial-helper/helper.js
+  //   dist/<name>/serial-helper/node_modules/...
+  // The bun-compiled main binary's `serial.bun.ts` driver looks here
+  // first when it needs to spawn the Node sidecar.
+  const serialDest = path.join(dir, `dist/${name}/serial-helper`)
+  await $`mkdir -p ${serialDest}`
+  await fs.promises.copyFile(
+    finalHelperJs,
+    path.join(serialDest, "helper.js"),
+  )
+  // Copy the entire flat node_modules tree (serialport + its scoped
+  // deps + node-gyp-build / node-addon-api / debug / ms). The
+  // bindings-cpp package contains prebuilds for every supported
+  // platform, so a single copy satisfies all cross-compiled targets.
+  await $`cp -R ${path.join(stagedSerialHelper, "node_modules")} ${serialDest}/`
+
   binaries[name] = Script.version
 }
 

@@ -417,6 +417,18 @@ test("Agent.list keeps the default agent first and sorts the rest by name", asyn
   })
 })
 
+test("Agent.list puts orchestrator first when no default_agent config", async () => {
+  await using tmp = await tmpdir()
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const names = (await load(tmp.path, (svc) => svc.list())).map((a) => a.name)
+      expect(names[0]).toBe("orchestrator")
+      expect(names.slice(1)).toEqual(names.slice(1).toSorted((a, b) => a.localeCompare(b)))
+    },
+  })
+})
+
 test("Agent.get returns undefined for non-existent agent", async () => {
   await using tmp = await tmpdir()
   await Instance.provide({

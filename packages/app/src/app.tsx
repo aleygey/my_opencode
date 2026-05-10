@@ -9,7 +9,9 @@ import { Font } from "@opencode-ai/ui/font"
 import { Splash } from "@opencode-ai/ui/logo"
 import { ThemeProvider } from "@opencode-ai/ui/theme/context"
 import { MetaProvider } from "@solidjs/meta"
-import { type BaseRouterProps, Navigate, Route, Router } from "@solidjs/router"
+import { type BaseRouterProps, Navigate, Route, Router, useLocation, useNavigate } from "@solidjs/router"
+import { UnifiedShell } from "@/components/unified-shell"
+import { ShellBridgeProvider, useShellBridge } from "@/components/unified-shell/shell-bridge"
 import { QueryClient, QueryClientProvider } from "@tanstack/solid-query"
 import type { PermissionRequest, Session } from "@opencode-ai/sdk/v2/client"
 import { Effect } from "effect"
@@ -65,6 +67,7 @@ import { useCheckServerHealth } from "./utils/server-health"
 import { useGlobalSDK } from "@/context/global-sdk"
 import { useGlobalSync } from "@/context/global-sync"
 import { DialogSelectDirectory } from "@/components/dialog-select-directory"
+import { base64Encode } from "@opencode-ai/shared/util/encode"
 
 const HomeRoute = lazy(() => import("@/pages/home"))
 const loadSession = () => import("@/pages/session")
@@ -81,23 +84,63 @@ if (typeof location === "object" && /\/session(?:\/|$)/.test(location.pathname))
   if (/\/retrieve(?:\/|$)/.test(location.pathname)) void loadRetrievePage()
 }
 
-const SessionRoute = () => (
+/**
+ * SessionShellRoute — parent route under /:dir/session/:id that mounts
+ * SessionProviders + UnifiedShell + ShellBridgeProvider exactly once.
+ *
+ * The three child routes (workflow / refiner / retrieve) render only
+ * their body via `props.children` — the shell stays mounted across rail
+ * navigation, so switching modules feels like in-page tab switching
+ * rather than a page jump. Each child publishes its chrome (header /
+ * substrip / rail subs / tasks) through useShellBridge() into the
+ * ShellBridgeProvider, which the shell consumes via reactive memos.
+ */
+const SessionShellRoute = (props: ParentProps) => (
   <SessionProviders>
-    <Session />
+    <ShellBridgeProvider>
+      <SessionShellMount>{props.children}</SessionShellMount>
+    </ShellBridgeProvider>
   </SessionProviders>
 )
 
-const RefinerRoute = () => (
-  <SessionProviders>
-    <RefinerPage />
-  </SessionProviders>
-)
+const SessionRoute = () => <Session />
+const RefinerRoute = () => <RefinerPage />
+const RetrieveRoute = () => <RetrievePage />
 
-const RetrieveRoute = () => (
-  <SessionProviders>
-    <RetrievePage />
-  </SessionProviders>
-)
+/** Renders the UnifiedShell with chrome props sourced from the shell-bridge.
+ *  The bridge holds a signal updated by each child page; the shell reads
+ *  reactively. The shell mounts ONCE and stays mounted across child route
+ *  changes — the user sees an in-page tab switch instead of a full
+ *  page transition. */
+function SessionShellMount(props: ParentProps) {
+  const bridge = useShellBridge()
+  const location = useLocation()
+  const moduleId = createMemo<"workflow" | "knowledge" | "trace">(() => {
+    const p = location.pathname
+    if (p.endsWith("/refiner")) return "knowledge"
+    if (p.endsWith("/retrieve")) return "trace"
+    return "workflow"
+  })
+  const chrome = bridge.chrome
+  return (
+    <UnifiedShell
+      module={moduleId()}
+      header={chrome().header}
+      substrip={chrome().substrip}
+      railSubs={chrome().railSubs}
+      activeSubId={chrome().activeSubId}
+      onPickSub={chrome().onPickSub}
+      railBadges={chrome().railBadges}
+      tasks={chrome().tasks}
+      activeTaskId={chrome().activeTaskId}
+      onPickTask={chrome().onPickTask}
+      onCreateTask={chrome().onCreateTask}
+      status={chrome().status}
+    >
+      {props.children}
+    </UnifiedShell>
+  )
+}
 
 const SessionIndexRoute = () => <Navigate href="session" />
 
@@ -254,6 +297,7 @@ function WorkflowScreen() {
   const global = useGlobalSDK()
   const sync = useGlobalSync()
   const permission = usePermission()
+  const navigate = useNavigate()
   const [busy, setBusy] = createSignal(true)
   const [make, setMake] = createSignal("")
   const [err, setErr] = createSignal("")
@@ -346,6 +390,19 @@ function WorkflowScreen() {
       return root
     })
     setBusy(false)
+
+    // Auto-redirect to the unified-shell session route when an active
+    // workflow root session is found. Without this, cold-loading the URL
+    // lands on the legacy `/*all` catchall WorkflowScreen and the user
+    // sees the old chrome (no rune-shell, no rail/header/status bar) —
+    // they had to manually click Refiner to escape into the new layout.
+    if (root) {
+      const item = all.find((x) => x.snap.workflow.session_id === root)
+      const dir = item?.info.directory
+      if (dir) {
+        navigate(`/${base64Encode(dir)}/session/${root}`, { replace: true })
+      }
+    }
   }
 
   const boot = async (dir: string, title?: string) => {
@@ -377,6 +434,11 @@ function WorkflowScreen() {
         setList((rows) => [{ info: session, snap: snap.data! }, ...rows])
         setTask(session.id)
         setSession(session.id)
+        // Jump straight into the unified-shell session route for the
+        // freshly-created workflow so the user lands on the new chrome
+        // (rail / header / status bar / canvas tab) rather than the
+        // legacy WorkflowRoot inline render.
+        navigate(`/${base64Encode(dir)}/session/${session.id}`, { replace: true })
       })
       .catch((e) => {
         setErr(e instanceof Error ? e.message : String(e))
@@ -647,45 +709,187 @@ function WorkflowScreen() {
           )}
       </Match>
       <Match when={true}>
-        <div class="flex h-dvh w-screen items-center justify-center bg-background-base px-6 text-center">
-          <div class="w-full max-w-3xl">
-            <div class="mx-auto max-w-md">
-              <div class="text-16-medium text-text-strong">Connected to {server.name || server.key}</div>
-              <div class="mt-2 text-14-regular text-text-weak">
-                {err() || "No workflow root session exists yet. Create one from a project below."}
+        {/* Empty-state landing — uses the unified shell *tokens* but
+         * NOT the `.rune-shell` class itself, because that class is
+         * `display: grid` with rail+main columns and was squishing the
+         * whole landing into the 224px rail column (user feedback:
+         * "整体被压缩到左侧了"). The container below is a normal flex
+         * box that just consumes the rune-* CSS variables. */}
+        <div
+          class="rune-empty-host"
+          style={{
+            background: "var(--rune-bg-base)",
+            color: "var(--rune-fg)",
+            "font-family": "var(--rune-font-sans)",
+            display: "flex",
+            "align-items": "center",
+            "justify-content": "center",
+            "min-height": "100dvh",
+            width: "100vw",
+            padding: "24px",
+          }}
+        >
+          <div style={{ width: "100%", "max-width": "640px" }}>
+            <div class="mx-auto max-w-xl text-center">
+              <div
+                class="mx-auto mb-5 inline-flex h-12 w-12 items-center justify-center rounded-full"
+                style={{
+                  background: "var(--rune-ac-soft)",
+                  color: "var(--rune-ac-text)",
+                  border: "1px solid var(--rune-ac-edge)",
+                }}
+                aria-hidden
+              >
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="6" r="2.5" />
+                  <circle cx="6" cy="18" r="2.5" />
+                  <circle cx="18" cy="18" r="2.5" />
+                  <path d="M12 8.5v3a2 2 0 0 1-2 2H8M12 8.5v3a2 2 0 0 0 2 2h2M8 13.5v2M16 13.5v2" />
+                </svg>
+              </div>
+              <h1
+                style={{
+                  "font-family": "var(--rune-font-sans)",
+                  "font-size": "22px",
+                  "font-weight": 620,
+                  "letter-spacing": "-0.02em",
+                  "font-variation-settings": '"opsz" 24',
+                  color: "var(--rune-fg)",
+                  margin: 0,
+                }}
+              >
+                Start a workflow
+              </h1>
+              <div
+                class="mx-auto mt-2 max-w-md"
+                style={{
+                  "font-size": "13px",
+                  "line-height": 1.6,
+                  color: "var(--rune-fg-mute)",
+                }}
+              >
+                {err() || (
+                  <>
+                    <span class="rune-mono" style={{ color: "var(--rune-fg-dim)" }}>
+                      {server.name || server.key}
+                    </span>
+                    <span style={{ margin: "0 6px", color: "var(--rune-fg-faint)" }}>·</span>
+                    Pick a project to bootstrap a runtime session.
+                  </>
+                )}
               </div>
             </div>
+
             <Show
               when={projects().length > 0}
               fallback={
-                <div class="mt-6 text-13-regular text-text-weak">
-                  No projects were returned by the server, so there is nothing to bootstrap yet.
+                <div
+                  class="mx-auto mt-8 max-w-md rounded-lg px-4 py-3 text-center"
+                  style={{
+                    border: "1px dashed var(--rune-line)",
+                    background: "var(--rune-bg-surface)",
+                    "font-size": "12px",
+                    color: "var(--rune-fg-mute)",
+                  }}
+                >
+                  No projects were returned by the server.
                 </div>
               }
             >
-              <div class="mt-8 grid gap-3 text-left md:grid-cols-2">
+              <div class="mt-7 grid gap-2.5 sm:grid-cols-2">
                 <For each={projects().slice(0, 8)}>
-                  {(project) => (
-                    <button
-                      type="button"
-                      class="rounded-2xl border border-border/60 bg-background px-4 py-4 transition-colors hover:bg-muted/30"
-                      disabled={!!make()}
-                      onClick={() => void boot(project.worktree, project.name || project.worktree.split("/").at(-1) || "Workflow")}
-                    >
-                      <div class="truncate text-14-medium text-text-strong">{project.name || project.worktree.split("/").at(-1)}</div>
-                      <div class="mt-1 truncate text-12-regular text-text-weak">{project.worktree}</div>
-                      <div class="mt-3 text-12-medium text-emerald-600">
-                        {make() === project.worktree ? "Creating workflow..." : "Create workflow"}
-                      </div>
-                    </button>
-                  )}
+                  {(project) => {
+                    const isActive = () => make() === project.worktree
+                    return (
+                      <button
+                        type="button"
+                        class="group text-left transition-all"
+                        style={{
+                          border: "1px solid var(--rune-line-faint)",
+                          background: "var(--rune-bg-raised)",
+                          "border-radius": "10px",
+                          padding: "14px 16px",
+                          color: "var(--rune-fg)",
+                          "box-shadow": "0 1px 2px rgba(15, 23, 42, 0.04)",
+                          cursor: make() ? "default" : "pointer",
+                          opacity: make() && !isActive() ? 0.55 : 1,
+                        }}
+                        disabled={!!make()}
+                        onClick={() =>
+                          void boot(
+                            project.worktree,
+                            project.name || project.worktree.split("/").at(-1) || "Workflow",
+                          )
+                        }
+                        onMouseEnter={(e) => {
+                          if (!make()) e.currentTarget.style.borderColor = "var(--rune-ac-edge)"
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.borderColor = "var(--rune-line-faint)"
+                        }}
+                      >
+                        <div
+                          style={{
+                            "font-size": "13.5px",
+                            "font-weight": 600,
+                            "letter-spacing": "-0.01em",
+                            color: "var(--rune-fg)",
+                            overflow: "hidden",
+                            "text-overflow": "ellipsis",
+                            "white-space": "nowrap",
+                          }}
+                        >
+                          {project.name || project.worktree.split("/").at(-1)}
+                        </div>
+                        <div
+                          style={{
+                            "margin-top": "3px",
+                            "font-family": "var(--rune-font-mono)",
+                            "font-size": "10.5px",
+                            color: "var(--rune-fg-faint)",
+                            overflow: "hidden",
+                            "text-overflow": "ellipsis",
+                            "white-space": "nowrap",
+                          }}
+                          title={project.worktree}
+                        >
+                          {project.worktree}
+                        </div>
+                        <div
+                          style={{
+                            "margin-top": "10px",
+                            display: "inline-flex",
+                            "align-items": "center",
+                            gap: "5px",
+                            "font-size": "11px",
+                            "font-weight": 500,
+                            color: isActive() ? "var(--rune-ac-text)" : "var(--rune-fg-mute)",
+                          }}
+                        >
+                          {isActive() ? (
+                            <>
+                              <span class="rune-dot" data-st="run" />
+                              Creating…
+                            </>
+                          ) : (
+                            <>
+                              <span style={{ color: "var(--rune-ac-text)" }}>＋</span>
+                              Create workflow
+                            </>
+                          )}
+                        </div>
+                      </button>
+                    )
+                  }}
                 </For>
               </div>
             </Show>
+
             <div class="mt-6 flex flex-wrap items-center justify-center gap-2">
               <button
                 type="button"
-                class="rounded-xl border border-emerald-500/60 bg-emerald-500/10 px-4 py-2 text-13-medium text-emerald-700 transition-colors hover:bg-emerald-500/20 dark:text-emerald-300"
+                class="rune-btn"
+                data-variant="primary"
                 disabled={!!make()}
                 onClick={pickWorkspace}
               >
@@ -693,14 +897,18 @@ function WorkflowScreen() {
               </button>
               <button
                 type="button"
-                class="rounded-xl border border-border/60 px-4 py-2 text-13-medium text-text-base transition-colors hover:bg-muted/30"
+                class="rune-btn"
                 onClick={() => void load()}
               >
-                Refresh
+                ↻ Refresh
               </button>
             </div>
-            <div class="mt-3 text-12-regular text-text-weaker">
-              Health check and global sync are already passing. This page is waiting for a workflow root session.
+
+            <div
+              class="mt-5 text-center"
+              style={{ "font-size": "10.5px", color: "var(--rune-fg-faint)", "letter-spacing": "0.02em" }}
+            >
+              Health check and global sync are passing — waiting for a workflow root session.
             </div>
           </div>
         </div>
@@ -881,9 +1089,11 @@ export function AppInterface(props: {
                   <Route path="/" component={HomeRoute} />
                   <Route path="/:dir" component={DirectoryLayout}>
                     <Route path="/" component={SessionIndexRoute} />
-                    <Route path="/session/:id/refiner" component={RefinerRoute} />
-                    <Route path="/session/:id/retrieve" component={RetrieveRoute} />
-                    <Route path="/session/:id?" component={SessionRoute} />
+                    <Route path="/session/:id?" component={SessionShellRoute}>
+                      <Route path="/" component={SessionRoute} />
+                      <Route path="/refiner" component={RefinerRoute} />
+                      <Route path="/retrieve" component={RetrieveRoute} />
+                    </Route>
                   </Route>
                 </Dynamic>
               </GlobalSyncProvider>
@@ -909,9 +1119,11 @@ export function WorkflowInterface(props: {
               <GlobalSyncProvider>
                 <Router root={(routerProps) => <WorkflowShellProviders>{routerProps.children}</WorkflowShellProviders>}>
                   <Route path="/:dir" component={DirectoryLayout}>
-                    <Route path="/session/:id/refiner" component={RefinerRoute} />
-                    <Route path="/session/:id/retrieve" component={RetrieveRoute} />
-                    <Route path="/session/:id?" component={SessionRoute} />
+                    <Route path="/session/:id?" component={SessionShellRoute}>
+                      <Route path="/" component={SessionRoute} />
+                      <Route path="/refiner" component={RefinerRoute} />
+                      <Route path="/retrieve" component={RetrieveRoute} />
+                    </Route>
                   </Route>
                   <Route path="/*all" component={WorkflowScreen} />
                 </Router>

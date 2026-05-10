@@ -471,22 +471,32 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             const sessionReq =
               hasSession && !opts?.force
                 ? Promise.resolve()
-                : retry(() => client.session.get({ sessionID })).then((session) => {
-                    if (!tracked(directory, sessionID)) return
-                    const data = session.data
-                    if (!data) return
-                    setStore(
-                      "session",
-                      produce((draft) => {
-                        const match = Binary.search(draft, sessionID, (s) => s.id)
-                        if (match.found) {
-                          draft[match.index] = data
-                          return
-                        }
-                        draft.splice(match.index, 0, data)
-                      }),
-                    )
-                  })
+                : retry(() => client.session.get({ sessionID }))
+                    .then((session) => {
+                      if (!tracked(directory, sessionID)) return
+                      const data = session.data
+                      if (!data) return
+                      setStore(
+                        "session",
+                        produce((draft) => {
+                          const match = Binary.search(draft, sessionID, (s) => s.id)
+                          if (match.found) {
+                            draft[match.index] = data
+                            return
+                          }
+                          draft.splice(match.index, 0, data)
+                        }),
+                      )
+                    })
+                    // Don't surface a stale-session 404 to the global error
+                    // boundary — sync.session.sync is fired-and-forgotten in
+                    // many places (workflow refresh, message loading), and
+                    // a referenced session may have been deleted server-side.
+                    .catch((err: unknown) => {
+                      const name = err && typeof err === "object" && "name" in err ? (err as { name?: string }).name : undefined
+                      if (name === "NotFoundError") return
+                      throw err
+                    })
 
             const messagesReq =
               cached && !opts?.force

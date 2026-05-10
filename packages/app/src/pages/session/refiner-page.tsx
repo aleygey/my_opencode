@@ -9,9 +9,17 @@ import {
   onMount,
   Show,
 } from "solid-js"
+import { Portal } from "solid-js/web"
+import { Markdown } from "@opencode-ai/ui/markdown"
 import { useNavigate, useParams } from "@solidjs/router"
-import { SessionHeader } from "@/components/session"
-import { useModels } from "@/context/models"
+import { useShellBridge } from "@/components/unified-shell/shell-bridge"
+import {
+  KnowledgeGraph as RuneKnowledgeGraph,
+  KnowledgeList as RuneKnowledgeList,
+  type KnowledgeEdge as RuneKnowledgeEdge,
+  type KnowledgeExp as RuneKnowledgeExp,
+} from "@/components/unified-shell/modules"
+import { RuneModelPicker } from "@/components/unified-shell/model-picker"
 import { usePlatform } from "@/context/platform"
 import { useSDK } from "@/context/sdk"
 import { useServer } from "@/context/server"
@@ -155,6 +163,36 @@ type GraphEdge = {
   edge_id?: string
   reason?: string
   confidence?: number
+}
+
+// Mirrors backend's RefinerLogEntry / RefinerLlmCall — surfaced via the
+// Knowledge "Logs" modal so the user can audit every refiner run.
+type RefinerLlmCall = {
+  stage: "route" | "refine" | "synthesis" | "edge"
+  provider_id?: string
+  model_id?: string
+  system_prompt?: string
+  user_prompt: string
+  response_text?: string
+  reasoning_text?: string
+  structured_output?: unknown
+  error?: string
+  duration_ms: number
+}
+
+type RefinerLogEntry = {
+  id: string
+  created_at: number
+  duration_ms: number
+  trigger: "auto" | "manual" | "history" | "import" | "re_refine"
+  session_id?: string
+  message_id?: string
+  observation_id?: string
+  user_text: string
+  outcome: "new_exp" | "update_exp" | "edge_only" | "noise" | "dropped" | "error"
+  experience_ids: string[]
+  reason?: string
+  llm_calls: RefinerLlmCall[]
 }
 
 type ChainGraphEdge = {
@@ -308,9 +346,6 @@ const hhmm = (ts: number): string => {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`
 }
 
-const modelLabel = (model?: { providerID: string; modelID: string }) =>
-  model ? `${model.providerID}/${model.modelID}` : "—"
-
 function buildHeaders(input: {
   directory: string
   username?: string
@@ -366,6 +401,25 @@ async function fetchOverview(input: {
   })
   if (!res.ok) throw new Error(`Failed to load refiner overview (${res.status})`)
   return readJsonOrThrow<RefinerOverview>(res, "Refiner overview")
+}
+
+async function fetchRefinerLog(input: {
+  baseUrl: string
+  directory: string
+  password?: string
+  username?: string
+  fetcher?: typeof fetch
+}): Promise<{ entries: RefinerLogEntry[] }> {
+  const url = new URL("/experimental/refiner/log", input.baseUrl)
+  const res = await (input.fetcher ?? fetch)(url, {
+    headers: buildHeaders({
+      directory: input.directory,
+      username: input.username,
+      password: input.password,
+    }),
+  })
+  if (!res.ok) throw new Error(`Failed to load refiner log (${res.status})`)
+  return readJsonOrThrow<{ entries: RefinerLogEntry[] }>(res, "Refiner log")
 }
 
 async function fetchTaxonomy(input: {
@@ -469,13 +523,6 @@ async function putConfig(input: {
   })
   if (!res.ok) throw new Error(`Failed to update refiner config (${res.status})`)
   return readJsonOrThrow<RefinerConfig>(res, "Refiner config update")
-}
-
-const SOURCE_LABEL: Record<ConfigSource, string> = {
-  override: "override",
-  agent: "agent config",
-  default: "default",
-  none: "—",
 }
 
 /* ──────────────────────────────────────────────────────
@@ -839,122 +886,10 @@ const SCOPE_LABEL: Record<Scope, string> = {
 
 
 /* ──────────────────────────────────────────────────────
-   Model picker — unchanged UX
+   (Old per-page ModelPicker removed — replaced by the shared
+   `RuneModelPicker` from `@/components/unified-shell/model-picker`
+   so all three runtime modules share a single visual treatment.)
    ────────────────────────────────────────────────────── */
-
-function ModelPicker(props: {
-  current?: { providerID: string; modelID: string }
-  source?: ConfigSource
-  onChange: (model: { providerID: string; modelID: string }) => void
-  onReset?: () => void
-}) {
-  const models = useModels()
-  const [open, setOpen] = createSignal(false)
-  let root: HTMLDivElement | undefined
-
-  onMount(() => {
-    const handler = (e: MouseEvent) => {
-      if (!root) return
-      if (!root.contains(e.target as Node)) setOpen(false)
-    }
-    document.addEventListener("mousedown", handler)
-    onCleanup(() => document.removeEventListener("mousedown", handler))
-  })
-
-  const list = createMemo(() => {
-    try {
-      return models
-        .list()
-        .filter((m) => models.visible({ providerID: m.provider.id, modelID: m.id }))
-    } catch {
-      return []
-    }
-  })
-
-  const grouped = createMemo(() => {
-    const map = new Map<string, Array<{ providerID: string; modelID: string; name: string }>>()
-    for (const m of list()) {
-      const key = m.provider.name ?? m.provider.id
-      const arr = map.get(key) ?? []
-      arr.push({ providerID: m.provider.id, modelID: m.id, name: m.name })
-      map.set(key, arr)
-    }
-    return [...map.entries()]
-  })
-
-  return (
-    <div class="rf-model" ref={(el) => (root = el)}>
-      <button
-        type="button"
-        class="rf-model-trigger"
-        aria-expanded={open() ? "true" : "false"}
-        onClick={() => setOpen((v) => !v)}
-        title={props.source ? `source: ${SOURCE_LABEL[props.source]}` : undefined}
-      >
-        <span class="rf-dot" />
-        <span>{modelLabel(props.current)}</span>
-        <Show when={props.source && props.source !== "none"}>
-          <span class="rf-model-source" data-source={props.source}>
-            {SOURCE_LABEL[props.source!]}
-          </span>
-        </Show>
-        <span class="rf-model-caret">▾</span>
-      </button>
-      <Show when={open()}>
-        <div class="rf-model-menu">
-          <Show when={props.source === "override" && props.onReset}>
-            <button
-              type="button"
-              class="rf-model-item rf-model-reset"
-              onClick={() => {
-                props.onReset?.()
-                setOpen(false)
-              }}
-            >
-              ⟲ 恢复默认（agent 默认模型）
-            </button>
-            <div class="rf-model-sep" />
-          </Show>
-          <Show
-            when={grouped().length > 0}
-            fallback={<div class="rf-model-group">暂无可用模型</div>}
-          >
-            <For each={grouped()}>
-              {([providerName, items]) => (
-                <>
-                  <div class="rf-model-group">{providerName}</div>
-                  <For each={items}>
-                    {(item) => {
-                      const active = () =>
-                        props.current?.providerID === item.providerID &&
-                        props.current?.modelID === item.modelID
-                      return (
-                        <button
-                          type="button"
-                          class="rf-model-item"
-                          data-active={active() ? "true" : "false"}
-                          onClick={() => {
-                            props.onChange({
-                              providerID: item.providerID,
-                              modelID: item.modelID,
-                            })
-                            setOpen(false)
-                          }}
-                        >
-                          {item.name}
-                        </button>
-                      )
-                    }}
-                  </For>
-                </>
-              )}
-            </For>
-          </Show>
-        </div>
-      </Show>
-    </div>
-  )
-}
 
 /* ──────────────────────────────────────────────────────
    Overflow "More" menu — consolidates secondary actions
@@ -3304,10 +3239,15 @@ function ExperiencePeek(props: ExperiencePeekProps) {
           </section>
       </div>
 
+      {/* Restored full action set: Add obs / Edit / Re-refine / Undo /
+        * Archive / Approve / Reject / Re-queue / Delete. Earlier these
+        * were cut to align with the design template's "single Refine
+        * button" but the user wants the full power-user toolkit back. */}
       <div class="rf-peek-foot">
         <button
           type="button"
-          class="rf-actbtn"
+          class="rune-btn"
+          data-size="sm"
           disabled={!!acting() || exp().archived}
           onClick={() => props.onAction({ type: "augment", experience: exp() })}
           title="追加一条 observation 并触发 re-refine"
@@ -3316,7 +3256,8 @@ function ExperiencePeek(props: ExperiencePeekProps) {
         </button>
         <button
           type="button"
-          class="rf-actbtn"
+          class="rune-btn"
+          data-size="sm"
           disabled={!!acting()}
           onClick={() => props.onAction({ type: "edit", experience: exp() })}
           title="手动编辑字段（不调用 LLM）"
@@ -3325,10 +3266,9 @@ function ExperiencePeek(props: ExperiencePeekProps) {
         </button>
         <button
           type="button"
-          class="rf-actbtn"
-          disabled={
-            !!acting() || exp().observations.length === 0 || exp().archived
-          }
+          class="rune-btn"
+          data-size="sm"
+          disabled={!!acting() || exp().observations.length === 0 || exp().archived}
           onClick={() => void run("refine", () => props.onReRefine())}
           title="基于当前 observations 重新运行 refiner 模型"
         >
@@ -3336,7 +3276,8 @@ function ExperiencePeek(props: ExperiencePeekProps) {
         </button>
         <button
           type="button"
-          class="rf-actbtn"
+          class="rune-btn"
+          data-size="sm"
           disabled={!!acting() || !undoable()}
           onClick={() => void run("undo", () => props.onUndo())}
           title={undoable() ? "回滚到上一次快照" : "没有可回滚的快照"}
@@ -3345,20 +3286,20 @@ function ExperiencePeek(props: ExperiencePeekProps) {
         </button>
         <button
           type="button"
-          class="rf-actbtn"
+          class="rune-btn"
+          data-size="sm"
           disabled={!!acting()}
           onClick={() => void run("archive", () => props.onArchiveToggle())}
           title={exp().archived ? "取消归档" : "归档（从概览中隐藏）"}
         >
           {exp().archived ? "⬒ Unarchive" : "⬓ Archive"}
         </button>
-        {/* Review-queue actions — only meaningful when review_status is set
-            non-default. Approve becomes the prominent positive action when an
-            experience is freshly auto-routed (status=pending). */}
         <Show when={(exp().review_status ?? "approved") === "pending"}>
           <button
             type="button"
-            class="rf-actbtn rf-actbtn-primary"
+            class="rune-btn"
+            data-size="sm"
+            data-variant="primary"
             disabled={!!acting()}
             onClick={() => void run("approve", () => props.onReview("approved"))}
             title="通过审核 — 此 experience 进入正式知识库"
@@ -3367,7 +3308,8 @@ function ExperiencePeek(props: ExperiencePeekProps) {
           </button>
           <button
             type="button"
-            class="rf-actbtn"
+            class="rune-btn"
+            data-size="sm"
             disabled={!!acting()}
             onClick={() => void run("reject", () => props.onReview("rejected"))}
             title="拒绝 — 软删除，文件保留作审计"
@@ -3378,7 +3320,8 @@ function ExperiencePeek(props: ExperiencePeekProps) {
         <Show when={(exp().review_status ?? "approved") === "rejected"}>
           <button
             type="button"
-            class="rf-actbtn"
+            class="rune-btn"
+            data-size="sm"
             disabled={!!acting()}
             onClick={() => void run("requeue", () => props.onReview("pending"))}
             title="重新加入待审核队列"
@@ -3386,13 +3329,15 @@ function ExperiencePeek(props: ExperiencePeekProps) {
             {acting() === "requeue" ? "⟳ Re-queueing…" : "↻ Re-queue"}
           </button>
         </Show>
-        <span class="rf-actspacer" />
+        <span class="rune-grow" />
         <button
           type="button"
-          class="rf-actbtn rf-actbtn-danger"
+          class="rune-btn"
+          data-size="sm"
           disabled={!!acting()}
           onClick={() => props.onAction({ type: "delete", experience: exp() })}
           title="删除（保留审计）"
+          style={{ color: "var(--rune-st-err)" }}
         >
           ✕ Delete
         </button>
@@ -4137,16 +4082,35 @@ function computeGraphLayoutForce(
   if (bodies.length === 0) return out
 
   const n = bodies.length
-  // Tuning: bigger graphs need more space per node + a longer spring. Bumped
-  // both repulsion and target spacing 1.6× from v1 because the previous
-  // settings let label boxes routinely overlap on dense subgraphs.
-  const area = width * height
-  const targetLen = Math.sqrt(area / Math.max(n, 1)) * 0.85
-  const kRep = targetLen * targetLen * 1.6
+  // Tuning: bigger graphs need more space per node + a longer spring. The
+  // previous settings (targetLen×0.85, kRep×1.6, RELAX_ITERS=60) routinely
+  // let Chinese labels overlap on 30+ node graphs because:
+  //   - targetLen was derived from the *container* area, but Chinese labels
+  //     can be 200+ px wide while the container's per-node budget was
+  //     ~100 px → labels physically can't fit at scale 1.
+  //   - the fit-to-canvas pass at the bottom then scaled positions DOWN
+  //     (labels stayed at fixed font size in viewBox coords) → overlap
+  //     re-introduced after relax already cleaned it up.
+  //
+  // New approach: compute the layout in a *virtual* canvas big enough to
+  // accommodate the average label width × node count, never down-scale at
+  // the end, and let the existing pan/zoom UI handle initial fit.
+  //
+  // Tuning history:
+  //   - First fix used 1.3 / 0.95 / 2.2 — labels stopped overlapping but
+  //     the graph felt *too* spread out (user feedback "节点距离太大了").
+  //   - Tightened to 0.7 / 0.7 / 1.3 below: labels still don't overlap
+  //     because the relax pass cleans up residual cases, but neighbouring
+  //     nodes sit ~30% closer so the radial layout feels compact again.
+  const avgLabelW = bodies.reduce((s, b) => s + b.labelW, 0) / Math.max(n, 1)
+  const perNodeArea = (avgLabelW + LABEL_OFFSET_X + LABEL_TAIL + 24) * (LABEL_HALF_H * 2 + 24) * 0.7
+  const virtualArea = Math.max(width * height * 0.85, perNodeArea * n)
+  const targetLen = Math.sqrt(virtualArea / Math.max(n, 1)) * 0.7
+  const kRep = targetLen * targetLen * 1.3
   const kSpring = 0.045
   const damping = 0.82
   const maxStep = 22
-  const iterations = n < 20 ? 200 : n < 80 ? 280 : 340
+  const iterations = n < 20 ? 220 : n < 80 ? 320 : 420
   const centerPull = 0.002
 
   const adj: Array<[number, number]> = []
@@ -4234,7 +4198,10 @@ function computeGraphLayoutForce(
     y1: b.y - LABEL_HALF_H - 2,
     y2: b.y + LABEL_HALF_H + 2,
   })
-  const RELAX_ITERS = 60
+  // Bumped from 60 → 200 — dense graphs need more sweeps because each push
+  // can create a fresh overlap with a third node. We exit early when no
+  // movement occurs in an iteration, so the cost on sparse graphs is low.
+  const RELAX_ITERS = 200
   for (let iter = 0; iter < RELAX_ITERS; iter++) {
     let movedAny = false
     for (let i = 0; i < n; i++) {
@@ -4274,9 +4241,14 @@ function computeGraphLayoutForce(
     if (!movedAny) break
   }
 
-  // Fit to canvas: include label extents in the bounding box so the
-  // rightmost label doesn't get clipped by the canvas edge. The label box
-  // for body b runs from `b.x` to `b.x + LABEL_OFFSET_X + b.labelW + tail`.
+  // Translate-only fit: include label extents in the bounding box so the
+  // rightmost label doesn't get clipped by the canvas edge. We deliberately
+  // do NOT down-scale positions when the bbox exceeds the container —
+  // labels render at a fixed font size in viewBox px, so position-scaling
+  // would re-introduce label overlap that the relax pass just removed.
+  // Instead, the bodies extend beyond the viewBox; the consumer computes
+  // an initial fit-zoom (bounded below by ~0.4) so the user sees the whole
+  // graph at first paint and can scroll/zoom in to read individual labels.
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
   for (const b of bodies) {
     const lx2 = b.x + LABEL_OFFSET_X + b.labelW + LABEL_TAIL
@@ -4285,26 +4257,434 @@ function computeGraphLayoutForce(
     if (lx2 > maxX) maxX = lx2
     if (b.y + LABEL_HALF_H > maxY) maxY = b.y + LABEL_HALF_H
   }
-  const marginX = 36
-  const marginY = 24
   const bw = Math.max(maxX - minX, 1)
   const bh = Math.max(maxY - minY, 1)
-  const sx = (width - 2 * marginX) / bw
-  const sy = (height - 2 * marginY) / bh
-  // Cap at 1.0 so a sparse graph isn't blown up to fill the canvas.
-  const scale = Math.min(sx, sy, 1)
-  const ox = (width - bw * scale) / 2 - minX * scale
-  const oy = (height - bh * scale) / 2 - minY * scale
+  // Centre the bbox at the canvas centre so the initial pan=(0,0) view
+  // shows the graph centred (after the consumer applies its fit-zoom).
+  const ox = cx - (minX + bw / 2)
+  const oy = cy - (minY + bh / 2)
 
   for (const b of bodies) {
     out.set(b.id, {
       id: b.id,
       exp: b.exp,
-      x: b.x * scale + ox,
-      y: b.y * scale + oy,
+      x: b.x + ox,
+      y: b.y + oy,
     })
   }
   return out
+}
+
+/* Refiner activity log browser. Shows every refiner run grouped by
+ * session — including queries that the refiner classed as noise or
+ * dropped (those that DIDN'T crystallise into an experience), so the
+ * user can audit what the refiner agent decided. Click a session row
+ * on the left, click a run on the right, see all per-stage LLM calls
+ * (route / refine) with their prompts and responses. */
+function RefinerLogsModal(props: {
+  entries: RefinerLogEntry[]
+  loading: boolean
+  onClose: () => void
+  onReload: () => void
+}) {
+  const [selectedSession, setSelectedSession] = createSignal<string | undefined>()
+  const [selectedRunId, setSelectedRunId] = createSignal<string | undefined>()
+  const [filterMode, setFilterMode] = createSignal<"all" | "no_exp">("all")
+  const [callOpen, setCallOpen] = createSignal<Set<string>>(new Set())
+
+  // Group runs by session — most-recent activity first per session.
+  // PURE MEMO — does not write to any signal it reads (writing inside
+  // createMemo while also reading the same signal makes Solid log a
+  // reactive-loop warning and on some Solid versions ends up in a
+  // tight re-eval cycle that visually "freezes" the modal — that was
+  // the actual cause of the user's "卡住" report).
+  const sessions = createMemo(() => {
+    const map = new Map<
+      string,
+      { id: string; runs: RefinerLogEntry[]; latest: number; produced: number; failed: number }
+    >()
+    for (const e of props.entries) {
+      const sid = e.session_id ?? "manual"
+      const existing = map.get(sid)
+      if (existing) {
+        existing.runs.push(e)
+        if (e.created_at > existing.latest) existing.latest = e.created_at
+        if (e.outcome === "new_exp" || e.outcome === "update_exp") existing.produced++
+        if (e.outcome === "error" || e.outcome === "noise" || e.outcome === "dropped") existing.failed++
+      } else {
+        map.set(sid, {
+          id: sid,
+          runs: [e],
+          latest: e.created_at,
+          produced: e.outcome === "new_exp" || e.outcome === "update_exp" ? 1 : 0,
+          failed:
+            e.outcome === "error" || e.outcome === "noise" || e.outcome === "dropped" ? 1 : 0,
+        })
+      }
+    }
+    return [...map.values()].sort((a, b) => b.latest - a.latest)
+  })
+
+  // Auto-select the top session whenever entries load and nothing is
+  // chosen yet. Effect, NOT memo — this is a side effect.
+  createEffect(() => {
+    const arr = sessions()
+    if (!selectedSession() && arr.length > 0) setSelectedSession(arr[0].id)
+  })
+
+  // ESC closes the modal. Without this, the only way out was clicking
+  // the × button or the scrim background, which the user couldn't find
+  // when the empty-state "stuck" the modal in its initial layout.
+  onMount(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation()
+        props.onClose()
+      }
+    }
+    window.addEventListener("keydown", onKey, true)
+    onCleanup(() => window.removeEventListener("keydown", onKey, true))
+  })
+
+  const visibleRuns = createMemo(() => {
+    const sid = selectedSession()
+    if (!sid) return []
+    const session = sessions().find((s) => s.id === sid)
+    if (!session) return []
+    const runs = [...session.runs].sort((a, b) => b.created_at - a.created_at)
+    if (filterMode() === "no_exp") {
+      return runs.filter((r) =>
+        r.outcome === "noise" || r.outcome === "dropped" || r.outcome === "error",
+      )
+    }
+    return runs
+  })
+
+  const selectedRun = createMemo(() => {
+    const id = selectedRunId()
+    if (id) {
+      const found = visibleRuns().find((r) => r.id === id)
+      if (found) return found
+    }
+    return visibleRuns()[0]
+  })
+
+  const fmtTimeFull = (t: number) => {
+    const d = new Date(t)
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(
+      d.getHours(),
+    )}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
+  }
+
+  const outcomeLabel = (o: RefinerLogEntry["outcome"]) => {
+    switch (o) {
+      case "new_exp":
+        return "新建 exp"
+      case "update_exp":
+        return "更新 exp"
+      case "edge_only":
+        return "edge only"
+      case "noise":
+        return "noise"
+      case "dropped":
+        return "dropped"
+      case "error":
+        return "error"
+    }
+  }
+
+  const callKey = (run: RefinerLogEntry, idx: number) => `${run.id}:${idx}`
+  const isCallOpen = (k: string) => callOpen().has(k)
+  const toggleCall = (k: string) => {
+    const next = new Set(callOpen())
+    if (next.has(k)) next.delete(k)
+    else next.add(k)
+    setCallOpen(next)
+  }
+
+  return (
+    <Portal>
+      <div class="rf-logs-scrim" onClick={props.onClose} role="presentation">
+        <div
+          class="rf-logs-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Refiner activity log"
+          onClick={(ev) => ev.stopPropagation()}
+        >
+          <div class="rf-logs-hd">
+            <span class="rf-logs-title">Refiner · activity log</span>
+            <span class="rf-logs-meta">
+              {props.entries.length} runs · {sessions().length} sessions
+            </span>
+            <span style={{ flex: 1 }} />
+            <div class="rf-logs-filter" role="group">
+              <button
+                type="button"
+                data-active={filterMode() === "all"}
+                onClick={() => setFilterMode("all")}
+              >
+                全部
+              </button>
+              <button
+                type="button"
+                data-active={filterMode() === "no_exp"}
+                onClick={() => setFilterMode("no_exp")}
+                title="仅显示没有沉淀为 experience 的 query（noise/dropped/error）"
+              >
+                未沉淀
+              </button>
+            </div>
+            <button
+              type="button"
+              class="rune-btn"
+              data-size="xs"
+              onClick={props.onReload}
+              disabled={props.loading}
+              title="重新拉取日志"
+            >
+              {props.loading ? "刷新中…" : "↻ 刷新"}
+            </button>
+            <button
+              type="button"
+              class="rf-logs-close"
+              aria-label="Close"
+              onClick={props.onClose}
+            >
+              ×
+            </button>
+          </div>
+
+          <div class="rf-logs-body">
+            <Show
+              when={!props.loading && sessions().length > 0}
+              fallback={
+                <div class="rf-logs-empty">
+                  {props.loading
+                    ? "加载中…"
+                    : "暂无 refiner 日志。新的 refiner 运行会写入这里，包括没有沉淀的 query。"}
+                </div>
+              }
+            >
+              <aside class="rf-logs-sessions">
+                <div class="rf-logs-pane-hd">Sessions</div>
+                <For each={sessions()}>
+                  {(s) => (
+                    <button
+                      type="button"
+                      class="rf-logs-session-row"
+                      data-active={s.id === selectedSession()}
+                      onClick={() => {
+                        setSelectedSession(s.id)
+                        setSelectedRunId(undefined)
+                      }}
+                      title={s.id}
+                    >
+                      <div class="rf-logs-session-row-l">
+                        <div class="rf-logs-session-id">
+                          {s.id === "manual" ? "manual / 手动新建" : s.id.slice(0, 12)}
+                        </div>
+                        <div class="rf-logs-session-meta">
+                          {s.runs.length} runs · {fmtTime(s.latest)}
+                        </div>
+                      </div>
+                      <div class="rf-logs-session-stats">
+                        <Show when={s.produced > 0}>
+                          <span class="rf-logs-stat is-ok">+{s.produced}</span>
+                        </Show>
+                        <Show when={s.failed > 0}>
+                          <span class="rf-logs-stat is-warn">–{s.failed}</span>
+                        </Show>
+                      </div>
+                    </button>
+                  )}
+                </For>
+              </aside>
+
+              <section class="rf-logs-runs">
+                <div class="rf-logs-pane-hd">
+                  Runs
+                  <span style={{ "margin-left": "auto", color: "var(--rune-fg-faint)" }}>
+                    {visibleRuns().length}
+                  </span>
+                </div>
+                <Show
+                  when={visibleRuns().length > 0}
+                  fallback={
+                    <div class="rf-logs-empty">该 session 没有匹配筛选条件的 run。</div>
+                  }
+                >
+                  <For each={visibleRuns()}>
+                    {(r) => (
+                      <button
+                        type="button"
+                        class="rf-logs-run-row"
+                        data-active={r.id === selectedRun()?.id}
+                        data-outcome={r.outcome}
+                        onClick={() => setSelectedRunId(r.id)}
+                      >
+                        <div class="rf-logs-run-row-head">
+                          <span class="rf-logs-run-time">{fmtTime(r.created_at)}</span>
+                          <span class="rf-logs-run-trigger">{r.trigger}</span>
+                          <span style={{ flex: 1 }} />
+                          <span class={`rf-logs-outcome rf-logs-outcome-${r.outcome}`}>
+                            {outcomeLabel(r.outcome)}
+                          </span>
+                          <span class="rf-logs-run-ms">{r.duration_ms}ms</span>
+                        </div>
+                        <div class="rf-logs-run-text">
+                          {r.user_text.length > 140
+                            ? r.user_text.slice(0, 140) + "…"
+                            : r.user_text}
+                        </div>
+                      </button>
+                    )}
+                  </For>
+                </Show>
+              </section>
+
+              <section class="rf-logs-detail">
+                <Show
+                  when={selectedRun()}
+                  fallback={<div class="rf-logs-empty">选择一个 run 查看详情。</div>}
+                >
+                  {(run) => (
+                    <>
+                      <div class="rf-logs-pane-hd">
+                        Run {run().id.slice(0, 10)}
+                        <span style={{ "margin-left": "12px", color: "var(--rune-fg-faint)" }}>
+                          {fmtTimeFull(run().created_at)}
+                        </span>
+                      </div>
+                      <div class="rf-logs-detail-body">
+                        <section class="rf-logs-sec">
+                          <h4 class="rf-logs-sec-hd">User text</h4>
+                          <pre class="rf-logs-pre">{run().user_text}</pre>
+                        </section>
+                        <section class="rf-logs-sec">
+                          <h4 class="rf-logs-sec-hd">Outcome</h4>
+                          <div class="rf-logs-outcome-box">
+                            <span
+                              class={`rf-logs-outcome rf-logs-outcome-${run().outcome}`}
+                            >
+                              {outcomeLabel(run().outcome)}
+                            </span>
+                            <Show when={run().reason}>
+                              <span class="rf-logs-outcome-reason">{run().reason}</span>
+                            </Show>
+                            <Show when={run().experience_ids.length > 0}>
+                              <span class="rf-logs-outcome-reason">
+                                touched: {run().experience_ids.join(", ")}
+                              </span>
+                            </Show>
+                          </div>
+                        </section>
+                        <section class="rf-logs-sec">
+                          <h4 class="rf-logs-sec-hd">
+                            LLM calls ({run().llm_calls.length})
+                          </h4>
+                          <Show
+                            when={run().llm_calls.length > 0}
+                            fallback={
+                              <div class="rf-logs-empty">
+                                这个 run 没有触发 LLM（可能直接走了 fallback）。
+                              </div>
+                            }
+                          >
+                            <For each={run().llm_calls}>
+                              {(call, i) => {
+                                const k = callKey(run(), i())
+                                return (
+                                  <div class="rf-logs-call">
+                                    <button
+                                      type="button"
+                                      class="rf-logs-call-hd"
+                                      onClick={() => toggleCall(k)}
+                                    >
+                                      <span class="rf-logs-call-stage">{call.stage}</span>
+                                      <Show when={call.provider_id || call.model_id}>
+                                        <span class="rf-logs-call-model rune-mono">
+                                          {call.provider_id}/{call.model_id}
+                                        </span>
+                                      </Show>
+                                      <span style={{ flex: 1 }} />
+                                      <Show when={call.error}>
+                                        <span class="rf-logs-call-err">⚠</span>
+                                      </Show>
+                                      <span class="rf-logs-call-ms">{call.duration_ms}ms</span>
+                                      <span class="rf-logs-call-caret">
+                                        {isCallOpen(k) ? "▾" : "▸"}
+                                      </span>
+                                    </button>
+                                    <Show when={isCallOpen(k)}>
+                                      <div class="rf-logs-call-body">
+                                        <Show when={call.error}>
+                                          <div class="rf-logs-sec-err">
+                                            <h5 class="rf-logs-sec-hd">Error</h5>
+                                            <pre class="rf-logs-pre">{call.error}</pre>
+                                          </div>
+                                        </Show>
+                                        <Show when={call.system_prompt}>
+                                          <div>
+                                            <h5 class="rf-logs-sec-hd">System</h5>
+                                            <div class="rf-logs-md">
+                                              <Markdown text={call.system_prompt!} />
+                                            </div>
+                                          </div>
+                                        </Show>
+                                        <div>
+                                          <h5 class="rf-logs-sec-hd">User prompt</h5>
+                                          <div class="rf-logs-md">
+                                            <Markdown text={call.user_prompt} />
+                                          </div>
+                                        </div>
+                                        <Show when={call.reasoning_text}>
+                                          <div>
+                                            <h5 class="rf-logs-sec-hd">Reasoning</h5>
+                                            <div class="rf-logs-md rf-logs-md-reasoning">
+                                              <Markdown text={call.reasoning_text!} />
+                                            </div>
+                                          </div>
+                                        </Show>
+                                        <Show when={call.response_text}>
+                                          <div>
+                                            <h5 class="rf-logs-sec-hd">Response</h5>
+                                            <div class="rf-logs-md">
+                                              <Markdown text={call.response_text!} />
+                                            </div>
+                                          </div>
+                                        </Show>
+                                        <Show when={call.structured_output !== undefined}>
+                                          <div>
+                                            <h5 class="rf-logs-sec-hd">Structured output</h5>
+                                            <pre class="rf-logs-pre">
+                                              {JSON.stringify(call.structured_output, null, 2)}
+                                            </pre>
+                                          </div>
+                                        </Show>
+                                      </div>
+                                    </Show>
+                                  </div>
+                                )
+                              }}
+                            </For>
+                          </Show>
+                        </section>
+                      </div>
+                    </>
+                  )}
+                </Show>
+              </section>
+            </Show>
+          </div>
+        </div>
+      </div>
+    </Portal>
+  )
+}
+
+function pad2(n: number) {
+  return n < 10 ? "0" + n : String(n)
 }
 
 function ExperienceGraphView(props: {
@@ -4316,6 +4696,11 @@ function ExperienceGraphView(props: {
    *  whose `categories` includes this slug are rendered. Edges are kept iff
    *  both endpoints survive the filter — orphan edges would mislead. */
   activeCategory?: string
+  /** Tag filter — same shape as `activeCategory` (matches against
+   *  `categories[]`), but driven by clicking a #tag chip on a list card.
+   *  In the unified shell `activeCategory` is never set (legacy filterbar
+   *  is hidden), so this is the actual filter the user reaches. */
+  activeTag?: string
   activeEdgeKinds: Set<ChainEdgeKind>
   toggleEdgeKind: (k: ChainEdgeKind) => void
   includeArchived: boolean
@@ -4336,10 +4721,12 @@ function ExperienceGraphView(props: {
     const src = props.data?.experiences ?? []
     const kind = props.activeKind
     const cat = props.activeCategory
+    const tag = props.activeTag
     return src.filter((e) => {
       if (!props.includeArchived && e.archived) return false
       if (kind && e.kind !== kind) return false
       if (cat && !(e.categories ?? []).includes(cat)) return false
+      if (tag && !(e.categories ?? []).includes(tag)) return false
       return true
     })
   })
@@ -4384,6 +4771,48 @@ function ExperienceGraphView(props: {
   // same screen→content mapping the hovercard already does.
   const [zoom, setZoom] = createSignal(1)
   const [pan, setPan] = createSignal({ x: 0, y: 0 })
+  // Whether the user has manually panned/zoomed since the last layout
+  // change. While false, layout updates re-fit the view automatically;
+  // once the user interacts we stop overwriting their viewport.
+  let userMovedView = false
+
+  // Compute the bbox of all body positions (already includes label extents
+  // via the layout's fit-translation). Returns null if empty.
+  const layoutBBox = createMemo(() => {
+    const m = layout()
+    if (m.size === 0) return null
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    for (const node of m.values()) {
+      const lx2 = node.x + 15 + 6 + 200 // approx label extent (right-skewed)
+      if (node.x < minX) minX = node.x
+      if (node.y - 11 < minY) minY = node.y - 11
+      if (lx2 > maxX) maxX = lx2
+      if (node.y + 11 > maxY) maxY = node.y + 11
+    }
+    return { minX, minY, maxX, maxY }
+  })
+
+  // Auto fit-zoom: the layout function no longer down-scales positions to
+  // the canvas (would defeat label-overlap relaxation), so we compute an
+  // initial zoom here that fits the whole graph in the viewport. Bounded
+  // below by 0.4 so users can still read labels at first paint; they can
+  // zoom in further. Re-fits on layout change unless the user has panned.
+  createEffect(() => {
+    const bb = layoutBBox()
+    const s = size()
+    if (!bb || userMovedView) return
+    const bw = Math.max(bb.maxX - bb.minX, 1)
+    const bh = Math.max(bb.maxY - bb.minY, 1)
+    const margin = 32
+    const sx = (s.w - 2 * margin) / bw
+    const sy = (s.h - 2 * margin) / bh
+    const z = Math.max(0.4, Math.min(1, Math.min(sx, sy)))
+    setZoom(z)
+    // Centre the bbox in the viewport at the new zoom.
+    const cx = (bb.minX + bb.maxX) / 2
+    const cy = (bb.minY + bb.maxY) / 2
+    setPan({ x: s.w / 2 - cx * z, y: s.h / 2 - cy * z })
+  })
   let svgRef: SVGSVGElement | undefined
   let dragState: { startX: number; startY: number; baseX: number; baseY: number } | null = null
 
@@ -4399,6 +4828,7 @@ function ExperienceGraphView(props: {
   }
   const onMouseMove = (e: MouseEvent) => {
     if (!dragState) return
+    userMovedView = true
     setPan({
       x: dragState.baseX + (e.clientX - dragState.startX),
       y: dragState.baseY + (e.clientY - dragState.startY),
@@ -4410,6 +4840,7 @@ function ExperienceGraphView(props: {
   const onWheel = (e: WheelEvent) => {
     if (!svgRef) return
     e.preventDefault()
+    userMovedView = true
     const rect = svgRef.getBoundingClientRect()
     const px = e.clientX - rect.left
     const py = e.clientY - rect.top
@@ -4423,9 +4854,29 @@ function ExperienceGraphView(props: {
     setZoom(nz)
     setPan({ x: px - cx * nz, y: py - cy * nz })
   }
+  // Reset view → re-arm the auto-fit effect so it re-centres on the next
+  // layout / size change (and immediately, via the createEffect rerun).
   const resetView = () => {
-    setZoom(1)
-    setPan({ x: 0, y: 0 })
+    userMovedView = false
+    // Trigger the auto-fit effect by reading layoutBBox(); it will set
+    // zoom + pan based on the current bbox.
+    const bb = layoutBBox()
+    const s = size()
+    if (!bb) {
+      setZoom(1)
+      setPan({ x: 0, y: 0 })
+      return
+    }
+    const bw = Math.max(bb.maxX - bb.minX, 1)
+    const bh = Math.max(bb.maxY - bb.minY, 1)
+    const margin = 32
+    const sx = (s.w - 2 * margin) / bw
+    const sy = (s.h - 2 * margin) / bh
+    const z = Math.max(0.4, Math.min(1, Math.min(sx, sy)))
+    setZoom(z)
+    const cx = (bb.minX + bb.maxX) / 2
+    const cy = (bb.minY + bb.maxY) / 2
+    setPan({ x: s.w / 2 - cx * z, y: s.h / 2 - cy * z })
   }
 
   onMount(() => {
@@ -4845,9 +5296,26 @@ export default function RefinerPage() {
 
   const [selection, setSelection] = createSignal<Selection>()
   const [action, setAction] = createSignal<ActionKind | undefined>()
+  /* Multi-select for "Merge" — populated when the user shift-clicks /
+   * cmd-clicks experience cards. Empty by default. The Merge button in
+   * the header is disabled when fewer than 2 are selected. */
+  const [selectedIds, setSelectedIds] = createSignal<string[]>([])
   const [activeCategory, setActiveCategory] = createSignal<string | undefined>()
+  /* Active tag filter — separate from `activeCategory`. Tags are the
+   * granular labels each experience carries (categories[]). Clicking a
+   * #tag chip on a card sets this; the experience list shows only ones
+   * containing that tag. Toggling the same tag clears the filter. */
+  const [activeTag, setActiveTag] = createSignal<string | undefined>()
   const [activeKind, setActiveKind] = createSignal<Kind | undefined>()
   const [query, setQuery] = createSignal<string>("")
+  // Refiner activity log modal state. `showLogs` toggles the modal;
+  // `logEntries` is reloaded when the modal opens. The modal browses
+  // every refiner run (including queries that never crystallised into
+  // an experience), grouped by session, so the user can audit how the
+  // refiner agent decided what to keep / drop.
+  const [showLogs, setShowLogs] = createSignal(false)
+  const [logEntries, setLogEntries] = createSignal<RefinerLogEntry[]>([])
+  const [logsLoading, setLogsLoading] = createSignal(false)
   const [sortMode, setSortMode] = createSignal<"kind" | "recent" | "newest">("kind")
   const [includeArchived, setIncludeArchived] = createSignal(false)
   const [scopeMode, setScopeMode] = createSignal<"all" | "session">("all")
@@ -4900,6 +5368,34 @@ export default function RefinerPage() {
     }
   }
 
+  // Loader for the refiner log modal — fired on open. We don't poll;
+  // the user explicitly clicks the Logs button when they want to look.
+  const reloadLogs = async () => {
+    const current = server.current
+    if (!current) return
+    setLogsLoading(true)
+    try {
+      const result = await fetchRefinerLog({
+        baseUrl: current.http.url,
+        directory: sdk.directory,
+        password: current.http.password,
+        username: current.http.username,
+        fetcher: platform.fetch,
+      })
+      // Newest first — append-only on disk so reverse here.
+      setLogEntries([...result.entries].reverse())
+    } catch (err) {
+      console.error("refiner log load failed", err)
+      setLogEntries([])
+    } finally {
+      setLogsLoading(false)
+    }
+  }
+  const openLogs = () => {
+    setShowLogs(true)
+    void reloadLogs()
+  }
+
   // Each resource is wrapped in `stableFetcher` so polling refetches don't
   // produce new object references when the server returned an identical
   // payload — that would otherwise re-key every <For> row and re-run every
@@ -4936,15 +5432,11 @@ export default function RefinerPage() {
     ),
   )
 
-  // Auto-open the most recent experience ONCE on first data load.
-  // Guarded with a flag so that refetch polls won't re-open it after the
-  // user closes the modal.
-  //
-  // Hash deeplink: when the URL has `#<experience_id>` (e.g. linked from the
-  // retrieve page's exp chip), open THAT experience instead of the latest.
-  // We also listen for hash changes so navigating to a different exp from
-  // outside (or via History API) re-opens the correct card.
-  let autoOpened = false
+  // Hash deeplink only: when the URL has `#<experience_id>` (e.g. linked from
+  // the retrieve page's exp chip), open THAT experience. We do NOT auto-open
+  // the most recent experience anymore — users found that intrusive. They land
+  // on the page and can browse / pick on their own.
+  let hashOpened = false
   const openExpFromHash = (data: NonNullable<ReturnType<typeof overview>>): boolean => {
     if (typeof window === "undefined") return false
     const hash = window.location.hash.replace(/^#/, "").trim()
@@ -4956,11 +5448,10 @@ export default function RefinerPage() {
   }
   createEffect(() => {
     const data = overview()
-    if (!data || autoOpened || selection()) return
-    autoOpened = true
-    if (openExpFromHash(data)) return
-    const latest = data.experiences[0]
-    if (latest) setSelection({ kind: "experience", id: `experience:${latest.id}` })
+    if (!data || hashOpened || selection()) return
+    if (openExpFromHash(data)) {
+      hashOpened = true
+    }
   })
 
   // Re-act to hashchange so deeplinks fired AFTER initial load (e.g. user
@@ -5073,16 +5564,35 @@ export default function RefinerPage() {
     return experienceByID().get(id)
   })
 
+  // All unique #tag values across the experience library, sorted by
+  // frequency desc. Powers the substrip's tag-dropdown filter so the
+  // user can pick a tag without first finding a card that has it
+  // (the previous design forced you to click an inline #chip).
+  const allTags = createMemo<Array<{ tag: string; count: number }>>(() => {
+    const counter = new Map<string, number>()
+    for (const e of overview()?.experiences ?? []) {
+      for (const t of e.categories ?? []) {
+        if (!t) continue
+        counter.set(t, (counter.get(t) ?? 0) + 1)
+      }
+    }
+    return [...counter.entries()]
+      .map(([tag, count]) => ({ tag, count }))
+      .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag))
+  })
+
   // Filtered experience list (applies kind/category/query/archived filters)
   const visibleExperiences = createMemo(() => {
     const all = overview()?.experiences ?? []
     const archivedOk = includeArchived()
     const cat = activeCategory()
     const kind = activeKind()
+    const tag = activeTag()
     const q = query().trim().toLowerCase()
     return all.filter((e) => {
       if (!archivedOk && e.archived) return false
       if (cat && !(e.categories ?? []).includes(cat)) return false
+      if (tag && !(e.categories ?? []).includes(tag)) return false
       if (kind && e.kind !== kind) return false
       if (q) {
         const hay = [
@@ -5116,6 +5626,53 @@ export default function RefinerPage() {
     return arr
   })
 
+  // Mapping from Experience → RuneKnowledgeExp for the new design list +
+  // graph components. Each card renders kind chip + title + abstract excerpt
+  // + scope/tags row + obs count + flag (pending/rejected) — same data, just
+  // arranged per the design template.
+  const runeExperiences = createMemo<RuneKnowledgeExp[]>(() => {
+    const ageOf = (e: Experience): string => {
+      if (!e.last_refined_at) return ""
+      const days = Math.max(0, Math.floor((Date.now() - e.last_refined_at) / 86400000))
+      if (days === 0) return "今"
+      if (days < 30) return `${days}d`
+      if (days < 365) return `${Math.floor(days / 30)}mo`
+      return `${Math.floor(days / 365)}y`
+    }
+    const status = (e: Experience): RuneKnowledgeExp["flag"] => {
+      const r = e.review_status
+      if (r === "pending") return "pending"
+      if (r === "rejected") return "rejected"
+      return undefined
+    }
+    return visibleExperiencesFlat().map((e) => ({
+      id: e.id,
+      cat: e.kind,
+      catLabel: kindDisplay(e.kind),
+      title: e.title,
+      body: e.abstract,
+      scope: e.scope,
+      flag: status(e),
+      ago: ageOf(e),
+      obs: e.observations?.length,
+      tags: e.categories ?? [],
+      statement: e.statement,
+    }))
+  })
+
+  // Edges adapted for RuneKnowledgeGraph (radial layout). The chain graph
+  // endpoint is the source of truth; we project it into the simple {a,b,kind}
+  // shape the design's graph expects.
+  const runeGraphEdges = createMemo<RuneKnowledgeEdge[]>(() => {
+    const data = chainGraph.latest
+    if (!data) return []
+    return (data.edges ?? []).map((e) => ({
+      a: e.from,
+      b: e.to,
+      kind: e.kind,
+    }))
+  })
+
   const experiencesByKind = createMemo(() => {
     const map = new Map<Kind, Experience[]>()
     for (const exp of visibleExperiences()) {
@@ -5135,7 +5692,17 @@ export default function RefinerPage() {
     return map
   })
 
-  const pickExperienceByID = (id: string) => {
+  const pickExperienceByID = (id: string, modifiers?: { shift?: boolean; meta?: boolean }) => {
+    // Shift / Cmd / Ctrl-click → toggle multi-select for Merge.
+    if (modifiers?.shift || modifiers?.meta) {
+      setSelectedIds((prev) => {
+        if (prev.includes(id)) return prev.filter((x) => x !== id)
+        return [...prev, id]
+      })
+      return
+    }
+    // Plain click → clear multi-select and open detail.
+    setSelectedIds([])
     setSelection({ kind: "experience", id: `experience:${id}` })
   }
 
@@ -5364,11 +5931,244 @@ export default function RefinerPage() {
     return out
   })
 
-  return (
-    <div class="refiner-page relative flex size-full min-h-0 flex-col overflow-hidden">
-      <SessionHeader />
+  // Categories surfaced into the unified Rail so the body view stays
+  // focused on the list / graph. The core 7 kinds (workflow_rule etc.)
+  // plus any custom slugs become Rail sub-rows; clicking syncs the
+  // existing kind filter signal so all downstream filtering still works.
+  const railCategorySubs = createMemo(() => {
+    const tax = taxonomy()
+    const counts = kindCounts()
+    const items: { id: string; title: string; meta?: string }[] = [
+      {
+        id: "__all",
+        title: "全部",
+        meta: String(overview()?.status.total_experiences ?? 0),
+      },
+    ]
+    if (!tax) return items
+    const coreSlugs = (tax.core ?? []).map((k) =>
+      typeof k === "string" ? k : k.slug,
+    )
+    for (const slug of coreSlugs) {
+      const c = counts.get(slug as Kind) ?? 0
+      items.push({
+        id: slug,
+        title: kindDisplay(slug as Kind),
+        meta: c > 0 ? String(c) : undefined,
+      })
+    }
+    for (const c of tax.custom ?? []) {
+      items.push({
+        id: c.slug,
+        title: c.slug.replace(/^custom:/, ""),
+        meta: c.count > 0 ? String(c.count) : undefined,
+      })
+    }
+    return items
+  })
 
-      <div class="rf-top">
+  // Publish chrome config to the parent UnifiedShell via the shell bridge.
+  // The parent shell consumes this reactively without remounting on rail
+  // navigation — the visual effect is in-page module switching.
+  const shell = useShellBridge()
+  // Knowledge rail badge = experiences awaiting review (review_status =
+  // "pending"). The badge appears next to "Knowledge" in the rail to
+  // signal "stuff needs your attention".
+  const pendingReviewCount = createMemo(() => {
+    const exps = overview()?.experiences ?? []
+    return exps.filter((e) => (e.review_status ?? "approved") === "pending").length
+  })
+  createEffect(() => {
+    shell.setChrome({
+      header: {
+        parent: "Knowledge",
+        title: "Experience library",
+        meta: [
+          { k: "EXP", v: String(overview()?.status.total_experiences ?? 0) },
+          { k: "OBS", v: String(overview()?.status.total_observations ?? 0) },
+        ],
+        // Action cluster: refresh / merge selected / import / new / export.
+        // Re-index was renamed to ↻ "刷新" because users found "Re-index"
+        // ambiguous (it suggested rebuilding embeddings; in fact it just
+        // re-fetches the overview + taxonomy from disk, which the page
+        // already polls automatically every 5 minutes).
+        actions: (
+          <>
+            <button
+              type="button"
+              class="rune-btn"
+              data-size="sm"
+              onClick={() => void refreshAll()}
+              title="重新拉取 overview 与 taxonomy 缓存"
+            >
+              ↻ 刷新
+            </button>
+            <button
+              type="button"
+              class="rune-btn"
+              data-size="sm"
+              disabled={selectedIds().length < 2}
+              onClick={() => setAction({ type: "merge", ids: selectedIds() })}
+              title="将多条选中的 experience 合并为一条（保留全部 observation）"
+            >
+              ⥁ Merge
+              <Show when={selectedIds().length >= 2}>
+                <span style={{ "margin-left": "4px", "font-variant-numeric": "tabular-nums" }}>
+                  ·{selectedIds().length}
+                </span>
+              </Show>
+            </button>
+            <button
+              type="button"
+              class="rune-btn"
+              data-size="sm"
+              onClick={() => setAction({ type: "ingest", sessionID: params.id ?? "" })}
+              title="从历史会话中挑选 user query 手动归纳为 experience"
+              disabled={!params.id}
+            >
+              ⇅ From history
+            </button>
+            <button
+              type="button"
+              class="rune-btn"
+              data-size="sm"
+              onClick={() => setAction({ type: "import" })}
+              title="导入 JSON 包（合并或替换）"
+            >
+              ⤴ Import
+            </button>
+            <button
+              type="button"
+              class="rune-btn"
+              data-size="sm"
+              onClick={() => {
+                const data = overview()?.experiences ?? []
+                if (data.length === 0) return
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })
+                const url = URL.createObjectURL(blob)
+                const a = document.createElement("a")
+                a.href = url
+                a.download = `experiences-${new Date().toISOString().slice(0, 10)}.json`
+                a.click()
+                URL.revokeObjectURL(url)
+              }}
+              title="导出 experience 库为 JSON"
+            >
+              ⤵ Export
+            </button>
+            <button
+              type="button"
+              class="rune-btn"
+              data-size="sm"
+              onClick={openLogs}
+              title="查看 refiner agent 的活动日志（按 session/query 浏览所有 refiner 运行，包含没有沉淀为 experience 的 query）"
+            >
+              ⌥ Logs
+            </button>
+            <button
+              type="button"
+              class="rune-btn"
+              data-size="sm"
+              data-variant="primary"
+              onClick={() => setAction({ type: "create" })}
+              title="手动新建 experience"
+            >
+              ＋ New
+            </button>
+          </>
+        ),
+      },
+      // Design's Knowledge ships both List and Graph views (segmented
+      // toggle in the design — sliding pill rather than text-link tabs).
+      // The right cluster carries the unified RuneModelPicker — without
+      // this the user has no way to pick the refiner's LLM (the legacy
+      // `rf-top` toolbar that used to host it is `display:none`'d when
+      // running inside the unified shell).
+      substrip: {
+        tabs: [
+          { id: "list", name: "List" },
+          { id: "graph", name: "Graph" },
+        ],
+        active: viewMode(),
+        onTab: (id: string) => setViewMode(id as "list" | "graph"),
+        variant: "segmented",
+        right: (
+          <div class="rune-row rune-gap-2">
+            {/* Search input — narrow, ghost border (consistent with the
+              * Workflow substrip search). Filters by title, abstract,
+              * statement, task_type, categories, and observation text. */}
+            <div class="rune-search-input">
+              <span class="rune-search-icon" aria-hidden>
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="7" cy="7" r="4.5" />
+                  <path d="M11 11l3 3" />
+                </svg>
+              </span>
+              <input
+                type="text"
+                placeholder="搜索 exp…"
+                value={query()}
+                onInput={(e) => setQuery(e.currentTarget.value)}
+              />
+              <Show when={query()}>
+                <button
+                  type="button"
+                  class="rune-search-clear"
+                  aria-label="Clear search"
+                  onClick={() => setQuery("")}
+                >×</button>
+              </Show>
+            </div>
+            {/* Tag dropdown — picks a single #tag from the library's
+              * full set, ranked by frequency. Selecting a tag drives
+              * `activeTag` (same signal that inline chip clicks set),
+              * so list + graph both react. */}
+            <select
+              class="rune-tag-select"
+              value={activeTag() ?? ""}
+              onChange={(e) => {
+                const v = e.currentTarget.value
+                setActiveTag(v ? v : undefined)
+              }}
+              title="按 tag 过滤"
+            >
+              <option value="">所有 tag</option>
+              <For each={allTags()}>
+                {(t) => <option value={t.tag}>#{t.tag} · {t.count}</option>}
+              </For>
+            </select>
+            <RuneModelPicker
+              current={config()?.resolved ?? overview()?.model}
+              source={config()?.source}
+              kicker="MODEL"
+              onChange={updateModel}
+              onReset={resetModel}
+            />
+          </div>
+        ),
+      },
+      railSubs: railCategorySubs(),
+      activeSubId: activeKind() ?? "__all",
+      onPickSub: (id: string) => {
+        if (id === "__all") setActiveKind(undefined)
+        else setActiveKind(id as Kind)
+      },
+      railBadges: pendingReviewCount() > 0 ? { knowledge: pendingReviewCount() } : undefined,
+    })
+  })
+  // Reset chrome when this page unmounts so a stale config doesn't bleed
+  // into the next module that mounts.
+  onCleanup(() => shell.setChrome({}))
+
+  return (
+    <div class="refiner-page relative flex size-full min-h-0 flex-col overflow-hidden" data-rune-shell-knowledge="true">
+
+      {/* Legacy rf-top toolbar — hidden when running inside UnifiedShell.
+          Its functions (Refiner header, model picker, view toggle, scope
+          toggle, refresh) are now provided by the shell's Header /
+          Substrip. The block is kept rendered so all the buttons remain
+          mounted (existing handlers / focus refs / etc.); CSS hides it. */}
+      <div class="rf-top" style={{ display: "none" }}>
         <div class="rf-brand">
           <span class="rf-brand-title">Refiner</span>
           <span class="rf-brand-meta">
@@ -5384,9 +6184,10 @@ export default function RefinerPage() {
           </span>
         </div>
 
-        <ModelPicker
+        <RuneModelPicker
           current={config()?.resolved ?? overview()?.model}
           source={config()?.source}
+          kicker="MODEL"
           onChange={updateModel}
           onReset={resetModel}
         />
@@ -5512,23 +6313,30 @@ export default function RefinerPage() {
         </Button>
       </div>
 
-      <Filterbar
-        taxonomy={taxonomy()}
-        countsByKind={kindCounts()}
-        categories={categoriesData()?.categories ?? []}
-        totalCount={overview()?.experiences.length ?? 0}
-        activeKind={activeKind()}
-        setActiveKind={setActiveKind}
-        activeCategory={activeCategory()}
-        setActiveCategory={setActiveCategory}
-        query={query()}
-        setQuery={setQuery}
-        sort={sortMode()}
-        setSort={setSortMode}
-      />
+      {/* Plan B: kind/category filtering is in the unified shell rail
+          (left sub-list under Knowledge). The legacy Filterbar overlapped
+          with rail subs and is no longer rendered. Its component is kept
+          defined in case any debugging path mounts it directly. */}
 
       <Show when={banner()}>
         <div class="rf-banner">{banner()}</div>
+      </Show>
+
+      {/* Tag-filter banner — lifted above the stage so it shows in BOTH
+          list and graph views (the chip is set from list cards but the
+          graph also needs to honour it). */}
+      <Show when={activeTag()}>
+        <div class="rf-tag-filter-bar">
+          <span class="rf-tag-filter-label">已按 tag 筛选:</span>
+          <button
+            type="button"
+            class="rune-chip kw-tag-chip is-active"
+            onClick={() => setActiveTag(undefined)}
+            title="点击清除筛选"
+          >
+            #{activeTag()} ×
+          </button>
+        </div>
       </Show>
 
       <div class="rf-stage" data-view={viewMode()}>
@@ -5536,12 +6344,11 @@ export default function RefinerPage() {
           <div class="rf-main rf-main-graph">
             <ExperienceGraphView
               data={chainGraph.latest}
-              // Only show "loading" on the first load; during a poll refetch
-              // we keep the previous graph mounted so the page doesn't flash.
               loading={chainGraph.loading && !chainGraph.latest}
               onPick={pickExperienceByID}
               activeKind={activeKind()}
               activeCategory={activeCategory()}
+              activeTag={activeTag()}
               activeEdgeKinds={graphEdgeKinds()}
               toggleEdgeKind={toggleGraphEdgeKind}
               includeArchived={includeArchived()}
@@ -5549,135 +6356,24 @@ export default function RefinerPage() {
           </div>
         </Show>
         <Show when={viewMode() === "list"}>
-        <div class="rf-main">
-          <div class="rf-list-view">
-            <div class="rf-list-inner">
-              <div class="rf-list-header">
-                <div class="rf-list-title">
-                  经验列表
-                  <span class="rf-list-title-sub">
-                    {visibleExperiences().length} 条
-                    <Show when={query()}>
-                      {" · 匹配 "}
-                      <em>{`"${query()}"`}</em>
-                    </Show>
-                  </span>
-                </div>
-                <div class="rf-list-controls">
-                  <Show
-                    when={mergeIDs().size > 0}
-                    fallback={
-                      <button
-                        class="rf-topbtn rf-topbtn-ghost"
-                        onClick={() => setAction({ type: "create" })}
-                      >
-                        ＋ 新建
-                      </button>
-                    }
-                  >
-                    <span class="rf-list-selected">{mergeIDs().size} 已选</span>
-                    <button
-                      class="rf-topbtn"
-                      disabled={mergeIDs().size < 2}
-                      onClick={() =>
-                        setAction({
-                          type: "merge",
-                          ids: [...mergeIDs()],
-                        })
-                      }
-                    >
-                      合并 {mergeIDs().size}
-                    </button>
-                    <button
-                      class="rf-topbtn"
-                      onClick={async () => {
-                        for (const id of mergeIDs()) {
-                          await handleArchiveToggle(id, true)
-                        }
-                        clearMergeSelection()
-                      }}
-                    >
-                      归档
-                    </button>
-                    <button
-                      class="rf-topbtn rf-topbtn-ghost"
-                      onClick={clearMergeSelection}
-                    >
-                      取消
-                    </button>
-                  </Show>
-                </div>
-              </div>
-
-              <Show
-                when={visibleExperiences().length > 0}
-                fallback={
-                  <div class="rf-list-empty">
-                    <h3>没有匹配的经验</h3>
-                    <p>试试清空搜索，或者切换其他分类。</p>
-                  </div>
-                }
-              >
-                <Show
-                  when={sortMode() === "kind"}
-                  fallback={
-                    <section class="rf-list-group">
-                      <For each={visibleExperiencesFlat()}>
-                        {(item) => (
-                          <ExperienceRow
-                            item={item}
-                            query={query()}
-                            selected={
-                              selection()?.id === `experience:${item.id}`
-                            }
-                            mergeSel={mergeIDs().has(item.id)}
-                            anySelected={mergeIDs().size > 0}
-                            onOpen={() => pickExperienceByID(item.id)}
-                            onToggleCheck={() => toggleMergeSelect(item.id)}
-                          />
-                        )}
-                      </For>
-                    </section>
-                  }
-                >
-                  <For each={experiencesByKind()}>
-                    {([kind, items]) => (
-                      <section class="rf-list-group">
-                        <header
-                          class="rf-list-group-head"
-                          data-palette={paletteFor(kind)}
-                        >
-                          <span class="rf-list-group-bar" />
-                          <span class="rf-list-group-title">
-                            {kindDisplay(kind)}
-                          </span>
-                          <span class="rf-list-group-count">{items.length}</span>
-                        </header>
-                        <For each={items}>
-                          {(item) => (
-                            <ExperienceRow
-                              item={item}
-                              query={query()}
-                              selected={
-                                selection()?.id === `experience:${item.id}`
-                              }
-                              mergeSel={mergeIDs().has(item.id)}
-                              anySelected={mergeIDs().size > 0}
-                              onOpen={() => pickExperienceByID(item.id)}
-                              onToggleCheck={() => toggleMergeSelect(item.id)}
-                            />
-                          )}
-                        </For>
-                      </section>
-                    )}
-                  </For>
-                </Show>
-              </Show>
-            </div>
+          <div class="rf-main">
+            <RuneKnowledgeList
+              experiences={runeExperiences()}
+              selectedIds={new Set(selectedIds())}
+              activeTag={activeTag()}
+              onPickTag={(t) => setActiveTag(activeTag() === t ? undefined : t)}
+              pickedId={(() => {
+                const sel = selection()
+                if (!sel) return undefined
+                return sel.id.startsWith("experience:")
+                  ? sel.id.slice("experience:".length)
+                  : sel.id
+              })()}
+              onPick={pickExperienceByID}
+              emptyText="没有匹配的经验。试试清空搜索或切换其他分类。"
+            />
           </div>
-        </div>
         </Show>
-
       </div>
 
       <ExperienceModal
@@ -5700,6 +6396,15 @@ export default function RefinerPage() {
           return usageStats()?.[sel.id]
         })()}
       />
+
+      <Show when={showLogs()}>
+        <RefinerLogsModal
+          entries={logEntries()}
+          loading={logsLoading()}
+          onClose={() => setShowLogs(false)}
+          onReload={() => void reloadLogs()}
+        />
+      </Show>
 
       <MergeTray
         selected={mergeSelectedExperiences()}

@@ -6,6 +6,7 @@ import { errors } from "../../error"
 import { Snapshot } from "@/snapshot"
 import {
   discussionGet,
+  discussionStart,
   discussionWrite,
   SandTableDiscussionSchema,
 } from "@/tool/sand-table"
@@ -32,6 +33,55 @@ export function WorkflowRoutes() {
       validator("param", z.object({ discussionID: z.string() })),
       async (c) => {
         const result = discussionGet(c.req.valid("param").discussionID)
+        if (!result) return c.body(null, 404)
+        return c.json(result)
+      },
+    )
+    .post(
+      "/sand_table/:discussionID/start",
+      describeRoute({
+        summary: "Confirm and start a paused sand table discussion",
+        description:
+          "Releases a discussion stuck in `awaiting_start` (i.e. when " +
+          "`experimental.sand_table.confirm_before_start` is enabled). The " +
+          "request body may override planner / evaluator agent + model — " +
+          "anything left unset keeps the previously-resolved value from " +
+          "config. Returns the updated state. 404 if the discussion ID is " +
+          "unknown; idempotent no-op (returns the live state) if the " +
+          "discussion has already started.",
+        operationId: "workflow.sand_table.start",
+        responses: {
+          200: {
+            description: "Started sand table discussion",
+            content: {
+              "application/json": {
+                schema: resolver(SandTableDiscussionSchema),
+              },
+            },
+          },
+          ...errors(404),
+        },
+      }),
+      validator("param", z.object({ discussionID: z.string() })),
+      validator(
+        "json",
+        z
+          .object({
+            planner_model: z
+              .object({ providerID: z.string(), modelID: z.string() })
+              .optional(),
+            evaluator_model: z
+              .object({ providerID: z.string(), modelID: z.string() })
+              .optional(),
+            planner_agent: z.string().optional(),
+            evaluator_agent: z.string().optional(),
+          })
+          .optional(),
+      ),
+      async (c) => {
+        const param = c.req.valid("param")
+        const body = c.req.valid("json") ?? {}
+        const result = discussionStart(param.discussionID, body)
         if (!result) return c.body(null, 404)
         return c.json(result)
       },

@@ -15,6 +15,7 @@
  */
 
 import {
+  createEffect,
   createMemo,
   createResource,
   createSignal,
@@ -23,12 +24,15 @@ import {
   onMount,
   Show,
 } from "solid-js"
+import { Portal } from "solid-js/web"
 import { useNavigate, useParams } from "@solidjs/router"
-import { SessionHeader } from "@/components/session"
-import { useModels } from "@/context/models"
+import { useShellBridge } from "@/components/unified-shell/shell-bridge"
+import { TraceRecall, type TraceRecallEntry } from "@/components/unified-shell/modules"
+import { RuneModelPicker } from "@/components/unified-shell/model-picker"
 import { usePlatform } from "@/context/platform"
 import { useSDK } from "@/context/sdk"
 import { useServer } from "@/context/server"
+import { useSync } from "@/context/sync"
 import { stableFetcher } from "@/utils/stable-fetch"
 import "./retrieve-page.css"
 
@@ -75,6 +79,16 @@ type RetrieveLogEntry = {
   error?: string
   duration_ms: number
   created_at: number
+  llm_trace?: {
+    provider_id?: string
+    model_id?: string
+    system_prompt?: string
+    user_prompt: string
+    response_text?: string
+    reasoning_text?: string
+    structured_output?: unknown
+    error?: string
+  }
 }
 
 type LogResponse = { entries: RetrieveLogEntry[] }
@@ -266,18 +280,9 @@ const kindName = (kind: string) => {
   return KIND_NAME[kind] ?? kind
 }
 
-const SOURCE_LABEL_MAP: Record<ConfigSource, string> = {
-  override: "override",
-  agent: "agent config",
-  default: "default",
-  none: "—",
-}
-
-const modelLabel = (model?: { providerID: string; modelID: string }) =>
-  model ? `${model.providerID}/${model.modelID}` : "—"
-
 /* ──────────────────────────────────────────────────────
-   Generic dropdown — used by both session & model pickers
+   Generic dropdown — used by the session picker. The model
+   picker now lives in `@/components/unified-shell/model-picker`.
    ────────────────────────────────────────────────────── */
 
 function Chev() {
@@ -321,9 +326,19 @@ function ExternalLink() {
 
 type SessionSummary = {
   id: string
+  /** Session title from sync.data.session — falls back to short id if absent. */
+  title: string
   totalTurns: number
   recallTurns: number
   lastAt: number
+}
+
+/** Truncate to N chars with ellipsis. Cheap helper used in the picker
+ *  to keep both the trigger label and dropdown rows on a single line. */
+function truncate(s: string | undefined, n: number): string {
+  if (!s) return ""
+  if (s.length <= n) return s
+  return s.slice(0, n - 1) + "…"
 }
 
 function SessionPicker(props: {
@@ -334,24 +349,60 @@ function SessionPicker(props: {
   urlSessionId?: string
 }) {
   const [open, setOpen] = createSignal(false)
-  let root: HTMLDivElement | undefined
+  // Position cache for the portaled dropdown — recomputed on every open
+  // from the trigger's boundingClientRect. Keeps the menu attached to
+  // the trigger visually while living at <body> level structurally
+  // (avoids any parent overflow/isolation clipping).
+  const [coords, setCoords] = createSignal<{ top: number; right: number; width: number }>({
+    top: 0,
+    right: 0,
+    width: 320,
+  })
+  let triggerEl: HTMLButtonElement | undefined
+
+  const reposition = () => {
+    if (!triggerEl) return
+    const r = triggerEl.getBoundingClientRect()
+    // Anchor the menu under the trigger and right-aligned to it (the
+    // trigger usually sits in substrip-right). Width clamped to avoid
+    // overflowing on narrow viewports.
+    const width = Math.min(360, Math.max(280, window.innerWidth - 32))
+    setCoords({
+      top: r.bottom + 8,
+      right: Math.max(8, window.innerWidth - r.right),
+      width,
+    })
+  }
+
+  const toggle = () => {
+    if (!open()) reposition()
+    setOpen((v) => !v)
+  }
 
   onMount(() => {
-    const handler = (e: MouseEvent) => {
-      if (!root) return
-      if (!root.contains(e.target as Node)) setOpen(false)
+    const onResize = () => {
+      if (open()) reposition()
     }
-    document.addEventListener("mousedown", handler)
-    onCleanup(() => document.removeEventListener("mousedown", handler))
+    window.addEventListener("resize", onResize)
+    window.addEventListener("scroll", onResize, true)
+    onCleanup(() => {
+      window.removeEventListener("resize", onResize)
+      window.removeEventListener("scroll", onResize, true)
+    })
   })
 
   return (
-    <div class="rt-pop-wrap" ref={(el) => (root = el)}>
-      <button class="rt-pop-trigger" type="button" onClick={() => setOpen((v) => !v)}>
+    <div class="rt-pop-wrap">
+      <button
+        class="rt-pop-trigger"
+        type="button"
+        ref={(el) => (triggerEl = el)}
+        onClick={toggle}
+      >
         <span class="rt-kicker">SESSION</span>
         <span class="rt-pop-label">
           <Show when={props.current} fallback="—">
-            <code>{props.current!.id.slice(-12)}</code>
+            <span class="rt-pop-title">{truncate(props.current!.title, 24)}</span>
             <Show when={props.urlSessionId === props.current!.id}>
               <span class="rt-current-pill">当前</span>
             </Show>
@@ -360,167 +411,60 @@ function SessionPicker(props: {
         <Chev />
       </button>
       <Show when={open()}>
-        <>
-          <div class="rt-pop-scrim" onClick={() => setOpen(false)} />
-          <div class="rt-pop-menu">
-            <Show
-              when={props.options.length > 0}
-              fallback={<div class="rt-pop-empty">尚无 session</div>}
+        <Portal>
+          <div class="rt-portal-host">
+            <div class="rt-pop-scrim" onClick={() => setOpen(false)} />
+            <div
+              class="rt-pop-menu rt-pop-menu-portal"
+              style={{
+                top: `${coords().top}px`,
+                right: `${coords().right}px`,
+                width: `${coords().width}px`,
+              }}
             >
-              <For each={props.options}>
-                {(s) => (
-                  <button
-                    type="button"
-                    class="rt-pop-opt"
-                    classList={{
-                      active: props.current?.id === s.id,
-                    }}
-                    onClick={() => {
-                      props.onPick(s.id)
-                      setOpen(false)
-                    }}
-                  >
-                    <span class="rt-pop-opt-ttl">
-                      <code>{s.id.slice(-12)}</code>
-                      <Show when={props.urlSessionId === s.id}>
-                        <span class="rt-current-pill">当前</span>
-                      </Show>
-                    </span>
-                    <span class="rt-pop-opt-sub">
-                      {fmtSessionDate(s.lastAt)} · {s.recallTurns}/{s.totalTurns} 轮命中
-                    </span>
-                  </button>
-                )}
-              </For>
-            </Show>
+              <Show
+                when={props.options.length > 0}
+                fallback={<div class="rt-pop-empty">尚无 session</div>}
+              >
+                <For each={props.options}>
+                  {(s) => (
+                    <button
+                      type="button"
+                      class="rt-pop-opt"
+                      classList={{
+                        active: props.current?.id === s.id,
+                      }}
+                      onClick={() => {
+                        props.onPick(s.id)
+                        setOpen(false)
+                      }}
+                    >
+                      <span class="rt-pop-opt-ttl">
+                        <span class="rt-pop-title">{truncate(s.title, 36)}</span>
+                        <Show when={props.urlSessionId === s.id}>
+                          <span class="rt-current-pill">当前</span>
+                        </Show>
+                      </span>
+                      <span class="rt-pop-opt-sub">
+                        {fmtSessionDate(s.lastAt)} · {s.recallTurns}/{s.totalTurns} 轮命中
+                      </span>
+                    </button>
+                  )}
+                </For>
+              </Show>
+            </div>
           </div>
-        </>
+        </Portal>
       </Show>
     </div>
   )
 }
 
 /* ──────────────────────────────────────────────────────
-   Model picker — runtime config override (kept from prev)
+   (Old per-page ModelPicker removed — replaced by the shared
+   `RuneModelPicker` from `@/components/unified-shell/model-picker`
+   so all three runtime modules share a single visual treatment.)
    ────────────────────────────────────────────────────── */
-
-function ModelPicker(props: {
-  current?: { providerID: string; modelID: string }
-  source: ConfigSource
-  busy: boolean
-  onChange: (model: { providerID: string; modelID: string }) => void
-  onReset: () => void
-}) {
-  const models = useModels()
-  const [open, setOpen] = createSignal(false)
-  let root: HTMLDivElement | undefined
-
-  onMount(() => {
-    const handler = (e: MouseEvent) => {
-      if (!root) return
-      if (!root.contains(e.target as Node)) setOpen(false)
-    }
-    document.addEventListener("mousedown", handler)
-    onCleanup(() => document.removeEventListener("mousedown", handler))
-  })
-
-  const list = createMemo(() => {
-    try {
-      return models
-        .list()
-        .filter((m) => models.visible({ providerID: m.provider.id, modelID: m.id }))
-    } catch {
-      return []
-    }
-  })
-
-  const grouped = createMemo(() => {
-    const map = new Map<string, Array<{ providerID: string; modelID: string; name: string }>>()
-    for (const m of list()) {
-      const key = m.provider.name ?? m.provider.id
-      const arr = map.get(key) ?? []
-      arr.push({ providerID: m.provider.id, modelID: m.id, name: m.name })
-      map.set(key, arr)
-    }
-    return [...map.entries()]
-  })
-
-  return (
-    <div class="rt-pop-wrap" ref={(el) => (root = el)}>
-      <button
-        class="rt-pop-trigger"
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        disabled={props.busy}
-        title={`source: ${SOURCE_LABEL_MAP[props.source]}`}
-      >
-        <span class="rt-kicker">MODEL</span>
-        <span class="rt-pop-label">{modelLabel(props.current)}</span>
-        <Show when={props.source !== "none"}>
-          <span class="rt-source-tag" data-source={props.source}>
-            {SOURCE_LABEL_MAP[props.source]}
-          </span>
-        </Show>
-        <Chev />
-      </button>
-      <Show when={open()}>
-        <>
-          <div class="rt-pop-scrim" onClick={() => setOpen(false)} />
-          <div class="rt-pop-menu rt-pop-menu-right">
-            <Show when={props.source === "override"}>
-              <button
-                type="button"
-                class="rt-pop-opt rt-pop-opt-reset"
-                onClick={() => {
-                  props.onReset()
-                  setOpen(false)
-                }}
-              >
-                ⟲ 恢复默认（清除 override）
-              </button>
-              <div class="rt-pop-sep" />
-            </Show>
-            <Show
-              when={grouped().length > 0}
-              fallback={<div class="rt-pop-empty">暂无可用模型</div>}
-            >
-              <For each={grouped()}>
-                {([providerName, items]) => (
-                  <>
-                    <div class="rt-pop-group">{providerName}</div>
-                    <For each={items}>
-                      {(item) => {
-                        const active = () =>
-                          props.current?.providerID === item.providerID &&
-                          props.current?.modelID === item.modelID
-                        return (
-                          <button
-                            type="button"
-                            class="rt-pop-opt"
-                            classList={{ active: active() }}
-                            onClick={() => {
-                              props.onChange({
-                                providerID: item.providerID,
-                                modelID: item.modelID,
-                              })
-                              setOpen(false)
-                            }}
-                          >
-                            <span class="rt-pop-opt-ttl">{item.name}</span>
-                          </button>
-                        )
-                      }}
-                    </For>
-                  </>
-                )}
-              </For>
-            </Show>
-          </div>
-        </>
-      </Show>
-    </div>
-  )
-}
 
 /* ──────────────────────────────────────────────────────
    Recall row — expandable, shows statement + matched obs
@@ -618,6 +562,7 @@ export default function RetrievePage() {
   const navigate = useNavigate()
   const sdk = useSDK()
   const server = useServer()
+  const sync = useSync()
   const platform = usePlatform()
 
   // Selected session id. Defaults to the URL's session, but the user can
@@ -722,8 +667,34 @@ export default function RetrievePage() {
 
   const allEntries = createMemo(() => logResource()?.entries ?? [])
 
+  // Warm all session records referenced by retrieve log entries. Without
+  // this, sessions that haven't been opened in this app instance show as
+  // `…<last-8-chars>` in the picker because `sync.data.session` only holds
+  // sessions the user has navigated to. We fire-and-forget; the sync layer
+  // de-dupes, so re-calling for the same id is cheap.
+  createEffect(() => {
+    const seen = new Set<string>()
+    for (const s of sync.data.session ?? []) seen.add(s.id)
+    const need = new Set<string>()
+    for (const e of allEntries()) {
+      if (e.session_id && !seen.has(e.session_id)) need.add(e.session_id)
+    }
+    for (const id of need) void sync.session.sync(id).catch(() => undefined)
+  })
+
   // Sessions list, derived from log entries — newest activity first.
+  // Title is sourced from sync.data.session (the SDK-pushed list of all
+  // sessions in this dir); falls back to the trailing 8 chars of the id
+  // when no Session record is loaded yet (early page mount race).
+  const sessionTitleById = createMemo(() => {
+    const map = new Map<string, string>()
+    for (const s of sync.data.session ?? []) {
+      if (s.title) map.set(s.id, s.title)
+    }
+    return map
+  })
   const sessions = createMemo<SessionSummary[]>(() => {
+    const titles = sessionTitleById()
     const map = new Map<string, SessionSummary>()
     for (const e of allEntries()) {
       const cur = map.get(e.session_id)
@@ -734,6 +705,7 @@ export default function RetrievePage() {
       } else {
         map.set(e.session_id, {
           id: e.session_id,
+          title: titles.get(e.session_id) ?? `…${e.session_id.slice(-8)}`,
           totalTurns: 1,
           recallTurns: e.picked.length > 0 ? 1 : 0,
           lastAt: e.created_at,
@@ -753,14 +725,19 @@ export default function RetrievePage() {
     setSelectedSession(urlMatch?.id ?? list[0].id)
   })
 
-  // Entries filtered to the selected session, oldest → newest (timeline order).
+  // Entries filtered to the selected session, oldest → newest (timeline
+  // order). Primary sort is `created_at` so the right-rail timeline always
+  // matches the actual conversation order — `turn_index` would normally
+  // agree with `created_at`, but dry-run probes share the previous turn
+  // index (see `runPipeline` in opencode/retrieve), so they'd otherwise
+  // appear out-of-order with the user's actual queries.
   const sessionEntries = createMemo(() => {
     const sid = selectedSession()
     if (!sid) return [] as RetrieveLogEntry[]
     return allEntries()
       .filter((e) => e.session_id === sid)
       .slice()
-      .sort((a, b) => a.turn_index - b.turn_index || a.created_at - b.created_at)
+      .sort((a, b) => a.created_at - b.created_at || a.turn_index - b.turn_index)
   })
 
   // Auto-pick first entry-with-recall when the session loads or changes.
@@ -786,278 +763,189 @@ export default function RetrievePage() {
     sessions().find((s) => s.id === selectedSession()),
   )
 
-  return (
-    <div class="rt-page" data-component="retrieve-page">
-      <SessionHeader />
-
-      {/* ─── Topbar ─── */}
-      <div class="rt-topbar">
-        <div class="rt-page-title">Retrieve</div>
-
-        <SessionPicker
-          current={currentSession()}
-          options={sessions()}
-          onPick={(id) => {
-            setSelectedSession(id)
-            setSelectedEntry(null)
-          }}
-          urlSessionId={params.id}
-        />
-
-        <div class="rt-meta-right">
-          <ModelPicker
-            current={configResource()?.resolved}
-            source={configResource()?.source ?? "none"}
-            busy={configBusy()}
-            onChange={(m) => updateConfig({ model: m })}
-            onReset={() => updateConfig({ model: null })}
-          />
-          <Show when={configError()}>
-            <span class="rt-config-error" title={configError() ?? ""}>
-              ⚠ {configError()}
-            </span>
-          </Show>
-          <Show when={currentSession()}>
-            <span class="rt-meta-info">
-              {fmtDate(currentSession()!.lastAt)} · {currentSession()!.recallTurns}/
-              {currentSession()!.totalTurns} 轮命中
-            </span>
-          </Show>
-          <button
-            type="button"
-            class="rt-topbar-link rt-refresh-toggle"
-            classList={{ off: !autoRefresh() }}
-            onClick={() => setAutoRefresh((v) => !v)}
-            title={
-              autoRefresh()
-                ? "30s 自动刷新已开启 — 点击暂停"
-                : "自动刷新已暂停 — 点击恢复 30s 轮询"
+  // Map RetrieveLogEntry[] → TraceRecallEntry[] for the design module.
+  const traceEntries = createMemo<TraceRecallEntry[]>(() =>
+    sessionEntries().map((e) => {
+      const role = triggerForEntry(e)
+      const intent =
+        role === "tool"
+          ? "Tier C · agent recall_experience"
+          : role === "agent"
+            ? "Tier A · workspace baseline"
+            : "Tier B · topical pick"
+      return {
+        id: e.id,
+        time: fmtClock(e.created_at),
+        shortTime: fmtClock(e.created_at).slice(0, 5),
+        turn: e.turn_index,
+        query: e.user_text_excerpt,
+        intent,
+        hitCount: e.picked.length,
+        durationMs: e.duration_ms,
+        source: e.layer,
+        llmUsed: e.llm_used,
+        hits: e.picked.map((p, i) => ({
+          index: String(i + 1).padStart(2, "0"),
+          cat: p.kind,
+          catLabel: kindName(p.kind),
+          code: p.experience_id.slice(-10).toUpperCase(),
+          title: p.title,
+          body: p.reason || p.abstract,
+        })),
+        llmTrace: e.llm_trace
+          ? {
+              providerId: e.llm_trace.provider_id,
+              modelId: e.llm_trace.model_id,
+              systemPrompt: e.llm_trace.system_prompt,
+              userPrompt: e.llm_trace.user_prompt,
+              responseText: e.llm_trace.response_text,
+              reasoningText: e.llm_trace.reasoning_text,
+              structuredOutput: e.llm_trace.structured_output,
+              error: e.llm_trace.error,
             }
-          >
-            {autoRefresh() ? "● 自动刷新" : "○ 已暂停"}
-          </button>
-          <button
-            type="button"
-            class="rt-topbar-link"
-            onClick={() => refetch()}
-            title="立刻刷新一次"
-          >
-            ↻
-          </button>
-          <button
-            type="button"
-            class="rt-topbar-link"
-            onClick={() => navigate(`/${params.dir}/session/${params.id}`)}
-            title="返回 session"
-          >
-            ← session
-          </button>
-        </div>
-      </div>
+          : undefined,
+      }
+    }),
+  )
 
-      {/* ─── Body ─── */}
-      <div class="rt-body">
-        {/* Timeline */}
-        <aside class="rt-timeline">
-          <div class="rt-t-head">
-            <span>对话时间线</span>
-            <span class="rt-t-count">{sessionEntries().length}</span>
-          </div>
-          <div class="rt-t-list">
-            <Show
-              when={sessionEntries().length > 0}
-              fallback={
-                <div class="rt-empty">
-                  <Show
-                    when={!logResource.loading}
-                    fallback="正在加载日志…"
-                  >
-                    暂无日志
-                  </Show>
-                </div>
-              }
-            >
-              <For each={sessionEntries()}>
-                {(entry) => {
-                  const role = triggerForEntry(entry)
-                  const has = entry.picked.length > 0
-                  return (
-                    <button
-                      type="button"
-                      class="rt-turn"
-                      classList={{
-                        active: selectedEntry() === entry.id,
-                        "role-user": role === "user",
-                        "role-agent": role === "agent",
-                        "role-tool": role === "tool",
-                        "has-recall": has,
-                      }}
-                      onClick={() => setSelectedEntry(entry.id)}
-                    >
-                      <span class="rt-role-mark">{TRIGGER_GLYPH[role]}</span>
-                      <span class="rt-turn-text">
-                        <Show
-                          when={entry.user_text_excerpt}
-                          fallback={
-                            <em class="rt-turn-text-empty">
-                              <Show when={role === "agent"} fallback="(no user text)">
-                                baseline · turn {entry.turn_index}
-                              </Show>
-                            </em>
-                          }
-                        >
-                          {entry.user_text_excerpt}
-                        </Show>
-                      </span>
-                      <Show when={has}>
-                        <span class="rt-hit">{entry.picked.length}</span>
-                      </Show>
-                    </button>
-                  )
-                }}
-              </For>
-            </Show>
-          </div>
-        </aside>
-
-        {/* Main */}
-        <main class="rt-main">
-          <Show
-            when={activeEntry()}
-            fallback={
-              <div class="rt-main-empty">
-                <p>选择左侧任意一行查看详情。</p>
-              </div>
-            }
-          >
-            {(entryFn) => {
-              const e = entryFn
-              const role = () => triggerForEntry(e())
-              const recall = () => e().picked
-              return (
-                <div class="rt-main-inner">
-                  {/* Trigger badge + message */}
-                  <section class="rt-sec rt-sec-msg">
-                    <div
-                      class="rt-trigger-badge"
-                      style={{ "--t-hue": String(TRIGGER_HUE[role()]) }}
-                      data-role={role()}
-                    >
-                      <span class="rt-trigger-glyph">{TRIGGER_GLYPH[role()]}</span>
-                      <span class="rt-trigger-text">
-                        <span class="rt-trigger-label">{TRIGGER_LABEL[role()]}</span>
-                        <span class="rt-trigger-sub">
-                          turn {String(e().turn_index).padStart(2, "0")} · {fmtClock(e().created_at)} ·{" "}
-                          {e().agent_name}
-                          <Show when={e().llm_used}>
-                            <span class="rt-pill-llm">LLM</span>
-                          </Show>
-                          <Show when={!e().llm_used && e().picked.length > 0}>
-                            <span
-                              class="rt-pill-llm"
-                              data-fallback={
-                                e().picked.every((p) => p.source === "baseline")
-                                  ? "baseline"
-                                  : e().picked.every((p) => p.source === "cache")
-                                    ? "cache"
-                                    : "heuristic"
-                              }
-                            >
-                              {e().picked.every((p) => p.source === "baseline")
-                                ? "BASELINE"
-                                : e().picked.every((p) => p.source === "cache")
-                                  ? "CACHE"
-                                  : "HEUR"}
-                            </span>
-                          </Show>
-                          <Show when={e().error}>
-                            <span class="rt-pill-err">ERR</span>
-                          </Show>
-                        </span>
-                      </span>
-                    </div>
-
-                    <Show when={e().user_text_excerpt}>
-                      <blockquote class="rt-msg">
-                        <p>{e().user_text_excerpt}</p>
-                      </blockquote>
-                    </Show>
-
-                    <Show when={e().error}>
-                      <div class="rt-error-line">error: {e().error}</div>
-                    </Show>
-                  </section>
-
-                  {/* Recall list */}
-                  <Show
-                    when={recall().length > 0}
-                    fallback={
-                      <section class="rt-sec rt-sec-empty">
-                        <div class="rt-sec-kicker">
-                          <span class="rt-sec-dot rt-sec-dot-empty" /> 经验召回
-                        </div>
-                        <p class="rt-empty-note">该轮未触发 retrieve</p>
-                      </section>
-                    }
-                  >
-                    <section class="rt-sec rt-sec-recall">
-                      <div class="rt-sec-kicker">
-                        <span class="rt-sec-dot rt-sec-dot-rec" /> 经验召回 · {recall().length} 条命中
-                      </div>
-
-                      <Show when={e().user_text_excerpt}>
-                        <div class="rt-query-line">
-                          <span class="rt-q-k">检索 QUERY</span>
-                          <span class="rt-q-v">{e().user_text_excerpt}</span>
-                        </div>
-                      </Show>
-
-                      <div class="rt-rec-list">
-                        <For each={recall()}>
-                          {(rec, i) => (
-                            <RecallRow
-                              rec={rec}
-                              idx={i()}
-                              total={recall().length}
-                              dir={params.dir}
-                              sessionID={selectedSession() ?? params.id}
-                            />
-                          )}
-                        </For>
-                      </div>
-
-                      {/* Diff summary at end */}
-                      <Show
-                        when={
-                          e().diff.added.length > 0 ||
-                          e().diff.removed.length > 0 ||
-                          e().diff.kept.length > 0
-                        }
-                      >
-                        <div class="rt-diff-row">
-                          <Show when={e().diff.added.length > 0}>
-                            <span class="rt-diff-chip rt-diff-add">+{e().diff.added.length}</span>
-                          </Show>
-                          <Show when={e().diff.removed.length > 0}>
-                            <span class="rt-diff-chip rt-diff-rem">−{e().diff.removed.length}</span>
-                          </Show>
-                          <Show when={e().diff.kept.length > 0}>
-                            <span class="rt-diff-chip rt-diff-kept">={e().diff.kept.length}</span>
-                          </Show>
-                          <span class="rt-diff-stat">
-                            候选 {e().candidate_count} · 种子 {e().seed_ids.length} · 展开{" "}
-                            {e().expand_ids.length} · {e().duration_ms}ms
-                          </span>
-                        </div>
-                      </Show>
-                    </section>
-                  </Show>
-                </div>
-              )
-            }}
-          </Show>
-        </main>
-      </div>
+  // Build the substrip's right slot — Trace-specific actions: session picker,
+  // model picker, refresh toggle, manual refresh. The session picker stays
+  // here (rather than the unified Header) because it's purely Trace's
+  // concern (which session's audit log to display).
+  const substripRight = () => (
+    <div class="rune-row rune-gap-2">
+      <SessionPicker
+        current={currentSession()}
+        options={sessions()}
+        onPick={(id) => {
+          setSelectedSession(id)
+          setSelectedEntry(null)
+        }}
+        urlSessionId={params.id}
+      />
+      <RuneModelPicker
+        current={configResource()?.resolved}
+        source={configResource()?.source ?? "none"}
+        busy={configBusy()}
+        kicker="MODEL"
+        onChange={(m) => updateConfig({ model: m })}
+        onReset={() => updateConfig({ model: null })}
+      />
+      <Show when={configError()}>
+        <span class="rt-config-error" title={configError() ?? ""}>
+          ⚠ {configError()}
+        </span>
+      </Show>
+      <button
+        type="button"
+        class="rune-btn"
+        data-size="xs"
+        data-variant="ghost"
+        classList={{ "rt-refresh-on": autoRefresh() }}
+        onClick={() => setAutoRefresh((v) => !v)}
+        title={
+          autoRefresh()
+            ? "30s 自动刷新已开启 — 点击暂停"
+            : "自动刷新已暂停 — 点击恢复 30s 轮询"
+        }
+      >
+        {autoRefresh() ? "● 自动刷新" : "○ 已暂停"}
+      </button>
+      <button
+        type="button"
+        class="rune-btn"
+        data-size="xs"
+        data-variant="ghost"
+        data-icon="true"
+        onClick={() => refetch()}
+        title="立刻刷新一次"
+      >
+        ↻
+      </button>
     </div>
+  )
+
+  // Publish chrome config via the shared shell bridge so the parent
+  // UnifiedShell renders our header / substrip / actions without
+  // remounting on rail navigation.
+  const shell = useShellBridge()
+  createEffect(() => {
+    shell.setChrome({
+      header: {
+        parent: "Trace",
+        title: (() => {
+          const e = activeEntry()
+          if (!e) return "Recall"
+          return `Recall · turn ${e.turn_index}`
+        })(),
+        // Design-spec meta: TURN / HITS / EMBED.
+        meta: (() => {
+          const e = activeEntry()
+          const cs = currentSession()
+          if (!e) {
+            return cs
+              ? [{ k: "SESS", v: truncate(cs.title, 24) }]
+              : []
+          }
+          const totalCandidates = e.candidate_count ?? e.picked.length
+          return [
+            { k: "TURN", v: String(e.turn_index) },
+            { k: "HITS", v: `${e.picked.length}/${totalCandidates}` },
+            { k: "EMBED", v: `${e.duration_ms}ms` },
+          ]
+        })(),
+        // Design-spec actions: Export + Filter (we surface them as
+        // Export = JSON download of the active entry, Filter = pass-through
+        // to the existing filter handler if defined; else no-op stub).
+        actions: (
+          <>
+            <button
+              type="button"
+              class="rune-btn"
+              data-size="sm"
+              onClick={() => {
+                const e = activeEntry()
+                if (!e) return
+                const blob = new Blob([JSON.stringify(e, null, 2)], { type: "application/json" })
+                const url = URL.createObjectURL(blob)
+                const a = document.createElement("a")
+                a.href = url
+                a.download = `recall-${e.id}.json`
+                a.click()
+                URL.revokeObjectURL(url)
+              }}
+              title="Export active recall as JSON"
+            >
+              ↗ Export
+            </button>
+            <button
+              type="button"
+              class="rune-btn"
+              data-size="sm"
+              data-variant="ghost"
+              onClick={() => navigate(`/${params.dir}/session/${params.id}`)}
+              title="返回 session"
+            >
+              ← session
+            </button>
+          </>
+        ),
+      },
+      substrip: {
+        tabs: [{ id: "recall", name: "Recall", count: sessionEntries().length }],
+        active: "recall",
+        right: substripRight(),
+      },
+    })
+  })
+  onCleanup(() => shell.setChrome({}))
+
+  return (
+    <TraceRecall
+      entries={traceEntries()}
+      activeId={selectedEntry() ?? undefined}
+      onPick={(id) => setSelectedEntry(id)}
+      modelTag={configResource()?.resolved?.modelID}
+    />
   )
 }

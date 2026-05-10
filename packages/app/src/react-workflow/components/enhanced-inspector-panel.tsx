@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { Pencil, BrainCircuit, Activity, Crosshair, Timer, Cpu, Terminal, Layers, Sparkles } from 'lucide-react'
 import type { Detail } from '../app'
 import { Spin } from './spin'
+import { distillTitle } from '../utils/distill-title'
 
 interface Flow {
   goal: string
@@ -270,6 +271,80 @@ function SectionLabel({ children, count }: { children: React.ReactNode; count?: 
   )
 }
 
+/* ── Collapsible section wrapper ──
+ * Per the "Inspector visual = design, content = original, support
+ * folding" instruction. State persists in localStorage per `id` so the
+ * user's open/closed preference survives panel re-mounts and refreshes.
+ */
+const COLLAPSE_PREFIX = 'wf-inspector-collapsed:'
+function readCollapsed(id: string, defaultClosed = false): boolean {
+  if (typeof localStorage === 'undefined') return defaultClosed
+  try {
+    const v = localStorage.getItem(COLLAPSE_PREFIX + id)
+    if (v === '1') return true
+    if (v === '0') return false
+    return defaultClosed
+  } catch { return defaultClosed }
+}
+function writeCollapsed(id: string, closed: boolean): void {
+  if (typeof localStorage === 'undefined') return
+  try { localStorage.setItem(COLLAPSE_PREFIX + id, closed ? '1' : '0') } catch {}
+}
+
+function CollapsibleSection({
+  id,
+  title,
+  count,
+  hint,
+  defaultClosed = false,
+  children,
+}: {
+  id: string
+  title: string
+  count?: number
+  hint?: string
+  defaultClosed?: boolean
+  children: React.ReactNode
+}) {
+  const [closed, setClosed] = useState<boolean>(() => readCollapsed(id, defaultClosed))
+  const toggle = () => {
+    setClosed((prev) => {
+      const next = !prev
+      writeCollapsed(id, next)
+      return next
+    })
+  }
+  return (
+    <section className="space-y-2">
+      <button
+        type="button"
+        onClick={toggle}
+        className="wf-insp-collapse-hd"
+        aria-expanded={!closed}
+        title={closed ? 'Expand' : 'Collapse'}
+      >
+        <span
+          className="wf-insp-collapse-caret"
+          aria-hidden
+          data-open={closed ? 'false' : 'true'}
+        >
+          ▾
+        </span>
+        <span className="text-[10.5px] font-bold uppercase tracking-[0.07em] text-[var(--wf-dim)]">{title}</span>
+        {hint && (
+          <span className="ml-1 text-[10px] font-normal normal-case tracking-normal text-[var(--wf-dim)]">{hint}</span>
+        )}
+        {count !== undefined && (
+          <span className="ml-auto flex h-[20px] min-w-[20px] items-center justify-center rounded-full bg-[var(--wf-chip)] px-1.5 text-[10px] font-bold tabular-nums text-[var(--wf-dim)]">
+            {count}
+          </span>
+        )}
+      </button>
+      {!closed && <div className="space-y-2">{children}</div>}
+    </section>
+  )
+}
+
 /* ── Status indicator (animated) ── */
 function StatusIndicator({ status }: { status: string }) {
   const run = status === 'running'
@@ -312,63 +387,105 @@ export function EnhancedInspectorPanel(props: Props) {
 
   return (
     <div className="wf-inspector-root">
-      {/* ─── Sticky header ─── */}
+      {/* Header — design template uses a simple "Node · <title>" line
+        * with an edit pencil right side. We mirror that: when no node
+        * is selected, fall back to a plain "Inspector" label. */}
       <div className="wf-inspector-header">
-        <div className="flex items-center gap-2.5">
-          <Layers className="h-4 w-4 text-[var(--wf-dim)]" strokeWidth={1.8} />
-          <span className="text-[13px] font-bold tracking-[-0.01em] text-[var(--wf-ink)]">Inspector</span>
+        <div className="flex min-w-0 items-center gap-2">
+          <Layers className="h-4 w-4 flex-none text-[var(--wf-dim)]" strokeWidth={1.8} />
+          <span
+            className="truncate text-[13px] font-semibold tracking-[-0.01em] text-[var(--wf-ink)]"
+            title={d?.title ?? "Inspector"}
+          >
+            {/* Distill the planner-emitted title (it's often the whole
+              * prompt body, not a clean task name). Same util the
+              * canvas node uses, so the two surfaces agree. Full
+              * text remains in the title= tooltip. */}
+            {d ? `Node · ${distillTitle(d.title, 38)}` : 'Inspector'}
+          </span>
         </div>
         {d && (
-          <div className="flex items-center gap-1.5 rounded-lg bg-[var(--wf-chip)] px-2.5 py-1">
-            <span className="max-w-[280px] break-all text-[11px] font-medium text-[var(--wf-ink-soft)]">{d.title}</span>
-          </div>
+          <button
+            type="button"
+            className="wf-insp-edit-btn"
+            title="Pop out / edit"
+            aria-label="Pop out"
+          >
+            <Pencil className="h-3 w-3" strokeWidth={1.8} />
+          </button>
         )}
       </div>
 
-      {/* ─── Scrollable body ─── */}
+      {/* Inspector body — design-spec sections only:
+        *   Selected Node (KV + re-run/logs)
+        *   LLM Route (clickable agent rows)
+        *   Recent Events (from executionLog)
+        * The legacy Workflow status card and per-section collapse
+        * carets were removed per the user's "framework matches design,
+        * content matches functionality" direction. */}
       <div className="wf-inspector-body">
-        <div className="space-y-4 px-4 py-4">
+        <div className="space-y-3 px-4 py-4">
 
-          {/* ── Workflow Context ── */}
-          <section className="space-y-2 wf-slide-up" style={{ animationDelay: '0ms' }}>
-            <SectionLabel>Workflow</SectionLabel>
+          {/* ── Selected Node KV — primary section. Only shown when a
+              node is selected; otherwise the page hints "select a node". */}
+          {d ? (
+            <section className="space-y-2">
+              <div className="wf-insp-sec-hd">Selected node</div>
+              <dl className="wf-kv">
+                {/* `id` (long sand-table:UUID) was high-noise / low-signal
+                  * — dropped. The id is recoverable in the URL / events
+                  * tab if anyone needs it for debugging. `re-run` and
+                  * `logs` action buttons also dropped: re-run isn't
+                  * meaningful for a completed plan node, and logs are
+                  * already exposed via the canvas Events tab + the
+                  * dynamic node tab's session view. */}
+                <dt>kind</dt><dd>{d.type}</dd>
+                <dt>state</dt>
+                <dd className="flex items-center gap-1.5">
+                  <span className={`h-1.5 w-1.5 rounded-full ${
+                    d.status === 'running' ? 'bg-[var(--wf-ok)] wf-pulse' :
+                    d.status === 'completed' ? 'bg-[var(--wf-ok)]' :
+                    d.status === 'failed' ? 'bg-[var(--wf-bad)]' :
+                    'bg-[var(--wf-dim)]'
+                  }`} />
+                  <span className="capitalize">{d.status}</span>
+                </dd>
+                {d.duration && (<><dt>dur</dt><dd>{d.duration}</dd></>)}
+                {/* "result" was ambiguous (current state vs final
+                  * checkpoint?). Rename to "outcome" — it's the
+                  * checkpoint emitted when the node finished, not the
+                  * live state (which `state` already shows). */}
+                {d.result && (<><dt>outcome</dt><dd>{d.result}</dd></>)}
+                <dt>model</dt>
+                <dd>
+                  <button
+                    type="button"
+                    className="wf-insp-model-link"
+                    onClick={() => props.onModelClick?.([d.id])}
+                    title="Reroute model for this node"
+                  >
+                    {d.model || <span className="italic text-[var(--wf-dim)]">—</span>}
+                  </button>
+                </dd>
+              </dl>
+            </section>
+          ) : (
+            <section className="wf-insp-empty">
+              Select a node from the canvas to inspect its state.
+            </section>
+          )}
 
-            <div className="wf-inspector-context-card">
-              {/* Accent bar */}
-              <div className={`absolute left-0 top-2.5 bottom-2.5 w-[2px] rounded-r-full ${
-                run ? 'bg-[var(--wf-ok)] wf-pulse' :
-                props.workflowContext.overallStatus === 'completed' ? 'bg-[var(--wf-ok)]' :
-                props.workflowContext.overallStatus === 'failed' ? 'bg-[var(--wf-bad)]' :
-                'bg-[var(--wf-dim)]'
-              }`} />
+          {d && <Divider />}
 
-              <div className="flex items-start gap-2.5 pl-2.5">
-                <StatusIndicator status={props.workflowContext.overallStatus} />
-                <div className="min-w-0 flex-1 pt-px">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[12.5px] font-bold tracking-[-0.01em] text-[var(--wf-ink)]">{statusLabel}</span>
-                    {run && (
-                      <span className="inline-flex items-center gap-1 rounded-full bg-[var(--wf-ok-soft)] px-1.5 py-[1px] text-[9px] font-bold uppercase tracking-[0.05em] text-[var(--wf-ok-strong)]">
-                        <Sparkles className="h-2.5 w-2.5" strokeWidth={2} />
-                        live
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-0.5 text-[11px] text-[var(--wf-ink-soft)]">{props.workflowContext.phase}</div>
-                </div>
-              </div>
-
-              <div className="mt-2 border-t border-dashed border-[var(--wf-line)] pl-2.5 pt-2">
-                <p className="text-[11.5px] leading-[1.55] text-[var(--wf-ink-soft)] line-clamp-3">{props.workflowContext.goal}</p>
-              </div>
+          {/* ── LLM Route — design-spec: count + click-to-reroute hint right. */}
+          <section className="space-y-2">
+            <div className="wf-insp-sec-hd flex items-center gap-2">
+              <span>LLM route</span>
+              <span className="font-mono text-[var(--wf-ink)]">· {props.agents.length}</span>
+              <span className="ml-auto text-[10px] font-normal tracking-normal text-[var(--wf-dim)]">
+                click to reroute
+              </span>
             </div>
-          </section>
-
-          <Divider />
-
-          {/* ── Agents ── */}
-          <section className="space-y-2 wf-slide-up" style={{ animationDelay: '50ms' }}>
-            <SectionLabel count={props.agents.length}>Agents</SectionLabel>
             <div className="space-y-0.5">
               {props.agents.map((item, i) => (
                 <AgentCard
@@ -381,122 +498,47 @@ export function EnhancedInspectorPanel(props: Props) {
             </div>
           </section>
 
-          {/* ── Selected Node ── */}
-          {d && (
+          {/* ── Recent Events — only when present; design has no
+              collapse on this either. */}
+          {d && d.executionLog && d.executionLog.length > 0 && (
             <>
               <Divider />
-
-              <section className="space-y-3 wf-slide-up" style={{ animationDelay: '100ms' }}>
-                <SectionLabel>Node Detail</SectionLabel>
-
-                {/* Node header */}
-                <div className="wf-inspector-node-header">
-                  <div className="flex items-center gap-2">
-                    <div className={`h-2 w-2 flex-shrink-0 rounded-full ${
-                      d.status === 'completed' ? 'bg-[var(--wf-ok)]' :
-                      d.status === 'running' ? 'bg-[var(--wf-ok)] wf-pulse' :
-                      d.status === 'failed' ? 'bg-[var(--wf-bad)]' :
-                      'bg-[var(--wf-dim)]'
-                    }`} />
-                    <span className="truncate text-[12.5px] font-bold tracking-[-0.01em] text-[var(--wf-ink)]">{d.title}</span>
-                  </div>
-                  <div className="mt-2 flex flex-wrap items-center gap-1.5 pl-4">
-                    <span data-wf-badge="">{d.type}</span>
-                    <span data-wf-badge="" className="capitalize">{d.status}</span>
-                    {d.duration && (
-                      <span data-wf-badge="">
-                        <Timer className="h-3 w-3" strokeWidth={1.8} />
-                        {d.duration}
-                      </span>
-                    )}
-                  </div>
+              <section className="space-y-2">
+                <div className="wf-insp-sec-hd flex items-center gap-2">
+                  <span>RECENT EVENTS</span>
+                  <span className="font-mono text-[var(--wf-ink)]">· {d.executionLog.length}</span>
                 </div>
-
-                {/* Metrics grid */}
-                <div className="grid grid-cols-2 gap-1.5">
-                  <Metric
-                    icon={Crosshair}
-                    label="Result"
-                    value={d.result}
-                    accent={d.result === 'Success' || d.result === 'completed'}
-                  />
-                  {/* Model tile is clickable: opens the model picker scoped to
-                   * this node. This is the inspector-side of the "agent model
-                   * routing" entry — hovering reveals the edit affordance. */}
-                  <ClickableModelTile
-                    label={d.model}
-                    onClick={() => props.onModelClick?.([d.id])}
-                  />
-                  <Metric icon={Activity} label="Attempt" value={d.attempt} />
-                  <Metric icon={Terminal} label="Actions" value={d.actions} />
+                <div className="wf-inspector-events">
+                  {d.executionLog.map((line, i) => (
+                    <EventRow key={i} text={line.replace(/^\[\d+\]\s*/, '')} index={i} />
+                  ))}
                 </div>
-
-                {/* Plan-node participants: surface the planner and evaluator
-                 * model identities directly in the Inspector. Previously we
-                 * only hinted at them with a dashed banner and punted users
-                 * to the Plan view; that cost an extra click to answer the
-                 * question "which model drafted this plan?". */}
-                {d.type === 'plan' && (d.plannerModel || d.evaluatorModel) && (
-                  <div className="grid grid-cols-2 gap-1.5">
-                    <div className="wf-inspector-metric group">
-                      <div className="flex items-center gap-1.5">
-                        <Sparkles className="h-3 w-3 text-[var(--wf-dim)]" strokeWidth={1.6} />
-                        <span className="text-[10px] font-medium uppercase tracking-[0.05em] text-[var(--wf-dim)]">Planner</span>
-                      </div>
-                      <div className="mt-1 break-words text-[12.5px] font-semibold tracking-[-0.01em] text-[var(--wf-ink)]">
-                        {d.plannerModel || <span className="text-[var(--wf-dim)] italic">—</span>}
-                      </div>
-                    </div>
-                    <div className="wf-inspector-metric group">
-                      <div className="flex items-center gap-1.5">
-                        <BrainCircuit className="h-3 w-3 text-[var(--wf-dim)]" strokeWidth={1.6} />
-                        <span className="text-[10px] font-medium uppercase tracking-[0.05em] text-[var(--wf-dim)]">Evaluator</span>
-                      </div>
-                      <div className="mt-1 break-words text-[12.5px] font-semibold tracking-[-0.01em] text-[var(--wf-ink)]">
-                        {d.evaluatorModel || <span className="text-[var(--wf-dim)] italic">—</span>}
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Plan-node context hint: if neither planner nor evaluator
-                 * model is resolved yet (session still booting, or history
-                 * has no role-tagged entries), fall back to the old banner
-                 * so users know where to look when the chips finally
-                 * populate. */}
-                {d.type === 'plan' && !d.plannerModel && !d.evaluatorModel && (
-                  <div className="flex items-start gap-2 rounded-lg border border-dashed border-[var(--wf-line)] bg-[var(--wf-chip)] px-2.5 py-2 text-[10.5px] leading-[1.5] text-[var(--wf-ink-soft)]">
-                    <Sparkles className="mt-0.5 h-3 w-3 flex-shrink-0 text-[var(--wf-dim)]" strokeWidth={1.8} />
-                    <span>
-                      Plan 节点由 <strong className="text-[var(--wf-ink)]">planner</strong> 和 <strong className="text-[var(--wf-ink)]">evaluator</strong> 两个子 agent 协同产生，模型将在讨论开始后显示于此。
-                    </span>
-                  </div>
-                )}
-
-                {/* Execution log — humanised event list */}
-                {d.executionLog && d.executionLog.length > 0 && (
-                  <div className="space-y-2">
-                    <SectionLabel count={d.executionLog.length}>Recent Events</SectionLabel>
-                    <div className="wf-inspector-events">
-                      {d.executionLog.map((line, i) => (
-                        <EventRow key={i} text={line.replace(/^\[\d+\]\s*/, '')} index={i} />
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* State — readable key/value list with Raw JSON toggle */}
-                {d.stateJson && Object.keys(d.stateJson).length > 0 && (
-                  <div className="space-y-2">
-                    <SectionLabel>State</SectionLabel>
-                    <StatePanel json={d.stateJson} />
-                  </div>
-                )}
               </section>
             </>
           )}
 
-          {/* Bottom breathing room */}
+          {/* Legacy components (StatePanel / Metric grid / CollapsibleSection
+            * / etc.) are no longer rendered per the design template. They
+            * remain defined above for any debugging path that might mount
+            * them directly; explicit no-ops avoid unused-import lint
+            * without re-introducing them in the visible tree. */}
+          {void [
+            statusLabel,
+            run,
+            Sparkles,
+            BrainCircuit,
+            Crosshair,
+            Activity,
+            Terminal,
+            Timer,
+            ClickableModelTile,
+            Metric,
+            CollapsibleSection,
+            SectionLabel,
+            StatusIndicator,
+            StatePanel,
+          ]}
+
           <div className="h-4" />
         </div>
       </div>

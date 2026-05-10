@@ -426,6 +426,23 @@
   overflow: hidden;
 }
 
+/* Active tag filter banner — appears above the list when a #tag chip
+ * was clicked. The pill itself doubles as the clear button. */
+.refiner-page .rf-tag-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 24px;
+  font-size: 12px;
+  color: var(--rune-fg-mute);
+  border-bottom: 1px solid var(--rune-line-faint);
+  background: var(--rune-bg-surface);
+  flex: none;
+}
+.refiner-page .rf-tag-filter-label {
+  color: var(--rune-fg-dim);
+}
+
 
 .refiner-page .rf-empty-center {
   position: absolute;
@@ -3160,3 +3177,423 @@
     max-height: 40vh;
   }
 }
+
+/* ── Refiner activity log modal ───────────────────────────────────── */
+.rf-logs-scrim {
+  position: fixed;
+  inset: 0;
+  /* Stronger scrim + backdrop blur so the experience cards behind
+   * fade properly. Previous 0.42 alpha let card content read through
+   * the modal area which made the visual hierarchy ambiguous (user
+   * reported "层级有问题"). */
+  background: light-dark(rgba(15, 23, 42, 0.62), rgba(0, 0, 0, 0.72));
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  padding: 24px;
+}
+.rf-logs-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(1240px, 100%);
+  height: min(800px, 100%);
+  background: var(--rune-bg-raised);
+  border: 1px solid var(--rune-line);
+  border-radius: var(--rune-r-lg, 10px);
+  /* Stronger shadow + ring lifts the modal cleanly off the blurred
+   * backdrop. */
+  box-shadow:
+    0 0 0 1px rgba(15, 23, 42, 0.06),
+    0 24px 60px rgba(15, 23, 42, 0.30);
+  overflow: hidden;
+}
+.rf-logs-hd {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--rune-line-faint);
+  flex-shrink: 0;
+}
+.rf-logs-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--rune-fg);
+}
+.rf-logs-meta {
+  font-size: 11px;
+  color: var(--rune-fg-faint);
+}
+.rf-logs-filter {
+  display: inline-flex;
+  border: 1px solid var(--rune-line-faint);
+  border-radius: var(--rune-r, 6px);
+  overflow: hidden;
+}
+.rf-logs-filter button {
+  padding: 4px 10px;
+  font-size: 11px;
+  background: transparent;
+  border: none;
+  color: var(--rune-fg-faint);
+  cursor: pointer;
+}
+.rf-logs-filter button[data-active="true"] {
+  background: var(--rune-ac-soft);
+  color: var(--rune-ac-text);
+}
+.rf-logs-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--rune-fg-faint);
+  font-size: 18px;
+  cursor: pointer;
+  border-radius: var(--rune-r-sm, 4px);
+}
+.rf-logs-close:hover {
+  background: var(--rune-bg-surface);
+  color: var(--rune-fg);
+}
+.rf-logs-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 240px 320px 1fr;
+  min-height: 0;
+}
+.rf-logs-empty {
+  padding: 24px;
+  color: var(--rune-fg-faint);
+  font-size: 12px;
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.rf-logs-pane-hd {
+  display: flex;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--rune-line-faint);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--rune-fg-faint);
+}
+.rf-logs-sessions {
+  border-right: 1px solid var(--rune-line-faint);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+.rf-logs-session-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border: none;
+  background: transparent;
+  border-bottom: 1px solid var(--rune-line-faint);
+  text-align: left;
+  cursor: pointer;
+  color: var(--rune-fg);
+}
+.rf-logs-session-row:hover {
+  background: var(--rune-bg-surface);
+}
+.rf-logs-session-row[data-active="true"] {
+  background: var(--rune-ac-soft);
+  color: var(--rune-ac-text);
+}
+.rf-logs-session-row-l {
+  flex: 1;
+  min-width: 0;
+}
+.rf-logs-session-id {
+  font-family: var(--rune-font-mono);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rf-logs-session-meta {
+  font-size: 10px;
+  color: var(--rune-fg-faint);
+  margin-top: 2px;
+}
+.rf-logs-session-stats {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.rf-logs-stat {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: var(--rune-r-sm, 4px);
+  font-family: var(--rune-font-mono);
+  font-size: 10px;
+}
+.rf-logs-stat.is-ok {
+  background: var(--rune-ok-soft, rgba(16, 185, 129, 0.12));
+  color: var(--rune-ok-text, #047857);
+}
+.rf-logs-stat.is-warn {
+  background: var(--rune-warn-soft, rgba(239, 68, 68, 0.12));
+  color: var(--rune-warn-text, #b91c1c);
+}
+.rf-logs-runs {
+  border-right: 1px solid var(--rune-line-faint);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+.rf-logs-run-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 14px;
+  border: none;
+  background: transparent;
+  border-bottom: 1px solid var(--rune-line-faint);
+  text-align: left;
+  cursor: pointer;
+  color: var(--rune-fg);
+}
+.rf-logs-run-row:hover {
+  background: var(--rune-bg-surface);
+}
+.rf-logs-run-row[data-active="true"] {
+  background: var(--rune-ac-soft);
+}
+.rf-logs-run-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+.rf-logs-run-time {
+  font-family: var(--rune-font-mono);
+  color: var(--rune-fg-faint);
+}
+.rf-logs-run-trigger {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--rune-fg-faint);
+}
+.rf-logs-outcome {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 6px;
+  border-radius: var(--rune-r-sm, 4px);
+  font-size: 10px;
+  font-family: var(--rune-font-mono);
+}
+.rf-logs-outcome-new_exp,
+.rf-logs-outcome-update_exp {
+  background: var(--rune-ok-soft, rgba(16, 185, 129, 0.12));
+  color: var(--rune-ok-text, #047857);
+}
+.rf-logs-outcome-edge_only {
+  background: var(--rune-bg-surface);
+  color: var(--rune-fg-faint);
+}
+.rf-logs-outcome-noise,
+.rf-logs-outcome-dropped {
+  background: var(--rune-bg-surface);
+  color: var(--rune-fg-faint);
+}
+.rf-logs-outcome-error {
+  background: var(--rune-warn-soft, rgba(239, 68, 68, 0.12));
+  color: var(--rune-warn-text, #b91c1c);
+}
+.rf-logs-run-ms {
+  font-family: var(--rune-font-mono);
+  font-size: 10px;
+  color: var(--rune-fg-faint);
+}
+.rf-logs-run-text {
+  font-size: 12px;
+  color: var(--rune-fg);
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.rf-logs-detail {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.rf-logs-detail-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.rf-logs-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rf-logs-sec-hd {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--rune-fg-faint);
+}
+.rf-logs-pre {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--rune-bg-surface);
+  border: 1px solid var(--rune-line-faint);
+  border-radius: var(--rune-r, 6px);
+  font-family: var(--rune-font-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--rune-fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 300px;
+  overflow-y: auto;
+}
+.rf-logs-pre-reasoning {
+  color: var(--rune-fg-faint);
+  font-style: italic;
+}
+.rf-logs-sec-err .rf-logs-pre {
+  border-color: var(--rune-warn-edge, #ef4444);
+  color: var(--rune-warn-text, #b91c1c);
+}
+.rf-logs-outcome-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.rf-logs-outcome-reason {
+  font-size: 12px;
+  color: var(--rune-fg-faint);
+}
+.rf-logs-call {
+  border: 1px solid var(--rune-line-faint);
+  border-radius: var(--rune-r, 6px);
+  margin-bottom: 8px;
+  background: var(--rune-bg-raised);
+  overflow: hidden;
+}
+.rf-logs-call-hd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--rune-fg);
+  text-align: left;
+}
+.rf-logs-call-hd:hover {
+  background: var(--rune-bg-surface);
+}
+.rf-logs-call-stage {
+  font-family: var(--rune-font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+.rf-logs-call-model {
+  font-size: 11px;
+  color: var(--rune-fg-faint);
+}
+.rf-logs-call-err {
+  color: var(--rune-warn-text, #b91c1c);
+  font-size: 12px;
+}
+.rf-logs-call-ms {
+  font-size: 10px;
+  font-family: var(--rune-font-mono);
+  color: var(--rune-fg-faint);
+}
+.rf-logs-call-caret {
+  color: var(--rune-fg-faint);
+  font-size: 10px;
+}
+.rf-logs-call-body {
+  padding: 10px;
+  border-top: 1px solid var(--rune-line-faint);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--rune-bg-surface);
+}
+
+/* Markdown wrappers inside the refiner-logs modal — same surface
+ * treatment as the trace-logs `.rt-logs-md` so the two log views
+ * read with one shared visual language. */
+.rf-logs-md {
+  padding: 10px 12px;
+  background: var(--rune-bg-inset);
+  border: 1px solid var(--rune-line-faint);
+  border-radius: var(--rune-r, 6px);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--rune-fg);
+  max-height: 320px;
+  overflow-y: auto;
+}
+.rf-logs-md p,
+.rf-logs-md ul,
+.rf-logs-md ol,
+.rf-logs-md pre,
+.rf-logs-md blockquote { margin: 0 0 8px; }
+.rf-logs-md p:last-child,
+.rf-logs-md ul:last-child,
+.rf-logs-md ol:last-child,
+.rf-logs-md pre:last-child { margin-bottom: 0; }
+.rf-logs-md ul,
+.rf-logs-md ol { padding-left: 18px; }
+.rf-logs-md h1, .rf-logs-md h2, .rf-logs-md h3, .rf-logs-md h4 {
+  font-size: 12.5px;
+  font-weight: 600;
+  margin: 10px 0 4px;
+  color: var(--rune-fg);
+}
+.rf-logs-md code {
+  font-family: var(--rune-font-mono);
+  font-size: 11px;
+  padding: 1px 4px;
+  background: var(--rune-bg-raised);
+  border: 1px solid var(--rune-line-faint);
+  border-radius: 3px;
+}
+.rf-logs-md pre {
+  padding: 8px 10px;
+  background: var(--rune-bg-raised);
+  border: 1px solid var(--rune-line-faint);
+  border-radius: var(--rune-r-sm);
+  overflow-x: auto;
+  font-size: 11px;
+}
+.rf-logs-md pre code { padding: 0; border: 0; background: transparent; }
+.rf-logs-md-reasoning { color: var(--rune-fg-faint); }

@@ -687,6 +687,109 @@ async function settings() {
   return { enabled, base }
 }
 
+// -----------------------------------------------------------------------------
+// Refiner activity log — one entry per refiner run (one observation, one
+// manual create, one re-refine, etc.). Captures the exact prompts and
+// responses for every LLM call inside that run, plus the final decision
+// outcome. Surfaced via the Knowledge "Logs" UI so the user can audit
+// queries that DID and DID NOT crystallise into experiences. Append-only
+// JSONL stored alongside the experience files.
+// -----------------------------------------------------------------------------
+
+const RefinerLlmCallSchema = z.object({
+  stage: z.enum(["route", "refine", "synthesis", "edge"]),
+  provider_id: z.string().optional(),
+  model_id: z.string().optional(),
+  system_prompt: z.string().optional(),
+  user_prompt: z.string(),
+  response_text: z.string().optional(),
+  reasoning_text: z.string().optional(),
+  structured_output: z.unknown().optional(),
+  error: z.string().optional(),
+  duration_ms: z.number(),
+})
+export type RefinerLlmCall = z.infer<typeof RefinerLlmCallSchema>
+
+const RefinerLogEntrySchema = z.object({
+  id: z.string(),
+  created_at: z.number(),
+  duration_ms: z.number(),
+  /** Where the run was kicked off from. `auto` = observed user message,
+   *  `manual` = user clicked "+ New" in the UI, `history` = "From
+   *  history" import, `import` = bulk JSON import, `re_refine` = user
+   *  re-refined an existing experience. */
+  trigger: z.enum(["auto", "manual", "history", "import", "re_refine"]),
+  session_id: z.string().optional(),
+  message_id: z.string().optional(),
+  observation_id: z.string().optional(),
+  /** The user-text that was being routed/refined. May be a clipped
+   *  excerpt for very long inputs. Always populated even when the LLM
+   *  decides the input is noise — the user wants to see those queries
+   *  too ("没有沉淀的 query"). */
+  user_text: z.string(),
+  /** Final disposition of this run. */
+  outcome: z.enum([
+    "new_exp",      // a new experience was crystallised
+    "update_exp",   // an existing experience was extended (attach/update)
+    "edge_only",    // only graph edges were proposed, no exp change
+    "noise",        // the LLM decided the input was noise
+    "dropped",      // a non-noise decision was filtered out (validation, dedup, etc.)
+    "error",        // the LLM call failed entirely
+  ]),
+  /** Experience ids touched by this run. */
+  experience_ids: z.array(z.string()).default([]),
+  /** Free-form reason string (best-effort, sourced from the decision). */
+  reason: z.string().optional(),
+  /** Per-stage LLM call traces, in invocation order. */
+  llm_calls: z.array(RefinerLlmCallSchema),
+})
+export type RefinerLogEntry = z.infer<typeof RefinerLogEntrySchema>
+
+/* Recorder injected into the LLM call sites (`routeObservation`,
+ * `refineExperience`). They append one trace per LLM round-trip. The
+ * caller (e.g. `observeObservation`) gathers them into a single log
+ * entry once the run is complete. */
+type RefinerLlmRecorder = (call: RefinerLlmCall) => void
+
+function refinerLogFilepath(base: string) {
+  return path.join(base, "refiner-log.ndjson")
+}
+
+async function appendRefinerLog(entry: RefinerLogEntry) {
+  try {
+    const { base } = await settings()
+    const file = refinerLogFilepath(base)
+    const line = JSON.stringify(entry) + "\n"
+    const prev = await Filesystem.readText(file).catch(() => "")
+    await Filesystem.write(file, prev + line)
+  } catch (error) {
+    log.warn("refiner log append failed", { error })
+  }
+}
+
+async function readRefinerLog(): Promise<RefinerLogEntry[]> {
+  try {
+    const { base } = await settings()
+    const file = refinerLogFilepath(base)
+    const raw = await Filesystem.readText(file).catch(() => "")
+    if (!raw) return []
+    const out: RefinerLogEntry[] = []
+    for (const line of raw.split("\n")) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      try {
+        const parsed = RefinerLogEntrySchema.safeParse(JSON.parse(trimmed))
+        if (parsed.success) out.push(parsed.data)
+      } catch {
+        // skip malformed lines
+      }
+    }
+    return out
+  } catch {
+    return []
+  }
+}
+
 async function readMatter(filepath: string) {
   const raw = await Filesystem.readText(filepath)
   return matter(raw)
@@ -1313,6 +1416,9 @@ function createStructuredOutputTool(input: {
 async function routeObservation(input: {
   observation: Observation
   existing: ExperienceSummary[]
+  /** Optional recorder — when present, captures the LLM call's trace so
+   *  the caller can append it to a `RefinerLogEntry`. */
+  recorder?: RefinerLlmRecorder
 }): Promise<RouteDecision[]> {
   if (testRouteOverride) {
     try {
@@ -1344,6 +1450,7 @@ async function routeObservation(input: {
 
   const tools = createRefinerTools({ observation: input.observation })
   const decisions: RouteDecision[] = []
+  let routeStructuredOutput: unknown = undefined
   // We tell the LLM the expected shape is the array wrapper. The legacy
   // single-decision shape is still accepted in the fallback below in case a
   // model stubbornly emits the old contract; downstream code sees an array
@@ -1384,6 +1491,7 @@ async function routeObservation(input: {
       StructuredOutput: createStructuredOutputTool({
         schema,
         onSuccess(output) {
+          routeStructuredOutput = output
           // Preferred shape: { decisions: [...] }
           const multi = RouteDecisionsWireSchema.safeParse(output)
           if (multi.success) {
@@ -1418,19 +1526,43 @@ async function routeObservation(input: {
     stopWhen: stepCountIs(6),
   } satisfies Parameters<typeof generateText>[0]
 
+  // Capture the LLM call into a recorder slot so the caller can fold
+  // it into the final RefinerLogEntry. We always record the request
+  // side (prompts) so the user sees the exact input even on failure.
+  const callT0 = Date.now()
+  const trace: RefinerLlmCall = {
+    stage: "route",
+    provider_id: resolved.model.providerID,
+    model_id: resolved.model.api.id,
+    system_prompt: systemPrompt,
+    user_prompt: JSON.stringify(userPayload, null, 2),
+    duration_ms: 0,
+  }
+
   try {
     if (isOpenaiOauth) {
       const result = streamText({ ...params, onError: () => {} })
       for await (const part of result.fullStream) {
         if (part.type === "error") throw part.error
       }
+      try { trace.response_text = await result.text } catch {}
+      try { trace.reasoning_text = await result.reasoningText } catch {}
     } else {
-      await generateText(params)
+      const result = await generateText(params)
+      trace.response_text = (result as { text?: string }).text
+      trace.reasoning_text = (result as { reasoningText?: string }).reasoningText
     }
   } catch (error) {
     log.warn("refiner route LLM failed", { error })
+    trace.error = error instanceof Error ? error.message : String(error)
+    trace.duration_ms = Date.now() - callT0
+    input.recorder?.(trace)
     return []
   }
+
+  if (routeStructuredOutput !== undefined) trace.structured_output = routeStructuredOutput
+  trace.duration_ms = Date.now() - callT0
+  input.recorder?.(trace)
 
   return decisions
 }
@@ -1442,6 +1574,8 @@ async function routeObservation(input: {
 async function refineExperience(input: {
   experience: Experience
   triggerObservation: Observation
+  /** Optional recorder — when present, captures the LLM call's trace. */
+  recorder?: RefinerLlmRecorder
 }): Promise<RefineOutput | undefined> {
   if (testRefineOverride) {
     try {
@@ -1497,6 +1631,7 @@ async function refineExperience(input: {
   }
 
   let output: RefineOutput | undefined
+  let refineStructuredOutput: unknown = undefined
   const schema = ProviderTransform.schema(
     resolved.model,
     applyKindConstraint(z.toJSONSchema(RefineOutputSchema)),
@@ -1528,6 +1663,7 @@ async function refineExperience(input: {
       StructuredOutput: createStructuredOutputTool({
         schema,
         onSuccess(raw) {
+          refineStructuredOutput = raw
           const parsed = RefineOutputSchema.safeParse(raw)
           if (parsed.success) output = parsed.data
           else
@@ -1546,19 +1682,41 @@ async function refineExperience(input: {
     stopWhen: stepCountIs(4),
   } satisfies Parameters<typeof generateText>[0]
 
+  // Capture for the recorder, mirroring routeObservation.
+  const callT0 = Date.now()
+  const trace: RefinerLlmCall = {
+    stage: "refine",
+    provider_id: resolved.model.providerID,
+    model_id: resolved.model.api.id,
+    system_prompt: systemPrompt,
+    user_prompt: refineDirective + JSON.stringify(payload, null, 2),
+    duration_ms: 0,
+  }
+
   try {
     if (isOpenaiOauth) {
       const result = streamText({ ...params, onError: () => {} })
       for await (const part of result.fullStream) {
         if (part.type === "error") throw part.error
       }
+      try { trace.response_text = await result.text } catch {}
+      try { trace.reasoning_text = await result.reasoningText } catch {}
     } else {
-      await generateText(params)
+      const result = await generateText(params)
+      trace.response_text = (result as { text?: string }).text
+      trace.reasoning_text = (result as { reasoningText?: string }).reasoningText
     }
   } catch (error) {
     log.warn("refiner refine LLM failed", { error })
+    trace.error = error instanceof Error ? error.message : String(error)
+    trace.duration_ms = Date.now() - callT0
+    input.recorder?.(trace)
     return
   }
+
+  if (refineStructuredOutput !== undefined) trace.structured_output = refineStructuredOutput
+  trace.duration_ms = Date.now() - callT0
+  input.recorder?.(trace)
 
   return output
 }
@@ -1826,15 +1984,45 @@ async function createExperience(input: {
 // -----------------------------------------------------------------------------
 
 async function observeObservation(observation: Observation) {
+  // Recorder + outcome tracking — folded into a RefinerLogEntry at the
+  // bottom so the Knowledge "Logs" UI can show every refiner run, even
+  // ones the LLM classed as noise / dropped / errored ("没有沉淀的 query").
+  const startedAt = nowMs()
+  const llmCalls: RefinerLlmCall[] = []
+  const recorder: RefinerLlmRecorder = (call) => llmCalls.push(call)
+  const touchedExpIds = new Set<string>()
+  const decisionSummaries: unknown[] = []
+  let outcome: RefinerLogEntry["outcome"] = "dropped"
+  let outcomeReason: string | undefined
+  const writeLog = () =>
+    appendRefinerLog({
+      id: "rf_" + Hash.fast(`${observation.id}:${startedAt}`).slice(0, 12),
+      created_at: startedAt,
+      duration_ms: nowMs() - startedAt,
+      trigger: "auto",
+      session_id: observation.session_id,
+      message_id: observation.message_id,
+      observation_id: observation.id,
+      user_text: clipText(observation.user_text, 600),
+      outcome,
+      experience_ids: [...touchedExpIds],
+      reason: outcomeReason,
+      llm_calls: llmCalls,
+    })
+
   const existingRaw = await listExperiences()
   const existing = existingRaw.map(summarizeExperience)
 
-  const decisions = await routeObservation({ observation, existing })
+  const decisions = await routeObservation({ observation, existing, recorder })
   if (!decisions.length) {
     // No route output at all (LLM failure / empty array). Distinct from an
-    // explicit noise decision — we leave no audit row because the observer
-    // file already captured the raw input for later retry.
+    // explicit noise decision — the observer file already captured the raw
+    // input for later retry. We do still emit a refiner log entry so the
+    // user can see *which* queries had a failed route LLM call.
     log.warn("refiner route produced no decisions", { observation_id: observation.id })
+    outcome = llmCalls.some((c) => c.error) ? "error" : "dropped"
+    outcomeReason = "route produced no decisions"
+    void writeLog()
     return
   }
 
@@ -1859,7 +2047,16 @@ async function observeObservation(observation: Observation) {
   }> = []
 
   for (const decision of decisions) {
+    decisionSummaries.push(decision)
     if (decision.action === "noise") {
+      // Track explicit-noise outcomes so the user can browse "queries
+      // the agent ignored" in the Logs UI. We deliberately keep the
+      // earliest non-noise outcome winning if there are multiple
+      // decisions in the same batch.
+      if (outcome === "dropped") {
+        outcome = "noise"
+        outcomeReason = decision.reason
+      }
       await appendRejected({
         at: nowMs(),
         reason: decision.reason,
@@ -1894,6 +2091,9 @@ async function observeObservation(observation: Observation) {
     }
 
     if (decision.action === "edge_only") {
+      // edge_only doesn't change exp content, but it does touch the
+      // graph — note as "edge_only" unless something stronger lands.
+      if (outcome === "dropped" || outcome === "noise") outcome = "edge_only"
       for (const e of decision.edges) {
         if (!e.from) continue
         // Defer endpoint-existence check to persist time (liveExperienceIDs is
@@ -1932,6 +2132,9 @@ async function observeObservation(observation: Observation) {
     seenNew.add(key)
     const created = await createExperience({ observation, proposal: decision })
     if (!created) continue
+    outcome = "new_exp"
+    outcomeReason = decision.reason
+    touchedExpIds.add(created.id)
     liveExperiences.push(created)
     liveExperienceIDs.add(created.id)
 
@@ -1970,6 +2173,10 @@ async function observeObservation(observation: Observation) {
       })
     }
   }
+
+  // Final log entry — fire-and-forget so a slow disk doesn't stall
+  // observation throughput. Errors are swallowed inside appendRefinerLog.
+  void writeLog()
 }
 
 // -----------------------------------------------------------------------------
@@ -2296,6 +2503,15 @@ export namespace Refiner {
   export const RefineOutputSchemaExport = RefineOutputSchema
   export const ExperienceSchemaExport = ExperienceSchema
   export const ObservationSchemaExport = ObservationSchema
+  export const RefinerLogEntrySchemaExport = RefinerLogEntrySchema
+
+  /** Read the entire refiner activity log. Newest entries are at the
+   *  end of the file; the caller may want to reverse for a most-recent-
+   *  first display. Returns [] when the log file doesn't exist or is
+   *  malformed — surfacing the empty case is safer than failing. */
+  export async function readLog(): Promise<RefinerLogEntry[]> {
+    return readRefinerLog()
+  }
 
   export function setRouteOverrideForTest(
     override?:
@@ -2557,17 +2773,34 @@ export namespace Refiner {
     scope_hint?: "workspace" | "project" | "repo" | "user"
     task_type_hint?: string
     note?: string
+    /** When the call originates from the "From history" picker, the
+     *  caller passes the source session/message ids so the resulting
+     *  refiner-log entry shows up under the correct session in the
+     *  Logs UI. Plain manual create leaves these undefined. */
+    source_session_id?: string
+    source_message_id?: string
   }) {
     const text = input.user_text?.trim()
     if (!text) return { ok: false as const, error: "empty_user_text" }
 
-    const observedAt = nowMs()
+    // Recorder + log entry plumbing — same pattern as observeObservation.
+    // We always produce a refiner-log entry, even on the user-text fallback
+    // path, so the Knowledge Logs UI shows manual creates too.
+    const startedAt = nowMs()
+    const llmCalls: RefinerLlmCall[] = []
+    const recorder: RefinerLlmRecorder = (call) => llmCalls.push(call)
+    const touchedExpIds = new Set<string>()
+    let outcome: RefinerLogEntry["outcome"] = "dropped"
+    let outcomeReason: string | undefined
+    const trigger: RefinerLogEntry["trigger"] = input.source_session_id ? "history" : "manual"
+
+    const observedAt = startedAt
     const manualID = `manual-new:${sha1Short(`${observedAt}:${text}`, 10)}`
     const observation: Observation = {
       id: manualID,
       observed_at: observedAt,
-      session_id: "manual",
-      message_id: manualID,
+      session_id: input.source_session_id ?? "manual",
+      message_id: input.source_message_id ?? manualID,
       user_text: text,
       source: "manual_augment",
       note: input.note,
@@ -2576,12 +2809,34 @@ export namespace Refiner {
       },
     }
     await writeObservation(observation)
+    const writeLog = () =>
+      appendRefinerLog({
+        id: "rf_" + Hash.fast(`${manualID}:${startedAt}`).slice(0, 12),
+        created_at: startedAt,
+        duration_ms: nowMs() - startedAt,
+        trigger,
+        session_id: observation.session_id,
+        message_id: observation.message_id,
+        observation_id: manualID,
+        user_text: clipText(text, 600),
+        outcome,
+        experience_ids: [...touchedExpIds],
+        reason: outcomeReason,
+        llm_calls: llmCalls,
+      })
 
     // Run route to let the LLM pick category/kind, but force the action to "new":
     // we still leverage the full router because it sees existing categories/kinds.
     const existing = (await listExperiences()).map(summarizeExperience)
-    const decisions = await routeObservation({ observation, existing })
-    if (!decisions.length) return { ok: false as const, error: "route_failed" }
+    const decisions = await routeObservation({ observation, existing, recorder })
+    /* If the route LLM call failed (e.g. provider returned `choices: null`),
+     * fall through to the synthesis branch below instead of hard-erroring with
+     * `route_failed`. The user explicitly asked to create an experience —
+     * better to produce one with a fallback kind than to drop their input on
+     * the floor when the routing model is flaky. The synthesis branch will
+     * either run `refineExperience` (if THAT call works) or, if that also
+     * fails, the proposal is built from the user-provided hints + their
+     * raw text. */
 
     // This endpoint's contract is "create one experience from this text".
     // If the router fanned out into multiple decisions, we pick the first
@@ -2618,26 +2873,58 @@ export namespace Refiner {
         created_at: observedAt,
         last_refined_at: observedAt,
       }
-      const refined = await refineExperience({ experience: skeleton, triggerObservation: observation })
-      if (!refined) return { ok: false as const, error: "refine_failed" }
-      proposal = {
-        action: "new",
-        reason: "manual_create",
-        kind: input.kind_hint ?? refined.kind,
-        title: refined.title,
-        abstract: refined.abstract,
-        statement: refined.statement,
-        trigger_condition: refined.trigger_condition,
-        task_type: input.task_type_hint ?? refined.task_type,
-        scope: input.scope_hint ?? refined.scope,
-        categories: refined.categories,
-        conflicts_with: refined.conflicts_with,
+      const refined = await refineExperience({ experience: skeleton, triggerObservation: observation, recorder })
+      if (refined) {
+        proposal = {
+          action: "new",
+          reason: "manual_create",
+          kind: input.kind_hint ?? refined.kind,
+          title: refined.title,
+          abstract: refined.abstract,
+          statement: refined.statement,
+          trigger_condition: refined.trigger_condition,
+          task_type: input.task_type_hint ?? refined.task_type,
+          scope: input.scope_hint ?? refined.scope,
+          categories: refined.categories,
+          conflicts_with: refined.conflicts_with,
+        }
+      } else {
+        /* Last-resort fallback: both the route LLM and the refine LLM failed
+         * (provider quirk or transient outage). Build a minimal proposal
+         * straight from the user's input + their hints so the experience
+         * still lands on disk. The user can refine/edit later via the
+         * card's Re-refine / Edit buttons once the model is healthy again. */
+        log.warn("manual create — both route and refine LLM failed; using user-text fallback", {
+          observation_id: observation.id,
+        })
+        proposal = {
+          action: "new",
+          reason: "manual_create_fallback",
+          kind: input.kind_hint ?? "know_how",
+          title: clipText(text, 40),
+          abstract: clipText(text, 200),
+          statement: undefined,
+          trigger_condition: undefined,
+          task_type: input.task_type_hint,
+          scope: input.scope_hint ?? "workspace",
+          categories: [],
+          conflicts_with: [],
+        }
       }
     }
 
     // Manual creation is user-initiated, so skip the review queue.
     const exp = await createExperience({ observation, proposal, reviewStatus: "approved" })
-    if (!exp) return { ok: false as const, error: "create_failed_abstract_guard" }
+    if (!exp) {
+      outcome = "error"
+      outcomeReason = "abstract_guard_rejected"
+      void writeLog()
+      return { ok: false as const, error: "create_failed_abstract_guard" }
+    }
+    outcome = "new_exp"
+    outcomeReason = proposal.reason
+    touchedExpIds.add(exp.id)
+    void writeLog()
     return { ok: true as const, experience: exp }
   }
 

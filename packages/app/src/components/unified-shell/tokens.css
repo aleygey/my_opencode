@@ -1,0 +1,152 @@
+/*
+ * Unified shell tokens — SaaS-like, JetBrains Mono + Inter inspired,
+ * pinned under `--rune-*` prefix to avoid collisions with the app's
+ * existing design tokens. Token values pair light/dark via light-dark()
+ * so the entire shell follows the project's existing theme convention.
+ *
+ * The shell is opt-in: only elements inside `.rune-shell` resolve these
+ * tokens. Switching theme is done via `data-theme="dark"` on the root
+ * element OR on `.rune-shell` itself when the user uses the Tweaks panel.
+ */
+
+.rune-shell {
+  /* ─── Type scale (Geist + Inter + JetBrains Mono, design-spec) ─── */
+  /* Geist Sans is preferred for body / chrome — it's the typeface
+   * Vercel uses, has very refined optical-sized glyphs, and reads
+   * markedly more "high-end" than default Inter at small sizes
+   * (the user's specific feedback after the previous typography
+   * round was 字体太丑).
+   *
+   * We fall back to Inter Variable (already self-hosted) and the
+   * usual CJK system fonts. Geist is loaded opportunistically via
+   * Google Fonts in `fonts.css` — if the network is unavailable on
+   * first paint, the chain still resolves to Inter and the UI
+   * remains usable.
+   *
+   * `--rune-font-display` is a separate stack used for headings.
+   * We bias it toward Geist's tighter cuts; everywhere else still
+   * uses `--rune-font-sans`. */
+  --rune-font-sans:
+    "Geist",
+    "Geist Variable",
+    "Inter Variable",
+    "Inter",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI Variable",
+    "Segoe UI",
+    "PingFang SC",
+    "Hiragino Sans GB",
+    "Microsoft YaHei UI",
+    "Microsoft YaHei",
+    "Source Han Sans SC",
+    "Noto Sans SC",
+    "Noto Sans CJK SC",
+    sans-serif,
+    "Apple Color Emoji",
+    "Segoe UI Emoji";
+  --rune-font-display:
+    "Geist",
+    "Geist Variable",
+    "Inter Variable",
+    "Inter",
+    -apple-system,
+    BlinkMacSystemFont,
+    "PingFang SC",
+    "Hiragino Sans GB",
+    "Microsoft YaHei UI",
+    sans-serif;
+  --rune-font-mono:
+    "Geist Mono",
+    "JetBrains Mono Variable",
+    "JetBrains Mono",
+    ui-monospace,
+    "SF Mono",
+    Menlo,
+    Monaco,
+    Consolas,
+    "PingFang SC",
+    "Microsoft YaHei UI",
+    monospace;
+  --rune-fs-xs: 11px;
+  --rune-fs-sm: 12px;
+  --rune-fs-md: 13px;
+  --rune-fs-lg: 15px;
+  --rune-fs-xl: 19px;
+  --rune-fs-2xl: 26px;
+  --rune-lh: 1.55;
+
+  /* ─── 4px spacing grid ─── */
+  --rune-u: 4px;
+  --rune-u2: 8px;
+  --rune-u3: 12px;
+  --rune-u4: 16px;
+  --rune-u5: 20px;
+  --rune-u6: 24px;
+  --rune-u8: 32px;
+
+  /* ─── Layout (design-spec) ─── */
+  --rune-rail-w: 224px;
+  --rune-rail-w-collapsed: 60px;
+  --rune-aside-w: 340px;
+  --rune-header-h: 56px;
+  --rune-substrip-h: 44px;
+  --rune-status-h: 28px;
+
+  /* ─── Radius (design-spec, NOT sharp 0px) ─── */
+  --rune-r-sm: 4px;
+  --rune-r: 6px;
+  --rune-r-lg: 10px;
+
+  /* ─── Motion ─── */
+  --rune-t-fast: 100ms;
+  --rune-t-base: 180ms;
+
+  /* ─── Light SaaS palette (design-spec: clean modern surfaces) ─── */
+  --rune-bg-base:    light-dark(#FFFFFF, #0B0D11);
+  --rune-bg-surface: light-dark(#F7F8FA, #101319);
+  --rune-bg-raised:  light-dark(#FFFFFF, #161A22);
+  --rune-bg-inset:   light-dark(#F2F3F5, #07090C);
+
+  --rune-line-faint: light-dark(#EEF0F3, #181C24);
+  --rune-line:       light-dark(#E2E5EA, #21262F);
+  --rune-line-strong:light-dark(#CFD3DA, #2D333E);
+
+  /* ─── Foreground (4 levels) ─── */
+  --rune-fg:        light-dark(#14161A, #ECEEF3);
+  --rune-fg-mute:   light-dark(#525866, #9BA1AF);
+  --rune-fg-dim:    light-dark(#8A92A1, #62697A);
+  --rune-fg-faint:  light-dark(#B8BEC9, #3F4453);
+
+  /* ─── Indigo accent (design-spec: #4C6FFF light / #7B95FF dark) ─── */
+  --rune-ac:        light-dark(#4C6FFF, #7B95FF);
+  --rune-ac-soft:   light-dark(rgba(76,111,255,0.08), rgba(123,149,255,0.10));
+  --rune-ac-edge:   light-dark(rgba(76,111,255,0.24), rgba(123,149,255,0.28));
+  --rune-ac-text:   light-dark(#3A57D8, #9DB0FF);
+
+  /* ─── Status colors (design-spec) ─── */
+  --rune-st-ok:    #16A34A;
+  --rune-st-run:   var(--rune-ac);
+  --rune-st-warn:  #D97706;
+  --rune-st-err:   #DC2626;
+  --rune-st-idle:  #9AA1B0;
+
+  /* ─── Shadows (layered SaaS feel) ─── */
+  --rune-shadow-sm: light-dark(
+    0 1px 2px rgba(15,23,42,0.04),
+    0 1px 2px rgba(0,0,0,0.35)
+  );
+  --rune-shadow:    light-dark(
+    0 4px 12px -2px rgba(15,23,42,0.06),
+    0 8px 24px rgba(0,0,0,0.5)
+  );
+  --rune-shadow-lg: light-dark(
+    0 16px 40px -8px rgba(15,23,42,0.18),
+    0 24px 60px rgba(0,0,0,0.6)
+  );
+}
+
+/* When user explicitly forces a theme via Tweaks, override the
+   color-scheme — light-dark() responds to color-scheme.   */
+.rune-shell[data-theme="light"] { color-scheme: light; }
+.rune-shell[data-theme="dark"]  { color-scheme: dark; }

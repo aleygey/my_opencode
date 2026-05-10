@@ -163,10 +163,21 @@
   gap: 8px;
   font-weight: 500;
   font-size: 13px;
+  max-width: 220px;
+  overflow: hidden;
 }
 .rt-pop-label code {
   font-family: var(--font-family-mono);
   font-size: 12px;
+}
+/* Title element shown in the trigger and dropdown rows — truncates
+ * gracefully so long session titles never overflow the trigger row. */
+.rt-pop-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 240px;
+  font-weight: 500;
 }
 
 .rt-current-pill {
@@ -201,17 +212,20 @@
   color: var(--rt-accent);
 }
 
+/* Scrim sits below the menu, above the rune-shell isolated stacking
+ * context. Higher z-index (60+) so the dropdown floats free of any
+ * module body that might create its own stacking context. */
 .rt-pop-scrim {
   position: fixed;
   inset: 0;
-  z-index: 40;
+  z-index: 60;
 }
 
 .rt-pop-menu {
   position: absolute;
   top: calc(100% + 8px);
   left: 0;
-  width: 360px;
+  width: 320px;
   max-height: 420px;
   overflow-y: auto;
   background: var(--rt-surface);
@@ -221,12 +235,47 @@
     0 24px 60px -16px light-dark(oklch(0.20 0.04 235 / 0.20), oklch(0 0 0 / 0.55)),
     0 2px 6px light-dark(oklch(0.20 0.04 235 / 0.05), oklch(0 0 0 / 0.30));
   padding: 6px;
-  z-index: 50;
+  z-index: 70;
   animation: rt-pop-in 0.15s ease-out;
+}
+/* Anchor to the right when the trigger sits in the substrip-right slot —
+ * keeps the menu inside the viewport and away from the main hits cards. */
+.rt-pop-wrap:has(.rt-pop-menu) {
+  position: relative;
 }
 .rt-pop-menu-right {
   right: 0;
   left: auto;
+}
+
+/* When portaled to <body>, the menu lives outside .rt-page so the
+ * --rt-* tokens defined there don't cascade. We re-declare the subset
+ * the menu needs directly on the portal host so colours, fonts and
+ * shadows still resolve. Light/dark continues to follow the system
+ * via light-dark(). Keep this list in sync with what the .rt-pop-*
+ * selectors below actually consume. */
+.rt-portal-host {
+  --rt-bg:           light-dark(oklch(0.985 0.004 235), oklch(0.135 0.011 235));
+  --rt-surface:      light-dark(oklch(1.000 0.000 0),   oklch(0.165 0.012 235));
+  --rt-surface-2:    light-dark(oklch(0.965 0.007 235), oklch(0.205 0.013 235));
+  --rt-line:         light-dark(oklch(0.92 0.010 235),  oklch(0.275 0.011 235));
+  --rt-line-soft:    light-dark(oklch(0.95 0.008 235),  oklch(0.225 0.011 235));
+  --rt-ink:          light-dark(oklch(0.18 0.020 245),  oklch(0.940 0.013 235));
+  --rt-ink-3:        light-dark(oklch(0.58 0.012 235),  oklch(0.620 0.014 235));
+  --rt-ink-4:        light-dark(oklch(0.76 0.010 235),  oklch(0.460 0.012 235));
+  --rt-accent:       light-dark(oklch(0.50 0.10 235),   oklch(0.72 0.10 235));
+  --rt-accent-bg:    light-dark(oklch(0.94 0.04 235),   oklch(0.30 0.04 235));
+  font-family: var(--font-family-sans);
+  color: var(--rt-ink);
+}
+.rt-pop-menu-portal {
+  position: fixed;
+  /* Inline `top` / `right` set at open-time via getBoundingClientRect.
+   * Override the absolute-positioned defaults from .rt-pop-menu. */
+  top: 0;
+  right: 0;
+  left: auto;
+  z-index: 9999;
 }
 @keyframes rt-pop-in {
   from { opacity: 0; transform: translateY(-4px) scale(0.98); }
@@ -413,7 +462,13 @@
   color: var(--rt-ink-4);
 }
 
-.rt-hit {
+/* Legacy "hit count chip" inside the old retrieve turn list. The class
+ * name `.rt-hit` collided with the new design's hit cards (also
+ * `.rt-hit` in `unified-shell/modules.css`) and was forcing them to
+ * `height: 18px` — which made multi-line titles spill over into the
+ * next card and look like overlapping rows. Renamed to
+ * `.rt-turn-hit-pill` to scope it to the legacy turn list. */
+.rt-turn-hit-pill {
   display: inline-grid;
   place-items: center;
   min-width: 18px;
@@ -426,7 +481,7 @@
   font-size: 10.5px;
   font-weight: 500;
 }
-.rt-turn.active .rt-hit {
+.rt-turn.active .rt-turn-hit-pill {
   background: var(--rt-ink);
   color: var(--rt-bg);
 }

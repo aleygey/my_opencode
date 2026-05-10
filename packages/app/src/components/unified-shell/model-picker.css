@@ -1,0 +1,201 @@
+/* RuneModelPicker — shared across refiner / workflow / retrieve.
+ * Trigger lives inside the page; menu is portaled to body so it never gets
+ * clipped by overflow / stacking contexts. The portal host re-declares the
+ * --rune-* tokens so the menu renders correctly even when mounted to <body>.
+ */
+
+.rune-model-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  background: transparent;
+  border: 1px solid var(--rune-line-faint);
+  color: var(--rune-fg);
+  font-family: var(--rune-font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 100ms ease, border-color 100ms ease, color 100ms ease;
+  border-radius: var(--rune-r);
+}
+.rune-model-trigger:hover:not(:disabled) {
+  background: var(--rune-bg-surface);
+  border-color: var(--rune-line);
+}
+.rune-model-trigger[aria-expanded="true"] {
+  background: var(--rune-ac-soft);
+  border-color: var(--rune-ac-edge);
+  color: var(--rune-ac-text);
+}
+.rune-model-trigger:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.rune-model-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--rune-ac, #9a4316);
+  flex: none;
+}
+
+.rune-model-kicker {
+  /* The previous 9px / 0.18em tracking made these caps look thin and
+   * over-stretched ("非常丑"). Bump the size, drop the letter-spacing
+   * back to a reasonable 0.05em, lean on weight (550 via Inter
+   * variable axis) for emphasis instead. */
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--rune-fg-dim, #5a584d);
+  font-weight: 550;
+  font-variation-settings: "wght" 550;
+  font-feature-settings: "ss01" 1, "cv11" 1;
+  flex: none;
+}
+
+.rune-model-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.rune-model-src {
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 2px 5px;
+  border-radius: var(--rune-r-sm);
+  background: var(--rune-bg-inset);
+  color: var(--rune-fg-dim);
+  border: 1px solid var(--rune-line-faint);
+  flex: none;
+  font-weight: 600;
+}
+.rune-model-src[data-source="override"] {
+  color: var(--rune-ac-text);
+  border-color: var(--rune-ac-edge);
+  background: var(--rune-ac-soft);
+}
+.rune-model-src[data-source="agent"] {
+  color: var(--rune-st-ok);
+  border-color: color-mix(in oklab, var(--rune-st-ok) 40%, transparent);
+}
+
+.rune-model-caret {
+  font-size: 10px;
+  color: var(--rune-fg-dim, #5a584d);
+  flex: none;
+}
+
+/* Portal host — provides token fallbacks so the menu stays themed even
+ * when mounted to <body>. The runtime-workflow tokens are inherited via
+ * cascade from `:root` if defined; these fallbacks are last-resort. */
+.rune-model-portal-host {
+  --_fallback-bg: light-dark(#FFFFFF, #161A22);
+  --_fallback-line: light-dark(#E2E5EA, #21262F);
+  --_fallback-fg: light-dark(#14161A, #ECEEF3);
+  font-family: var(--rune-font-sans, "Inter", system-ui, sans-serif);
+  font-size: 12px;
+  color: var(--rune-fg, var(--_fallback-fg));
+}
+
+.rune-model-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  background: transparent;
+}
+
+.rune-model-menu {
+  position: fixed;
+  z-index: 9999;
+  background: var(--rune-bg-raised, var(--_fallback-bg));
+  border: 1px solid var(--rune-line, var(--_fallback-line));
+  border-radius: var(--rune-r-lg);
+  box-shadow: var(--rune-shadow-lg, 0 16px 40px -8px rgba(15,23,42,0.18), 0 2px 6px rgba(15,23,42,0.06));
+  max-height: min(60vh, 420px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+}
+
+.rune-model-group {
+  /* Provider group label in the dropdown (e.g. "Opencode-Go"). Was
+   * 9px caps with 0.16em tracking — looked stretched. Match the
+   * kicker treatment: 10px / 0.05em / 550 weight. Title-case
+   * (instead of UPPER) reads more like an editorial section
+   * heading and dodges the "OPENCODE GO" all-caps awkwardness. */
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  color: var(--rune-fg-dim, #5a584d);
+  padding: 8px 12px 4px;
+  font-weight: 550;
+  font-variation-settings: "wght" 550;
+  font-feature-settings: "ss01" 1, "cv11" 1;
+}
+
+.rune-model-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  background: transparent;
+  border: 0;
+  border-radius: var(--rune-r-sm);
+  color: var(--rune-fg, var(--_fallback-fg));
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  transition: background 100ms ease;
+  width: 100%;
+}
+.rune-model-item:hover {
+  background: var(--rune-bg-surface);
+}
+.rune-model-item[data-active="true"] {
+  background: var(--rune-ac-soft);
+  color: var(--rune-ac-text);
+  font-weight: 500;
+}
+
+.rune-model-item-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rune-model-item-tick {
+  flex: none;
+  color: var(--rune-ac);
+  font-weight: 700;
+}
+
+.rune-model-reset {
+  color: var(--rune-ac-text);
+  font-weight: 500;
+}
+
+.rune-model-sep {
+  height: 1px;
+  background: var(--rune-line-faint);
+  margin: 4px 0;
+}
+
+.rune-model-empty {
+  padding: 14px 12px;
+  color: var(--rune-fg-dim);
+  font-style: italic;
+  text-align: center;
+}
