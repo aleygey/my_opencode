@@ -202,6 +202,20 @@ export type WorkflowAppProps = {
   onQuestionReject?: (requestID: string) => void
   onPermissionReply?: (requestID: string, reply: "once" | "always" | "reject", message?: string) => void
   onSandTableSend?: (nodeID: string, text: string) => void
+  /* Confirms a sand_table discussion that is parked in
+   * `awaiting_start` (set when `experimental.sand_table.confirm_before_start`
+   * is enabled). Parent posts `POST /workflow/sand_table/:id/start` with
+   * the user-chosen agent / model overrides; backend resolves the
+   * parked promise and the rounds begin. */
+  onSandTableStart?: (
+    nodeID: string,
+    overrides: {
+      planner_model?: { providerID: string; modelID: string }
+      evaluator_model?: { providerID: string; modelID: string }
+      planner_agent?: string
+      evaluator_agent?: string
+    },
+  ) => void
   /** Master-session chat history pagination — the underlying sync store
    * only hydrates the first page of messages (80) on session mount. For
    * conversations longer than that, the ChatPanel "Load earlier messages"
@@ -544,6 +558,9 @@ export function WorkflowApp(props: WorkflowAppProps) {
           onBack={() => setSessionNode(null)}
           onStop={() => props.onStop(sessionNode)}
           onSend={(text) => props.onSandTableSend?.(sessionNode, text)}
+          onStart={(overrides) => props.onSandTableStart?.(sessionNode, overrides)}
+          agentOptions={props.rootAgents ?? []}
+          modelOptions={props.models ?? []}
         />
       )
     }
@@ -906,6 +923,9 @@ export function WorkflowApp(props: WorkflowAppProps) {
                       onBack={() => undefined}
                       onStop={() => props.onStop(id)}
                       onSend={(text) => props.onSandTableSend?.(id, text)}
+                      onStart={(overrides) => props.onSandTableStart?.(id, overrides)}
+                      agentOptions={props.rootAgents ?? []}
+                      modelOptions={props.models ?? []}
                       innerMessages={innerMessages}
                     />
                   </div>

@@ -2882,6 +2882,35 @@ export function WorkflowRuntimePanel(props: {
     setState("sand", discussionID, result)
   }
 
+  /* Confirms the awaiting_start pause emitted by sand_table when
+   * `experimental.sand_table.confirm_before_start` is set. The user
+   * picks planner / evaluator agent + model in the inline confirm panel
+   * (rendered by SandTableSessionView when status === "awaiting_start"),
+   * we POST the chosen overrides; the backend resolves the parked
+   * promise inside the tool and the rounds begin. The polling loop
+   * already running for "running" status takes over from there, so we
+   * just need to seed the immediate response so the UI stops showing
+   * the confirm panel without waiting for the next poll tick. */
+  const startSandTable = async (
+    nodeID: string,
+    overrides: {
+      planner_model?: { providerID: string; modelID: string }
+      evaluator_model?: { providerID: string; modelID: string }
+      planner_agent?: string
+      evaluator_agent?: string
+    },
+  ) => {
+    const detail = detailsWithPlan()[nodeID]
+    const discussionID =
+      typeof detail?.stateJson?.sand_table_id === "string" ? detail.stateJson.sand_table_id : undefined
+    if (!discussionID) return
+    const result = await request<SandTableDiscussion>(`/workflow/sand_table/${discussionID}/start`, {
+      method: "POST",
+      body: overrides,
+    })
+    setState("sand", discussionID, result)
+  }
+
   // ── Question & Permission polling ──────────────────────────────────
 
   const [pendingQuestions, setPendingQuestions] = createStore<any[]>([])
@@ -3127,6 +3156,9 @@ export function WorkflowRuntimePanel(props: {
         onPermissionReply: replyPermission,
         onSandTableSend: (nodeID, text) => {
           void sendSandTable(nodeID, text).catch(() => undefined)
+        },
+        onSandTableStart: (nodeID, overrides) => {
+          void startSandTable(nodeID, overrides).catch(() => undefined)
         },
         // History pagination for the master (root) session. Without these
         // the ChatPanel "Load earlier messages" button runs out of

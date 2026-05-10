@@ -40,6 +40,12 @@ type SandTableConfig = {
   planner_agent?: string
   evaluator_agent?: string
   max_rounds?: number
+  /* When set, every sand_table tool call pauses with
+   * status="awaiting_start" and waits for the inspector's
+   * confirm-and-start UI before running rounds. Off by default to
+   * preserve the legacy "agent calls sand_table → run immediately"
+   * behaviour. */
+  confirm_before_start?: boolean
 }
 
 async function fetchConfig(input: {
@@ -105,6 +111,7 @@ export function SandTableConfigDialog(props: { onClose: () => void }) {
   const [plannerModel, setPlannerModel] = createSignal<string>("")
   const [evaluatorModel, setEvaluatorModel] = createSignal<string>("")
   const [maxRounds, setMaxRounds] = createSignal<string>("")
+  const [confirmBeforeStart, setConfirmBeforeStart] = createSignal<boolean>(false)
 
   // Sync the form fields whenever the resource resolves.
   let synced = false
@@ -118,6 +125,7 @@ export function SandTableConfigDialog(props: { onClose: () => void }) {
     setPlannerModel(c.planner_model ? `${c.planner_model.providerID}/${c.planner_model.modelID}` : "")
     setEvaluatorModel(c.evaluator_model ? `${c.evaluator_model.providerID}/${c.evaluator_model.modelID}` : "")
     setMaxRounds(c.max_rounds ? String(c.max_rounds) : "")
+    setConfirmBeforeStart(!!c.confirm_before_start)
   }
 
   const [saving, setSaving] = createSignal(false)
@@ -194,6 +202,7 @@ export function SandTableConfigDialog(props: { onClose: () => void }) {
         planner_model: splitModel(plannerModel()),
         evaluator_model: splitModel(evaluatorModel()),
         max_rounds: maxRounds() ? Number(maxRounds()) : null,
+        confirm_before_start: confirmBeforeStart(),
       }
       const updated = await saveConfig({
         baseUrl: current.http.url,
@@ -332,6 +341,22 @@ export function SandTableConfigDialog(props: { onClose: () => void }) {
                     <option value="4">4</option>
                     <option value="5">5</option>
                   </select>
+                </label>
+              </fieldset>
+
+              {/* Pre-start confirmation toggle */}
+              <fieldset class="rune-stcfg-row">
+                <legend>Pre-confirm</legend>
+                <label class="rune-stcfg-field rune-stcfg-toggle">
+                  <input
+                    type="checkbox"
+                    checked={confirmBeforeStart()}
+                    onChange={(e) => setConfirmBeforeStart(e.currentTarget.checked)}
+                  />
+                  <span class="rune-stcfg-toggle-text">
+                    每次 sand_table 调用先暂停，等待在 inspector 确认 agent /
+                    model 后再执行
+                  </span>
                 </label>
               </fieldset>
 

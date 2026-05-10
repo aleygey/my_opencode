@@ -270,6 +270,10 @@ export const Info = Schema.Struct({
           max_rounds: Schema.optional(PositiveInt).annotate({
             description: "Default maximum discussion rounds (1–5). Tool args override.",
           }),
+          confirm_before_start: Schema.optional(Schema.Boolean).annotate({
+            description:
+              "When true, every sand_table tool call pauses with status='awaiting_start' until the user confirms the planner/evaluator agent + model in the inspector. The orchestrator's tool call still blocks during the wait, so the agent picks up the final plan only after the user starts the round.",
+          }),
         }),
       ),
       openTelemetry: Schema.optional(Schema.Boolean).annotate({

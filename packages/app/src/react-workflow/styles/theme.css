@@ -7573,3 +7573,148 @@
 .workflow-make .wf-canvas-run-ctrl-warn:hover {
   background: rgba(217, 119, 6, 0.16);
 }
+
+/* ── Sand-table awaiting_start confirm panel ──
+ * Rendered into the dialogue thread when the backend has paused on
+ * `confirm_before_start`. Visual language matches the inspector's
+ * dashed-card empty states + the topic-hero callout so it reads as
+ * "this is a checkpoint, not a regular row in the discussion". */
+.workflow-make .wf-sand-await {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  border: 1px dashed var(--wf-line-strong);
+  border-radius: 12px;
+  background: var(--wf-card);
+}
+.workflow-make .wf-sand-await-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.workflow-make .wf-sand-await-pip {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 28px;
+  border-radius: 3px;
+  background: linear-gradient(180deg, #8b6ad9 0%, #2f8fb2 100%);
+  margin-top: 2px;
+}
+.workflow-make .wf-sand-await-title {
+  font-size: 12.5px;
+  font-weight: 650;
+  letter-spacing: -0.005em;
+  color: var(--wf-ink);
+}
+.workflow-make .wf-sand-await-sub {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--wf-dim);
+}
+.workflow-make .wf-sand-await-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+@media (max-width: 720px) {
+  .workflow-make .wf-sand-await-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.workflow-make .wf-sand-await-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--wf-line);
+  border-radius: 10px;
+  background: var(--wf-bg);
+}
+.workflow-make .wf-sand-await-card-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--wf-dim);
+}
+.workflow-make .wf-sand-await-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11.5px;
+}
+.workflow-make .wf-sand-await-field > span {
+  flex: 0 0 56px;
+  color: var(--wf-dim);
+  font-size: 10.5px;
+  font-weight: 500;
+}
+.workflow-make .wf-sand-await-field > select {
+  flex: 1;
+  height: 28px;
+  padding: 0 26px 0 9px;
+  border: 1px solid var(--wf-line);
+  border-radius: 6px;
+  background-color: var(--wf-card);
+  color: var(--wf-ink);
+  font-family: inherit;
+  font-size: 11.5px;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--wf-dim) 50%),
+    linear-gradient(-45deg, transparent 50%, var(--wf-dim) 50%);
+  background-position: calc(100% - 12px) 50%, calc(100% - 8px) 50%;
+  background-size: 4px 4px;
+  background-repeat: no-repeat;
+  cursor: pointer;
+}
+.workflow-make .wf-sand-await-field > select:hover {
+  border-color: var(--wf-line-strong);
+}
+.workflow-make .wf-sand-await-field > select:focus {
+  outline: 0;
+  border-color: var(--wf-ok);
+}
+.workflow-make .wf-sand-await-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.workflow-make .wf-sand-await-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--wf-dim);
+}
+.workflow-make .wf-sand-await-start {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--wf-ok);
+  color: white;
+  font-size: 11.5px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: filter 120ms ease, transform 120ms ease;
+}
+.workflow-make .wf-sand-await-start:hover:not(:disabled) {
+  filter: brightness(0.95);
+  transform: translateY(-0.5px);
+}
+.workflow-make .wf-sand-await-start:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}

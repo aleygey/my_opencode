@@ -559,6 +559,7 @@ export const ExperimentalRoutes = lazy(() =>
           planner_agent: z.union([z.string().min(1), z.null()]).optional(),
           evaluator_agent: z.union([z.string().min(1), z.null()]).optional(),
           max_rounds: z.union([z.number().int().min(1).max(5), z.null()]).optional(),
+          confirm_before_start: z.union([z.boolean(), z.null()]).optional(),
         }),
       ),
       async (c) => {

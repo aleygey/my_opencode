@@ -133,6 +133,24 @@
   outline: 0;
   border-color: var(--rune-ac-edge);
 }
+.rune-stcfg-toggle {
+  align-items: flex-start;
+  gap: 10px;
+}
+.rune-stcfg-toggle > input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+  accent-color: var(--rune-ac-edge);
+  cursor: pointer;
+}
+.rune-stcfg-toggle-text {
+  flex: 1;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--rune-fg-mute);
+}
 .rune-stcfg-err {
   padding: 8px 10px;
   border: 1px solid var(--rune-warn-edge, #ef4444);
