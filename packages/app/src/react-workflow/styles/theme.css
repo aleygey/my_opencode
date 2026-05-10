@@ -1,13 +1,51 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@300;400;500;600;700&display=swap");
+/*
+ * IMPORTANT: NO REMOTE FONT IMPORTS HERE.
+ *
+ * The previous build had `@import url("https://fonts.googleapis.com/
+ * css2?family=Inter:wght@…&family=JetBrains+Mono:…")` at the top of
+ * this file. On office workstations behind a firewall (China / VPN-
+ * gated networks) the Google Fonts request fails, the cascade falls
+ * to system fonts, and on Windows that often resolves to 宋体 SimSun
+ * for Latin text — which is exactly the "工位字体丑得不行" the user
+ * reported. The unified-shell side was fixed earlier (see
+ * `packages/app/src/components/unified-shell/fonts.css`); this file
+ * had been missed because the React workflow theme is loaded
+ * separately. The self-hosted Inter Variable + JetBrains Mono
+ * Variable WOFF2 below cover all weights from a single ~50 KB
+ * variable file each, so we no longer need a remote stylesheet.
+ */
 
 @custom-variant dark (&:is(.dark *));
 
+/*
+ * Self-hosted Inter Variable + JetBrains Mono Variable. Variable
+ * fonts collapse the entire weight axis into a single ~40-50 KB WOFF2
+ * so we don't ship one file per weight. `font-display: swap` lets the
+ * system font render first and upgrades on parse — no FOIT.
+ *
+ * IMPORTANT: previously this file pointed at `inter.woff2` (legacy
+ * non-variable file that no longer ships in the binary), which meant
+ * the @font-face silently failed and the canvas fell to whatever the
+ * `--wf-font-sans` token's fallback chain resolved to — on Windows
+ * that's often 宋体 for Latin text. The variable filename below
+ * matches what packages/ui/src/assets/fonts/ actually contains.
+ */
 @font-face {
   font-family: "Inter Local";
-  src: url("../../../../ui/src/assets/fonts/inter.woff2") format("woff2");
+  src: url("../../../../ui/src/assets/fonts/inter-latin-variable.woff2") format("woff2-variations"),
+       url("../../../../ui/src/assets/fonts/inter-latin-variable.woff2") format("woff2");
   font-display: swap;
   font-style: normal;
   font-weight: 100 900;
+}
+
+@font-face {
+  font-family: "JetBrains Mono Local";
+  src: url("../../../../ui/src/assets/fonts/jetbrains-mono-latin-variable.woff2") format("woff2-variations"),
+       url("../../../../ui/src/assets/fonts/jetbrains-mono-latin-variable.woff2") format("woff2");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 100 800;
 }
 
 @font-face {
@@ -55,10 +93,21 @@
   --wf-accent-edge: rgba(76, 111, 255, 0.24);
   --wf-accent-text: #3a57d8;
 
-  /* Sans font — Inter (Google) with local fallback and full CJK support */
+  /* Sans font stack.
+   *
+   * Order: bundled Inter Variable first (`Inter Local` resolves to
+   * the self-hosted WOFF2 declared above) — then ANY platform sans
+   * before "Inter Fallback" / `sans-serif`. We deliberately NEVER
+   * fall back to a generic CJK serif (宋体 / SimSun) for Latin
+   * because Windows installs without an installed Inter would resolve
+   * the unstyled `sans-serif` keyword to one of those, which is the
+   * "工位字体丑" the user reported. The CJK fonts at the end of the
+   * list cover Han characters; Latin always reaches Inter / a
+   * sans-serif platform font well before the CJK fallbacks. */
   --wf-font-sans:
-    "Inter",
     "Inter Local",
+    "Inter Variable",
+    "Inter",
     "Inter Fallback",
     -apple-system,
     BlinkMacSystemFont,
@@ -78,8 +127,10 @@
     "Apple Color Emoji",
     "Segoe UI Emoji";
 
-  /* Mono font — JetBrains Mono is cleaner than Fira Code for dense UIs */
+  /* Mono font — bundled JetBrains Mono Variable first, then platform mono. */
   --wf-font-mono:
+    "JetBrains Mono Local",
+    "JetBrains Mono Variable",
     "JetBrains Mono",
     ui-monospace,
     "SF Mono",
