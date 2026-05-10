@@ -9,6 +9,7 @@ import {
   onMount,
   Show,
 } from "solid-js"
+import { Portal } from "solid-js/web"
 import { useNavigate, useParams } from "@solidjs/router"
 import { useShellBridge } from "@/components/unified-shell/shell-bridge"
 import {
@@ -161,6 +162,36 @@ type GraphEdge = {
   edge_id?: string
   reason?: string
   confidence?: number
+}
+
+// Mirrors backend's RefinerLogEntry / RefinerLlmCall — surfaced via the
+// Knowledge "Logs" modal so the user can audit every refiner run.
+type RefinerLlmCall = {
+  stage: "route" | "refine" | "synthesis" | "edge"
+  provider_id?: string
+  model_id?: string
+  system_prompt?: string
+  user_prompt: string
+  response_text?: string
+  reasoning_text?: string
+  structured_output?: unknown
+  error?: string
+  duration_ms: number
+}
+
+type RefinerLogEntry = {
+  id: string
+  created_at: number
+  duration_ms: number
+  trigger: "auto" | "manual" | "history" | "import" | "re_refine"
+  session_id?: string
+  message_id?: string
+  observation_id?: string
+  user_text: string
+  outcome: "new_exp" | "update_exp" | "edge_only" | "noise" | "dropped" | "error"
+  experience_ids: string[]
+  reason?: string
+  llm_calls: RefinerLlmCall[]
 }
 
 type ChainGraphEdge = {
@@ -369,6 +400,25 @@ async function fetchOverview(input: {
   })
   if (!res.ok) throw new Error(`Failed to load refiner overview (${res.status})`)
   return readJsonOrThrow<RefinerOverview>(res, "Refiner overview")
+}
+
+async function fetchRefinerLog(input: {
+  baseUrl: string
+  directory: string
+  password?: string
+  username?: string
+  fetcher?: typeof fetch
+}): Promise<{ entries: RefinerLogEntry[] }> {
+  const url = new URL("/experimental/refiner/log", input.baseUrl)
+  const res = await (input.fetcher ?? fetch)(url, {
+    headers: buildHeaders({
+      directory: input.directory,
+      username: input.username,
+      password: input.password,
+    }),
+  })
+  if (!res.ok) throw new Error(`Failed to load refiner log (${res.status})`)
+  return readJsonOrThrow<{ entries: RefinerLogEntry[] }>(res, "Refiner log")
 }
 
 async function fetchTaxonomy(input: {
@@ -4044,11 +4094,18 @@ function computeGraphLayoutForce(
   // New approach: compute the layout in a *virtual* canvas big enough to
   // accommodate the average label width × node count, never down-scale at
   // the end, and let the existing pan/zoom UI handle initial fit.
+  //
+  // Tuning history:
+  //   - First fix used 1.3 / 0.95 / 2.2 — labels stopped overlapping but
+  //     the graph felt *too* spread out (user feedback "节点距离太大了").
+  //   - Tightened to 0.7 / 0.7 / 1.3 below: labels still don't overlap
+  //     because the relax pass cleans up residual cases, but neighbouring
+  //     nodes sit ~30% closer so the radial layout feels compact again.
   const avgLabelW = bodies.reduce((s, b) => s + b.labelW, 0) / Math.max(n, 1)
-  const perNodeArea = (avgLabelW + LABEL_OFFSET_X + LABEL_TAIL + 24) * (LABEL_HALF_H * 2 + 24) * 1.3
-  const virtualArea = Math.max(width * height, perNodeArea * n)
-  const targetLen = Math.sqrt(virtualArea / Math.max(n, 1)) * 0.95
-  const kRep = targetLen * targetLen * 2.2
+  const perNodeArea = (avgLabelW + LABEL_OFFSET_X + LABEL_TAIL + 24) * (LABEL_HALF_H * 2 + 24) * 0.7
+  const virtualArea = Math.max(width * height * 0.85, perNodeArea * n)
+  const targetLen = Math.sqrt(virtualArea / Math.max(n, 1)) * 0.7
+  const kRep = targetLen * targetLen * 1.3
   const kSpring = 0.045
   const damping = 0.82
   const maxStep = 22
@@ -4215,6 +4272,389 @@ function computeGraphLayoutForce(
     })
   }
   return out
+}
+
+/* Refiner activity log browser. Shows every refiner run grouped by
+ * session — including queries that the refiner classed as noise or
+ * dropped (those that DIDN'T crystallise into an experience), so the
+ * user can audit what the refiner agent decided. Click a session row
+ * on the left, click a run on the right, see all per-stage LLM calls
+ * (route / refine) with their prompts and responses. */
+function RefinerLogsModal(props: {
+  entries: RefinerLogEntry[]
+  loading: boolean
+  onClose: () => void
+  onReload: () => void
+}) {
+  const [selectedSession, setSelectedSession] = createSignal<string | undefined>()
+  const [selectedRunId, setSelectedRunId] = createSignal<string | undefined>()
+  const [filterMode, setFilterMode] = createSignal<"all" | "no_exp">("all")
+  const [callOpen, setCallOpen] = createSignal<Set<string>>(new Set())
+
+  // Group runs by session — most-recent activity first per session.
+  const sessions = createMemo(() => {
+    const map = new Map<
+      string,
+      { id: string; runs: RefinerLogEntry[]; latest: number; produced: number; failed: number }
+    >()
+    for (const e of props.entries) {
+      const sid = e.session_id ?? "manual"
+      const existing = map.get(sid)
+      if (existing) {
+        existing.runs.push(e)
+        if (e.created_at > existing.latest) existing.latest = e.created_at
+        if (e.outcome === "new_exp" || e.outcome === "update_exp") existing.produced++
+        if (e.outcome === "error" || e.outcome === "noise" || e.outcome === "dropped") existing.failed++
+      } else {
+        map.set(sid, {
+          id: sid,
+          runs: [e],
+          latest: e.created_at,
+          produced: e.outcome === "new_exp" || e.outcome === "update_exp" ? 1 : 0,
+          failed:
+            e.outcome === "error" || e.outcome === "noise" || e.outcome === "dropped" ? 1 : 0,
+        })
+      }
+    }
+    const arr = [...map.values()].sort((a, b) => b.latest - a.latest)
+    // Auto-select the top session if nothing picked yet.
+    if (!selectedSession() && arr.length > 0) setSelectedSession(arr[0].id)
+    return arr
+  })
+
+  const visibleRuns = createMemo(() => {
+    const sid = selectedSession()
+    if (!sid) return []
+    const session = sessions().find((s) => s.id === sid)
+    if (!session) return []
+    const runs = [...session.runs].sort((a, b) => b.created_at - a.created_at)
+    if (filterMode() === "no_exp") {
+      return runs.filter((r) =>
+        r.outcome === "noise" || r.outcome === "dropped" || r.outcome === "error",
+      )
+    }
+    return runs
+  })
+
+  const selectedRun = createMemo(() => {
+    const id = selectedRunId()
+    if (id) {
+      const found = visibleRuns().find((r) => r.id === id)
+      if (found) return found
+    }
+    return visibleRuns()[0]
+  })
+
+  const fmtTimeFull = (t: number) => {
+    const d = new Date(t)
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(
+      d.getHours(),
+    )}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
+  }
+
+  const outcomeLabel = (o: RefinerLogEntry["outcome"]) => {
+    switch (o) {
+      case "new_exp":
+        return "新建 exp"
+      case "update_exp":
+        return "更新 exp"
+      case "edge_only":
+        return "edge only"
+      case "noise":
+        return "noise"
+      case "dropped":
+        return "dropped"
+      case "error":
+        return "error"
+    }
+  }
+
+  const callKey = (run: RefinerLogEntry, idx: number) => `${run.id}:${idx}`
+  const isCallOpen = (k: string) => callOpen().has(k)
+  const toggleCall = (k: string) => {
+    const next = new Set(callOpen())
+    if (next.has(k)) next.delete(k)
+    else next.add(k)
+    setCallOpen(next)
+  }
+
+  return (
+    <Portal>
+      <div class="rf-logs-scrim" onClick={props.onClose} role="presentation">
+        <div
+          class="rf-logs-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Refiner activity log"
+          onClick={(ev) => ev.stopPropagation()}
+        >
+          <div class="rf-logs-hd">
+            <span class="rf-logs-title">Refiner · activity log</span>
+            <span class="rf-logs-meta">
+              {props.entries.length} runs · {sessions().length} sessions
+            </span>
+            <span style={{ flex: 1 }} />
+            <div class="rf-logs-filter" role="group">
+              <button
+                type="button"
+                data-active={filterMode() === "all"}
+                onClick={() => setFilterMode("all")}
+              >
+                全部
+              </button>
+              <button
+                type="button"
+                data-active={filterMode() === "no_exp"}
+                onClick={() => setFilterMode("no_exp")}
+                title="仅显示没有沉淀为 experience 的 query（noise/dropped/error）"
+              >
+                未沉淀
+              </button>
+            </div>
+            <button
+              type="button"
+              class="rune-btn"
+              data-size="xs"
+              onClick={props.onReload}
+              disabled={props.loading}
+              title="重新拉取日志"
+            >
+              {props.loading ? "刷新中…" : "↻ 刷新"}
+            </button>
+            <button
+              type="button"
+              class="rf-logs-close"
+              aria-label="Close"
+              onClick={props.onClose}
+            >
+              ×
+            </button>
+          </div>
+
+          <div class="rf-logs-body">
+            <Show
+              when={!props.loading && sessions().length > 0}
+              fallback={
+                <div class="rf-logs-empty">
+                  {props.loading
+                    ? "加载中…"
+                    : "暂无 refiner 日志。新的 refiner 运行会写入这里，包括没有沉淀的 query。"}
+                </div>
+              }
+            >
+              <aside class="rf-logs-sessions">
+                <div class="rf-logs-pane-hd">Sessions</div>
+                <For each={sessions()}>
+                  {(s) => (
+                    <button
+                      type="button"
+                      class="rf-logs-session-row"
+                      data-active={s.id === selectedSession()}
+                      onClick={() => {
+                        setSelectedSession(s.id)
+                        setSelectedRunId(undefined)
+                      }}
+                      title={s.id}
+                    >
+                      <div class="rf-logs-session-row-l">
+                        <div class="rf-logs-session-id">
+                          {s.id === "manual" ? "manual / 手动新建" : s.id.slice(0, 12)}
+                        </div>
+                        <div class="rf-logs-session-meta">
+                          {s.runs.length} runs · {fmtTime(s.latest)}
+                        </div>
+                      </div>
+                      <div class="rf-logs-session-stats">
+                        <Show when={s.produced > 0}>
+                          <span class="rf-logs-stat is-ok">+{s.produced}</span>
+                        </Show>
+                        <Show when={s.failed > 0}>
+                          <span class="rf-logs-stat is-warn">–{s.failed}</span>
+                        </Show>
+                      </div>
+                    </button>
+                  )}
+                </For>
+              </aside>
+
+              <section class="rf-logs-runs">
+                <div class="rf-logs-pane-hd">
+                  Runs
+                  <span style={{ "margin-left": "auto", color: "var(--rune-fg-faint)" }}>
+                    {visibleRuns().length}
+                  </span>
+                </div>
+                <Show
+                  when={visibleRuns().length > 0}
+                  fallback={
+                    <div class="rf-logs-empty">该 session 没有匹配筛选条件的 run。</div>
+                  }
+                >
+                  <For each={visibleRuns()}>
+                    {(r) => (
+                      <button
+                        type="button"
+                        class="rf-logs-run-row"
+                        data-active={r.id === selectedRun()?.id}
+                        data-outcome={r.outcome}
+                        onClick={() => setSelectedRunId(r.id)}
+                      >
+                        <div class="rf-logs-run-row-head">
+                          <span class="rf-logs-run-time">{fmtTime(r.created_at)}</span>
+                          <span class="rf-logs-run-trigger">{r.trigger}</span>
+                          <span style={{ flex: 1 }} />
+                          <span class={`rf-logs-outcome rf-logs-outcome-${r.outcome}`}>
+                            {outcomeLabel(r.outcome)}
+                          </span>
+                          <span class="rf-logs-run-ms">{r.duration_ms}ms</span>
+                        </div>
+                        <div class="rf-logs-run-text">
+                          {r.user_text.length > 140
+                            ? r.user_text.slice(0, 140) + "…"
+                            : r.user_text}
+                        </div>
+                      </button>
+                    )}
+                  </For>
+                </Show>
+              </section>
+
+              <section class="rf-logs-detail">
+                <Show
+                  when={selectedRun()}
+                  fallback={<div class="rf-logs-empty">选择一个 run 查看详情。</div>}
+                >
+                  {(run) => (
+                    <>
+                      <div class="rf-logs-pane-hd">
+                        Run {run().id.slice(0, 10)}
+                        <span style={{ "margin-left": "12px", color: "var(--rune-fg-faint)" }}>
+                          {fmtTimeFull(run().created_at)}
+                        </span>
+                      </div>
+                      <div class="rf-logs-detail-body">
+                        <section class="rf-logs-sec">
+                          <h4 class="rf-logs-sec-hd">User text</h4>
+                          <pre class="rf-logs-pre">{run().user_text}</pre>
+                        </section>
+                        <section class="rf-logs-sec">
+                          <h4 class="rf-logs-sec-hd">Outcome</h4>
+                          <div class="rf-logs-outcome-box">
+                            <span
+                              class={`rf-logs-outcome rf-logs-outcome-${run().outcome}`}
+                            >
+                              {outcomeLabel(run().outcome)}
+                            </span>
+                            <Show when={run().reason}>
+                              <span class="rf-logs-outcome-reason">{run().reason}</span>
+                            </Show>
+                            <Show when={run().experience_ids.length > 0}>
+                              <span class="rf-logs-outcome-reason">
+                                touched: {run().experience_ids.join(", ")}
+                              </span>
+                            </Show>
+                          </div>
+                        </section>
+                        <section class="rf-logs-sec">
+                          <h4 class="rf-logs-sec-hd">
+                            LLM calls ({run().llm_calls.length})
+                          </h4>
+                          <Show
+                            when={run().llm_calls.length > 0}
+                            fallback={
+                              <div class="rf-logs-empty">
+                                这个 run 没有触发 LLM（可能直接走了 fallback）。
+                              </div>
+                            }
+                          >
+                            <For each={run().llm_calls}>
+                              {(call, i) => {
+                                const k = callKey(run(), i())
+                                return (
+                                  <div class="rf-logs-call">
+                                    <button
+                                      type="button"
+                                      class="rf-logs-call-hd"
+                                      onClick={() => toggleCall(k)}
+                                    >
+                                      <span class="rf-logs-call-stage">{call.stage}</span>
+                                      <Show when={call.provider_id || call.model_id}>
+                                        <span class="rf-logs-call-model rune-mono">
+                                          {call.provider_id}/{call.model_id}
+                                        </span>
+                                      </Show>
+                                      <span style={{ flex: 1 }} />
+                                      <Show when={call.error}>
+                                        <span class="rf-logs-call-err">⚠</span>
+                                      </Show>
+                                      <span class="rf-logs-call-ms">{call.duration_ms}ms</span>
+                                      <span class="rf-logs-call-caret">
+                                        {isCallOpen(k) ? "▾" : "▸"}
+                                      </span>
+                                    </button>
+                                    <Show when={isCallOpen(k)}>
+                                      <div class="rf-logs-call-body">
+                                        <Show when={call.error}>
+                                          <div class="rf-logs-sec-err">
+                                            <h5 class="rf-logs-sec-hd">Error</h5>
+                                            <pre class="rf-logs-pre">{call.error}</pre>
+                                          </div>
+                                        </Show>
+                                        <Show when={call.system_prompt}>
+                                          <div>
+                                            <h5 class="rf-logs-sec-hd">System</h5>
+                                            <pre class="rf-logs-pre">{call.system_prompt}</pre>
+                                          </div>
+                                        </Show>
+                                        <div>
+                                          <h5 class="rf-logs-sec-hd">User prompt</h5>
+                                          <pre class="rf-logs-pre">{call.user_prompt}</pre>
+                                        </div>
+                                        <Show when={call.reasoning_text}>
+                                          <div>
+                                            <h5 class="rf-logs-sec-hd">Reasoning</h5>
+                                            <pre class="rf-logs-pre rf-logs-pre-reasoning">
+                                              {call.reasoning_text}
+                                            </pre>
+                                          </div>
+                                        </Show>
+                                        <Show when={call.response_text}>
+                                          <div>
+                                            <h5 class="rf-logs-sec-hd">Response</h5>
+                                            <pre class="rf-logs-pre">{call.response_text}</pre>
+                                          </div>
+                                        </Show>
+                                        <Show when={call.structured_output !== undefined}>
+                                          <div>
+                                            <h5 class="rf-logs-sec-hd">Structured output</h5>
+                                            <pre class="rf-logs-pre">
+                                              {JSON.stringify(call.structured_output, null, 2)}
+                                            </pre>
+                                          </div>
+                                        </Show>
+                                      </div>
+                                    </Show>
+                                  </div>
+                                )
+                              }}
+                            </For>
+                          </Show>
+                        </section>
+                      </div>
+                    </>
+                  )}
+                </Show>
+              </section>
+            </Show>
+          </div>
+        </div>
+      </div>
+    </Portal>
+  )
+}
+
+function pad2(n: number) {
+  return n < 10 ? "0" + n : String(n)
 }
 
 function ExperienceGraphView(props: {
@@ -4838,6 +5278,14 @@ export default function RefinerPage() {
   const [activeTag, setActiveTag] = createSignal<string | undefined>()
   const [activeKind, setActiveKind] = createSignal<Kind | undefined>()
   const [query, setQuery] = createSignal<string>("")
+  // Refiner activity log modal state. `showLogs` toggles the modal;
+  // `logEntries` is reloaded when the modal opens. The modal browses
+  // every refiner run (including queries that never crystallised into
+  // an experience), grouped by session, so the user can audit how the
+  // refiner agent decided what to keep / drop.
+  const [showLogs, setShowLogs] = createSignal(false)
+  const [logEntries, setLogEntries] = createSignal<RefinerLogEntry[]>([])
+  const [logsLoading, setLogsLoading] = createSignal(false)
   const [sortMode, setSortMode] = createSignal<"kind" | "recent" | "newest">("kind")
   const [includeArchived, setIncludeArchived] = createSignal(false)
   const [scopeMode, setScopeMode] = createSignal<"all" | "session">("all")
@@ -4888,6 +5336,34 @@ export default function RefinerPage() {
       username: current.http.username,
       fetcher: platform.fetch,
     }
+  }
+
+  // Loader for the refiner log modal — fired on open. We don't poll;
+  // the user explicitly clicks the Logs button when they want to look.
+  const reloadLogs = async () => {
+    const current = server.current
+    if (!current) return
+    setLogsLoading(true)
+    try {
+      const result = await fetchRefinerLog({
+        baseUrl: current.http.url,
+        directory: sdk.directory,
+        password: current.http.password,
+        username: current.http.username,
+        fetcher: platform.fetch,
+      })
+      // Newest first — append-only on disk so reverse here.
+      setLogEntries([...result.entries].reverse())
+    } catch (err) {
+      console.error("refiner log load failed", err)
+      setLogEntries([])
+    } finally {
+      setLogsLoading(false)
+    }
+  }
+  const openLogs = () => {
+    setShowLogs(true)
+    void reloadLogs()
   }
 
   // Each resource is wrapped in `stableFetcher` so polling refetches don't
@@ -5537,6 +6013,15 @@ export default function RefinerPage() {
               type="button"
               class="rune-btn"
               data-size="sm"
+              onClick={openLogs}
+              title="查看 refiner agent 的活动日志（按 session/query 浏览所有 refiner 运行，包含没有沉淀为 experience 的 query）"
+            >
+              ⌥ Logs
+            </button>
+            <button
+              type="button"
+              class="rune-btn"
+              data-size="sm"
               data-variant="primary"
               onClick={() => setAction({ type: "create" })}
               title="手动新建 experience"
@@ -5819,6 +6304,15 @@ export default function RefinerPage() {
           return usageStats()?.[sel.id]
         })()}
       />
+
+      <Show when={showLogs()}>
+        <RefinerLogsModal
+          entries={logEntries()}
+          loading={logsLoading()}
+          onClose={() => setShowLogs(false)}
+          onReload={() => void reloadLogs()}
+        />
+      </Show>
 
       <MergeTray
         selected={mergeSelectedExperiences()}

@@ -253,6 +253,35 @@ export const ExperimentalRoutes = lazy(() =>
       },
     )
     .get(
+      "/refiner/log",
+      describeRoute({
+        summary: "Get refiner activity log",
+        description:
+          "List refiner audit log entries — every refiner run (auto from observation, manual create, from history, etc.) with the per-stage LLM call traces and the final outcome. Includes runs that produced no experience (noise / dropped / errored). Returns { entries: RefinerLogEntry[] }, newest at the end. Optional `session_id` query param filters by session.",
+        operationId: "experimental.refiner.log.list",
+        responses: {
+          200: {
+            description: "Refiner log entries",
+            content: {
+              "application/json": {
+                schema: resolver(
+                  z.object({
+                    entries: z.array(Refiner.RefinerLogEntrySchemaExport),
+                  }),
+                ),
+              },
+            },
+          },
+        },
+      }),
+      async (c) => {
+        const sessionID = c.req.query("session_id")
+        const entries = await Refiner.readLog()
+        const filtered = sessionID ? entries.filter((e) => e.session_id === sessionID) : entries
+        return c.json({ entries: filtered })
+      },
+    )
+    .get(
       "/retrieve/log",
       describeRoute({
         summary: "Get retrieve injection log",

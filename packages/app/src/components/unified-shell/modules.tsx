@@ -466,8 +466,13 @@ export function KnowledgeList(props: {
           >
             <For each={props.experiences}>
               {(e) => (
-                <button
-                  type="button"
+                /* Outer must be <div role="button"> (NOT <button>) so the
+                 * inner tag chips (also <button>s) can receive clicks —
+                 * nested <button> is invalid HTML and browsers either
+                 * eat the inner click or always fire the outer handler. */
+                <div
+                  role="button"
+                  tabIndex={0}
                   class="kw-exp"
                   classList={{
                     "is-on": e.id === props.pickedId,
@@ -475,6 +480,12 @@ export function KnowledgeList(props: {
                   }}
                   data-flag={e.flag ?? ""}
                   onClick={(ev) => props.onPick(e.id, { shift: ev.shiftKey, meta: ev.metaKey || ev.ctrlKey })}
+                  onKeyDown={(ev) => {
+                    if (ev.key === "Enter" || ev.key === " ") {
+                      ev.preventDefault()
+                      props.onPick(e.id, { shift: ev.shiftKey, meta: ev.metaKey || ev.ctrlKey })
+                    }
+                  }}
                 >
                   <Show when={e.flag === "pending"}>
                     <span class="kw-exp-pending-pulse" aria-hidden />
@@ -516,7 +527,7 @@ export function KnowledgeList(props: {
                       <span class="kw-exp-obs">obs · {e.obs}</span>
                     </Show>
                   </div>
-                </button>
+                </div>
               )}
             </For>
           </Show>
