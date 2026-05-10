@@ -10,15 +10,25 @@
  */
 
 .rune-shell {
-  /* ─── Type scale (Inter + JetBrains Mono, design-spec) ─── */
-  /* Inter has no CJK glyphs, so the fallback chain MUST include a
-   * Chinese system font BEFORE the project's generic sans token —
-   * otherwise mixed Chinese / Latin runs flicker between fonts and
-   * occasionally land on a font with bad glyph substitution
-   * (the recent trace-page rendering issue showed CJK chars
-   * substituted as nonsensical glyphs because no explicit CJK
-   * fallback was declared). */
+  /* ─── Type scale (Geist + Inter + JetBrains Mono, design-spec) ─── */
+  /* Geist Sans is preferred for body / chrome — it's the typeface
+   * Vercel uses, has very refined optical-sized glyphs, and reads
+   * markedly more "high-end" than default Inter at small sizes
+   * (the user's specific feedback after the previous typography
+   * round was 字体太丑).
+   *
+   * We fall back to Inter Variable (already self-hosted) and the
+   * usual CJK system fonts. Geist is loaded opportunistically via
+   * Google Fonts in `fonts.css` — if the network is unavailable on
+   * first paint, the chain still resolves to Inter and the UI
+   * remains usable.
+   *
+   * `--rune-font-display` is a separate stack used for headings.
+   * We bias it toward Geist's tighter cuts; everywhere else still
+   * uses `--rune-font-sans`. */
   --rune-font-sans:
+    "Geist",
+    "Geist Variable",
     "Inter Variable",
     "Inter",
     -apple-system,
@@ -35,7 +45,19 @@
     sans-serif,
     "Apple Color Emoji",
     "Segoe UI Emoji";
+  --rune-font-display:
+    "Geist",
+    "Geist Variable",
+    "Inter Variable",
+    "Inter",
+    -apple-system,
+    BlinkMacSystemFont,
+    "PingFang SC",
+    "Hiragino Sans GB",
+    "Microsoft YaHei UI",
+    sans-serif;
   --rune-font-mono:
+    "Geist Mono",
     "JetBrains Mono Variable",
     "JetBrains Mono",
     ui-monospace,

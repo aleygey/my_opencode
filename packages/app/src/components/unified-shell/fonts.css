@@ -16,6 +16,13 @@
  * still renders.
  */
 
+/* Geist Sans / Geist Mono — refined display + UI font (Vercel's
+ * typeface, SIL OFL). Loaded opportunistically from Google Fonts so
+ * the rest of the chrome doesn't block on it; if the network call
+ * fails (offline first paint, CSP), the @font-face below for Inter
+ * Variable still ships locally as a guaranteed fallback. */
+@import url("https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@400;500&display=swap");
+
 @font-face {
   font-family: "Inter Variable";
   font-style: normal;

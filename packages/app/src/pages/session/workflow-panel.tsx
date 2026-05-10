@@ -611,15 +611,13 @@ const buildRows = (input: {
   snap: WorkflowSnapshot
   node?: WorkflowNode
 }) => {
-  const rows: Row[] = [
-    {
-      id: "sys",
-      role: "system",
-      label: "System",
-      time: fmt(input.snap.workflow.time?.updated),
-      body: `${cap(input.snap.workflow.status)} · ${cap(input.snap.runtime.phase)}${input.node ? ` · ${input.node.title}` : ""}`,
-    },
-  ]
+  // Previously the chat list opened with a synthetic "System · STATUS ·
+  // PHASE" row built from the workflow snapshot. The user pointed out
+  // it carries no real information — the same status / phase already
+  // appears in the shell header's STAGE/NODES meta strip. Dropping the
+  // pseudo-row gives the agent's reply more visual room and avoids the
+  // "no useful title" feeling.
+  const rows: Row[] = []
   for (const msg of input.messages) {
     const parts = input.parts[msg.id] ?? []
     if (msg.role === "user") {

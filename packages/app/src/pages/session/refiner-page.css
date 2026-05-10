@@ -3182,7 +3182,13 @@
 .rf-logs-scrim {
   position: fixed;
   inset: 0;
-  background: light-dark(rgba(15, 23, 42, 0.42), rgba(0, 0, 0, 0.62));
+  /* Stronger scrim + backdrop blur so the experience cards behind
+   * fade properly. Previous 0.42 alpha let card content read through
+   * the modal area which made the visual hierarchy ambiguous (user
+   * reported "层级有问题"). */
+  background: light-dark(rgba(15, 23, 42, 0.62), rgba(0, 0, 0, 0.72));
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3197,7 +3203,11 @@
   background: var(--rune-bg-raised);
   border: 1px solid var(--rune-line);
   border-radius: var(--rune-r-lg, 10px);
-  box-shadow: var(--rune-shadow-lg);
+  /* Stronger shadow + ring lifts the modal cleanly off the blurred
+   * backdrop. */
+  box-shadow:
+    0 0 0 1px rgba(15, 23, 42, 0.06),
+    0 24px 60px rgba(15, 23, 42, 0.30);
   overflow: hidden;
 }
 .rf-logs-hd {

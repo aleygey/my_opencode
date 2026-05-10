@@ -4347,20 +4347,21 @@
 
 /* ── Reasoning row ──
  *
- * Quiet bar with a violet left accent so the user can tell-at-a-
- * glance "this is the model's chain-of-thought" — distinct from the
- * neutral grey accent on the tool strip. Expanded by default so the
- * thinking is visible without an extra click. Body is plain weight,
- * no italic (italic was hurting CJK readability). */
+ * Quiet bar with a refined slate left accent (NOT purple — the user
+ * pushed back on the violet in the previous round). Distinct from
+ * the tool strip via icon shape (brain vs wrench) and a subtle
+ * accent-edge tinge. Default-open so reasoning is visible without
+ * an extra click; body is plain weight, no italic (italic was
+ * hurting CJK readability). */
 .workflow-make .wf-reasoning {
   border-radius: 6px;
   border: 1px solid var(--wf-line);
   background: transparent;
   overflow: hidden;
-  border-left: 3px solid var(--wf-reasoning-accent, #8b7fc6);
+  border-left: 3px solid var(--rune-line-strong, var(--wf-line-strong));
 }
 .workflow-make .wf-reasoning--open {
-  background: var(--wf-reasoning-tint, rgba(139, 127, 198, 0.04));
+  background: var(--wf-bg-2, rgba(15, 23, 42, 0.025));
 }
 .workflow-make .wf-reasoning-head {
   display: flex;
@@ -4382,13 +4383,14 @@
 }
 .workflow-make .wf-reasoning-icon {
   flex-shrink: 0;
-  color: var(--wf-reasoning-accent, #8b7fc6);
-  opacity: 0.85;
+  color: var(--rune-fg-mute, var(--wf-ink-soft));
+  opacity: 0.8;
 }
 .workflow-make .wf-reasoning-label {
   font-weight: 500;
   text-transform: lowercase;
-  color: var(--wf-reasoning-accent, #8b7fc6);
+  color: var(--rune-fg-mute, var(--wf-ink-soft));
+  letter-spacing: 0.04em;
 }
 .workflow-make .wf-reasoning-dur {
   font-family: var(--wf-font-mono);
@@ -4412,14 +4414,10 @@
   /* No italic — readability matters more than decoration. */
 }
 .workflow-make.dark .wf-reasoning {
-  border-left-color: rgba(180, 165, 240, 0.5);
+  border-left-color: rgba(255, 255, 255, 0.18);
 }
 .workflow-make.dark .wf-reasoning--open {
-  background: rgba(180, 165, 240, 0.05);
-}
-.workflow-make.dark .wf-reasoning-icon,
-.workflow-make.dark .wf-reasoning-label {
-  color: rgba(195, 180, 245, 0.85);
+  background: rgba(255, 255, 255, 0.02);
 }
 
 /* ── Tool strip (collapsed marquee) ──

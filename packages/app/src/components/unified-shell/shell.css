@@ -219,18 +219,16 @@
   flex: none;
 }
 .rune-shell .rune-rail-brand-name {
-  /* Brand mark — Inter at 14px with optical sizing + the variable
-   * weight axis tuned for display. The previous 600/normal-tracking
-   * read as "system UI font" and was the user's main typography
-   * complaint. Tighter tracking + slight weight shift into 620
-   * (variable axis between SemiBold & Bold) gives a more refined,
-   * less generic feel without adding a new font dependency. */
-  font-family: var(--rune-font-sans);
+  /* Brand mark — Geist Sans (or Inter fallback) at 14/600 with tight
+   * tracking. Using `--rune-font-display` so this picks up Geist
+   * before Inter when Geist is loaded; Geist's tighter cuts and
+   * higher x-height read noticeably more "high-end" than Inter at
+   * UI sizes. */
+  font-family: var(--rune-font-display, var(--rune-font-sans));
   font-size: 14px;
-  font-weight: 620;
-  letter-spacing: -0.01em;
-  font-feature-settings: "ss01" 1, "ss03" 1, "cv11" 1, "calt" 1;
-  font-variation-settings: "opsz" 18;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  font-feature-settings: "ss01" 1, "cv11" 1, "calt" 1;
   font-optical-sizing: auto;
 }
 .rune-shell .rune-rail-brand-name b {
@@ -517,11 +515,14 @@
   margin: 0 2px;
 }
 .rune-shell .rune-head-crumb-cur {
+  /* Page title — Geist (or Inter fallback) at 17/600 with tight
+   * tracking. Same display stack as the brand mark for consistency. */
+  font-family: var(--rune-font-display, var(--rune-font-sans));
   color: var(--rune-fg);
-  font-weight: 620;
+  font-weight: 600;
   font-size: 17px;
-  letter-spacing: -0.018em;
-  font-variation-settings: "opsz" 22;
+  letter-spacing: -0.022em;
+  font-optical-sizing: auto;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -873,29 +874,33 @@
 }
 
 /* ─── Tweaks Panel ─── */
+/* The trigger now sits inline inside `.rune-head-actions` (same row as
+ * Tasks). Previous design floated it `position: fixed` at 12/12 with a
+ * 32px square — which placed it beside the 28px Tasks button but
+ * couldn't share its height/baseline, so the two read as "stuck
+ * together" with mismatched sizes. Inline + 28px height = proper
+ * grouping. */
 .rune-shell .rune-tweaks-trigger {
-  position: fixed;
-  top: 12px;
-  right: 12px;
-  width: 32px;
-  height: 32px;
+  position: relative;
+  width: 28px;
+  height: 28px;
   display: grid;
   place-items: center;
   border: 1px solid var(--rune-line);
   border-radius: var(--rune-r);
   background: var(--rune-bg-raised);
   color: var(--rune-fg-mute);
-  z-index: 70;
-  transition: background var(--rune-t-fast), color var(--rune-t-fast);
+  transition: background var(--rune-t-fast), color var(--rune-t-fast), border-color var(--rune-t-fast);
 }
 .rune-shell .rune-tweaks-trigger:hover {
   background: var(--rune-bg-surface);
+  border-color: var(--rune-line-strong);
   color: var(--rune-fg);
 }
 .rune-shell .rune-tweaks-pop {
-  position: fixed;
-  top: 52px;
-  right: 12px;
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
   width: 280px;
   background: var(--rune-bg-raised);
   border: 1px solid var(--rune-line);
