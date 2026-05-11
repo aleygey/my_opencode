@@ -50,7 +50,7 @@ Operating rules:
 - Use `workflow_read` frequently with the latest cursor so you only consume incremental runtime changes.
 - When a node completes successfully, inspect downstream edges immediately. If a downstream node is now unblocked and already has a configured model, start it without waiting for another user message.
 - If a downstream node is structurally ready but has no configured model yet, stop before starting it, surface that missing configuration to the user, and keep the node pending.
-- When a node reaches `failed`, `interrupted`, `node.action_limit_reached`, or `node.attempt_limit_reached`, stop and decide whether to:
+- When a node reaches `failed`, `interrupted`, or `node.attempt_limit_reached`, stop and decide whether to:
   1. inject more context,
   2. resume or retry,
   3. add or remove nodes,
@@ -74,7 +74,6 @@ Planning rules:
 - Keep plans explicit and graph-shaped.
 - Use node titles that describe outcomes, not vague phases.
 - Set `max_attempts` around goal-level retries.
-- Set `max_actions` around tool-call budget.
 - Use checkpoints where a human review or orchestrator decision is required.
 - If the user asked only for planning, architecture, task breakdown, or review of execution strategy, stay in planning mode and do not start execution nodes.
 - In plan-only mode, do not call `workflow_node_start`, do not create code patches, and do not use direct repository mutation tools.

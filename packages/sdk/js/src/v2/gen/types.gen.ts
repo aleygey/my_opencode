@@ -366,6 +366,15 @@ export type EventSessionCompacted = {
   }
 }
 
+export type EventSessionCompactionFailed = {
+  type: "session.compaction_failed"
+  properties: {
+    sessionID: string
+    reason: string
+    replay: boolean
+  }
+}
+
 export type EventTuiPromptAppend = {
   type: "tui.prompt.append"
   properties: {
@@ -601,10 +610,8 @@ export type WorkflowNode = {
   status: "pending" | "ready" | "running" | "waiting" | "paused" | "interrupted" | "completed" | "failed" | "cancelled"
   result_status: "unknown" | "success" | "fail" | "partial"
   fail_reason?: string
-  action_count: number
   attempt: number
   max_attempts: number
-  max_actions: number
   version: number
   state_json?: {
     [key: string]: unknown
@@ -1397,6 +1404,7 @@ export type GlobalEvent = {
     | EventSessionStatus
     | EventSessionIdle
     | EventSessionCompacted
+    | EventSessionCompactionFailed
     | EventTuiPromptAppend
     | EventTuiCommandExecute
     | EventTuiToastShow
@@ -1946,9 +1954,39 @@ export type Config = {
        */
       enabled?: boolean
       /**
+       * Auto-precipitate experiences on every user message. Defaults to true. Set to false to stop the refiner from running on each message (saves tokens); manual triggers via the refiner UI still work. The master `enabled` flag overrides this.
+       */
+      auto_enabled?: boolean
+      /**
        * Directory for persisted refiner memory artifacts
        */
       directory?: string
+    }
+    sand_table?: {
+      planner_model?: {
+        providerID: string
+        modelID: string
+      }
+      evaluator_model?: {
+        providerID: string
+        modelID: string
+      }
+      /**
+       * Agent name to use for the planner role (default: sandtable).
+       */
+      planner_agent?: string
+      /**
+       * Agent name to use for the evaluator role (default: sandtable).
+       */
+      evaluator_agent?: string
+      /**
+       * Default maximum discussion rounds (1–5). Tool args override.
+       */
+      max_rounds?: number
+      /**
+       * When true, every sand_table tool call pauses with status='awaiting_start' until the user confirms the planner/evaluator agent + model in the inspector. The orchestrator's tool call still blocks during the wait, so the agent picks up the final plan only after the user starts the round.
+       */
+      confirm_before_start?: boolean
     }
     /**
      * Enable OpenTelemetry spans for AI SDK calls (using the 'experimental_telemetry' flag)
@@ -2346,6 +2384,7 @@ export type Event =
   | EventSessionStatus
   | EventSessionIdle
   | EventSessionCompacted
+  | EventSessionCompactionFailed
   | EventTuiPromptAppend
   | EventTuiCommandExecute
   | EventTuiToastShow
@@ -2465,7 +2504,6 @@ export type WorkflowEdit = {
           input_ports?: Array<WorkflowInputPort>
           output_ports?: Array<WorkflowOutputPort>
           max_attempts?: number
-          max_actions?: number
           position?: number
           priority?: number
           holds_resources?: Array<string>
@@ -2490,7 +2528,6 @@ export type WorkflowEdit = {
           input_ports?: Array<WorkflowInputPort>
           output_ports?: Array<WorkflowOutputPort>
           max_attempts?: number
-          max_actions?: number
           position?: number
           priority?: number
           holds_resources?: Array<string>
@@ -2513,7 +2550,6 @@ export type WorkflowEdit = {
           input_ports?: Array<WorkflowInputPort>
           output_ports?: Array<WorkflowOutputPort>
           max_attempts?: number
-          max_actions?: number
           position?: number
           priority?: number
           holds_resources?: Array<string>
@@ -3904,6 +3940,185 @@ export type ExperimentalRefinerTaxonomyGetResponses = {
 export type ExperimentalRefinerTaxonomyGetResponse =
   ExperimentalRefinerTaxonomyGetResponses[keyof ExperimentalRefinerTaxonomyGetResponses]
 
+export type ExperimentalRefinerStatsGetData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/refiner/stats"
+}
+
+export type ExperimentalRefinerStatsGetResponses = {
+  /**
+   * Per-experience usage stats
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRefinerStatsGetResponse =
+  ExperimentalRefinerStatsGetResponses[keyof ExperimentalRefinerStatsGetResponses]
+
+export type ExperimentalRefinerLogListData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/refiner/log"
+}
+
+export type ExperimentalRefinerLogListResponses = {
+  /**
+   * Refiner log entries
+   */
+  200: {
+    entries: Array<{
+      id: string
+      created_at: number
+      duration_ms: number
+      trigger: "auto" | "manual" | "history" | "import" | "re_refine"
+      session_id?: string
+      message_id?: string
+      observation_id?: string
+      user_text: string
+      outcome: "new_exp" | "update_exp" | "edge_only" | "noise" | "dropped" | "error"
+      experience_ids?: Array<string>
+      reason?: string
+      llm_calls: Array<{
+        stage: "route" | "refine" | "synthesis" | "edge"
+        provider_id?: string
+        model_id?: string
+        system_prompt?: string
+        user_prompt: string
+        response_text?: string
+        reasoning_text?: string
+        structured_output?: unknown
+        error?: string
+        duration_ms: number
+      }>
+    }>
+  }
+}
+
+export type ExperimentalRefinerLogListResponse =
+  ExperimentalRefinerLogListResponses[keyof ExperimentalRefinerLogListResponses]
+
+export type ExperimentalRetrieveLogListData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+    session_id?: string
+    limit?: number
+  }
+  url: "/experimental/retrieve/log"
+}
+
+export type ExperimentalRetrieveLogListResponses = {
+  /**
+   * Retrieve log entries
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRetrieveLogListResponse =
+  ExperimentalRetrieveLogListResponses[keyof ExperimentalRetrieveLogListResponses]
+
+export type ExperimentalRetrievePreviewData = {
+  body?: {
+    session_id: string
+    agent_name?: string
+    user_text?: string
+    workflow_id?: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/retrieve/preview"
+}
+
+export type ExperimentalRetrievePreviewResponses = {
+  /**
+   * Retrieve preview
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRetrievePreviewResponse =
+  ExperimentalRetrievePreviewResponses[keyof ExperimentalRetrievePreviewResponses]
+
+export type ExperimentalRetrieveConfigGetData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/retrieve/config"
+}
+
+export type ExperimentalRetrieveConfigGetResponses = {
+  /**
+   * Retrieve config
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRetrieveConfigGetResponse =
+  ExperimentalRetrieveConfigGetResponses[keyof ExperimentalRetrieveConfigGetResponses]
+
+export type ExperimentalRetrieveConfigUpdateData = {
+  body?: {
+    model?: {
+      providerID: string
+      modelID: string
+    } | null
+    temperature?: number | null
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/retrieve/config"
+}
+
+export type ExperimentalRetrieveConfigUpdateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalRetrieveConfigUpdateError =
+  ExperimentalRetrieveConfigUpdateErrors[keyof ExperimentalRetrieveConfigUpdateErrors]
+
+export type ExperimentalRetrieveConfigUpdateResponses = {
+  /**
+   * Updated retrieve config
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRetrieveConfigUpdateResponse =
+  ExperimentalRetrieveConfigUpdateResponses[keyof ExperimentalRetrieveConfigUpdateResponses]
+
 export type ExperimentalRefinerConfigGetData = {
   body?: never
   path?: never
@@ -3933,6 +4148,7 @@ export type ExperimentalRefinerConfigUpdateData = {
       modelID: string
     } | null
     temperature?: number | null
+    auto_enabled?: boolean | null
   }
   path?: never
   query?: {
@@ -3963,6 +4179,73 @@ export type ExperimentalRefinerConfigUpdateResponses = {
 
 export type ExperimentalRefinerConfigUpdateResponse =
   ExperimentalRefinerConfigUpdateResponses[keyof ExperimentalRefinerConfigUpdateResponses]
+
+export type ExperimentalSandTableConfigGetData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/sand_table/config"
+}
+
+export type ExperimentalSandTableConfigGetResponses = {
+  /**
+   * Sand-table config
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalSandTableConfigGetResponse =
+  ExperimentalSandTableConfigGetResponses[keyof ExperimentalSandTableConfigGetResponses]
+
+export type ExperimentalSandTableConfigUpdateData = {
+  body?: {
+    planner_model?: {
+      providerID: string
+      modelID: string
+    } | null
+    evaluator_model?: {
+      providerID: string
+      modelID: string
+    } | null
+    planner_agent?: string | null
+    evaluator_agent?: string | null
+    max_rounds?: number | null
+    confirm_before_start?: boolean | null
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/sand_table/config"
+}
+
+export type ExperimentalSandTableConfigUpdateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalSandTableConfigUpdateError =
+  ExperimentalSandTableConfigUpdateErrors[keyof ExperimentalSandTableConfigUpdateErrors]
+
+export type ExperimentalSandTableConfigUpdateResponses = {
+  /**
+   * Updated sand-table config
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalSandTableConfigUpdateResponse =
+  ExperimentalSandTableConfigUpdateResponses[keyof ExperimentalSandTableConfigUpdateResponses]
 
 export type ExperimentalRefinerCategoriesListData = {
   body?: never
@@ -4021,6 +4304,42 @@ export type ExperimentalRefinerExperienceArchiveResponses = {
 
 export type ExperimentalRefinerExperienceArchiveResponse =
   ExperimentalRefinerExperienceArchiveResponses[keyof ExperimentalRefinerExperienceArchiveResponses]
+
+export type ExperimentalRefinerExperienceReviewData = {
+  body?: {
+    status: "pending" | "approved" | "rejected"
+  }
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/refiner/experience/{id}/review"
+}
+
+export type ExperimentalRefinerExperienceReviewErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalRefinerExperienceReviewError =
+  ExperimentalRefinerExperienceReviewErrors[keyof ExperimentalRefinerExperienceReviewErrors]
+
+export type ExperimentalRefinerExperienceReviewResponses = {
+  /**
+   * Updated experience
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRefinerExperienceReviewResponse =
+  ExperimentalRefinerExperienceReviewResponses[keyof ExperimentalRefinerExperienceReviewResponses]
 
 export type ExperimentalRefinerExperienceAugmentData = {
   body?: {
@@ -6885,7 +7204,7 @@ export type WorkflowSandTableGetResponses = {
     context: string
     round: number
     max_rounds: number
-    status: "running" | "approved" | "completed" | "failed"
+    status: "awaiting_start" | "running" | "approved" | "completed" | "failed"
     participants: Array<{
       role: "planner" | "evaluator"
       sessionID: string
@@ -6903,10 +7222,79 @@ export type WorkflowSandTableGetResponses = {
       round: number
       timestamp: number
     }>
+    resolved_planner_agent?: string
+    resolved_evaluator_agent?: string
   }
 }
 
 export type WorkflowSandTableGetResponse = WorkflowSandTableGetResponses[keyof WorkflowSandTableGetResponses]
+
+export type WorkflowSandTableStartData = {
+  body?: {
+    planner_model?: {
+      providerID: string
+      modelID: string
+    }
+    evaluator_model?: {
+      providerID: string
+      modelID: string
+    }
+    planner_agent?: string
+    evaluator_agent?: string
+  }
+  path: {
+    discussionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow/sand_table/{discussionID}/start"
+}
+
+export type WorkflowSandTableStartErrors = {
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type WorkflowSandTableStartError = WorkflowSandTableStartErrors[keyof WorkflowSandTableStartErrors]
+
+export type WorkflowSandTableStartResponses = {
+  /**
+   * Started sand table discussion
+   */
+  200: {
+    id: string
+    topic: string
+    context: string
+    round: number
+    max_rounds: number
+    status: "awaiting_start" | "running" | "approved" | "completed" | "failed"
+    participants: Array<{
+      role: "planner" | "evaluator"
+      sessionID: string
+      model: {
+        providerID: string
+        modelID: string
+      }
+    }>
+    current_plan?: string
+    last_evaluation?: string
+    messages: Array<{
+      role: "planner" | "evaluator" | "orchestrator"
+      model: string
+      content: string
+      round: number
+      timestamp: number
+    }>
+    resolved_planner_agent?: string
+    resolved_evaluator_agent?: string
+  }
+}
+
+export type WorkflowSandTableStartResponse = WorkflowSandTableStartResponses[keyof WorkflowSandTableStartResponses]
 
 export type WorkflowSandTableMessageData = {
   body?: {
@@ -6946,7 +7334,7 @@ export type WorkflowSandTableMessageResponses = {
     context: string
     round: number
     max_rounds: number
-    status: "running" | "approved" | "completed" | "failed"
+    status: "awaiting_start" | "running" | "approved" | "completed" | "failed"
     participants: Array<{
       role: "planner" | "evaluator"
       sessionID: string
@@ -6964,6 +7352,8 @@ export type WorkflowSandTableMessageResponses = {
       round: number
       timestamp: number
     }>
+    resolved_planner_agent?: string
+    resolved_evaluator_agent?: string
   }
 }
 
@@ -7154,10 +7544,8 @@ export type WorkflowCreateData = {
         | "cancelled"
       result_status?: "unknown" | "success" | "fail" | "partial"
       fail_reason?: string
-      action_count?: number
       attempt?: number
       max_attempts?: number
-      max_actions?: number
       state_json?: {
         [key: string]: unknown
       }
@@ -7239,7 +7627,6 @@ export type WorkflowNodeCreateData = {
       | "cancelled"
     result_status?: "unknown" | "success" | "fail" | "partial"
     max_attempts?: number
-    max_actions?: number
     position?: number
   }
   path: {
@@ -7373,7 +7760,6 @@ export type WorkflowEditProposeData = {
             input_ports?: Array<WorkflowInputPort>
             output_ports?: Array<WorkflowOutputPort>
             max_attempts?: number
-            max_actions?: number
             position?: number
             priority?: number
             holds_resources?: Array<string>
@@ -7398,7 +7784,6 @@ export type WorkflowEditProposeData = {
             input_ports?: Array<WorkflowInputPort>
             output_ports?: Array<WorkflowOutputPort>
             max_attempts?: number
-            max_actions?: number
             position?: number
             priority?: number
             holds_resources?: Array<string>
@@ -7421,7 +7806,6 @@ export type WorkflowEditProposeData = {
             input_ports?: Array<WorkflowInputPort>
             output_ports?: Array<WorkflowOutputPort>
             max_attempts?: number
-            max_actions?: number
             position?: number
             priority?: number
             holds_resources?: Array<string>
@@ -7761,12 +8145,9 @@ export type WorkflowNodeUpdateData = {
         }
       }
       attempt_delta?: number
-      action_count?: number
       max_attempts?: number
-      max_actions?: number
       title?: string
     }
-    action_delta?: number
     event?: {
       kind: string
       target_node_id?: string

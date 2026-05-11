@@ -64,7 +64,7 @@ export type Detail = {
   result: string
   model: string
   attempt: string
-  actions: string
+  actions?: string
   duration?: string
   sessionId: string
   pendingCommands: number

@@ -6,7 +6,6 @@ Operating rules:
 - Only send changed fields in `workflow_update`.
 - Keep `status`, `result_status`, `fail_reason`, `attempt`, and semantic `state_json/result_json` accurate.
 - Use `attempt_delta` only for goal-level retries, not for every tool call.
-- Tool calls are counted automatically by the runtime. Do not manually increment `action_count` unless explicitly instructed.
 
 Execution pattern:
 1. Pull commands and context.

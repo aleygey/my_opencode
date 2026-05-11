@@ -2,6 +2,7 @@ import { Effect } from "effect"
 import z from "zod"
 import * as Tool from "./tool"
 import { Workflow } from "@/workflow"
+import { renderNarrative } from "@/workflow/narrative"
 import { Session } from "@/session"
 import { SessionPrompt } from "@/session/prompt"
 import { AppRuntime } from "@/effect/app-runtime"
@@ -41,9 +42,7 @@ const nodePatch = z.object({
     })
     .optional(),
   attempt_delta: z.number().int().optional(),
-  action_count: z.number().int().nonnegative().optional(),
   max_attempts: z.number().int().positive().optional(),
-  max_actions: z.number().int().positive().optional(),
   title: z.string().optional(),
 })
 
@@ -91,7 +90,6 @@ const WorkflowNodeCreateParameters = z.object({
   model,
   config: z.record(z.string(), z.any()).optional(),
   max_attempts: z.number().int().positive().optional(),
-  max_actions: z.number().int().positive().optional(),
   position: z.number().int().nonnegative().optional(),
   create_session: z.boolean().optional().default(false),
   initial_prompt: z.string().optional(),
@@ -135,6 +133,14 @@ const WorkflowCheckpointCreateParameters = z.object({
 const WorkflowReadParameters = z.object({
   workflow_id: z.string(),
   cursor: z.number().int().nonnegative().optional(),
+  /**
+   * Output format. `narrative` (default) returns a compact human-readable
+   * markdown rendering tuned for orchestrator decisions — drops UUIDs the
+   * agent never uses, surfaces summary/needs/errors/usage, and caps verbose
+   * collections. `json` returns the raw structured snapshot (same as the
+   * HTTP route) for callers that need to programmatically diff state.
+   */
+  format: z.enum(["narrative", "json"]).optional(),
 })
 
 const WorkflowControlParameters = z.object({
@@ -277,7 +283,6 @@ export const WorkflowNodeCreateTool = Tool.define(
               model: input.model,
               config: input.config,
               max_attempts: input.max_attempts,
-              max_actions: input.max_actions,
               position: input.position,
             }),
           )
@@ -928,7 +933,10 @@ export const WorkflowReadTool = Tool.define(
   Effect.gen(function* () {
     return {
       description:
-        "Read workflow runtime state. Prefer passing cursor to fetch only incremental changes.",
+        "Read workflow runtime state as a compact markdown narrative tuned for orchestrator " +
+        "decisions (summary/needs/errors/usage + node status, with UUIDs and runtime telemetry " +
+        "stripped). Pass cursor for incremental reads. Pass format='json' if you need the raw " +
+        "structured snapshot.",
       parameters: WorkflowReadParameters,
       execute: (input: z.infer<typeof WorkflowReadParameters>, _ctx: Tool.Context) =>
         Effect.gen(function* () {
@@ -936,15 +944,18 @@ export const WorkflowReadTool = Tool.define(
             Workflow.read({
               workflowID: input.workflow_id,
               cursor: input.cursor,
+              audience: "orchestrator",
             }),
           )
+          const fmt = input.format ?? "narrative"
           return {
             title: "workflow read",
             metadata: {
               workflowID: input.workflow_id,
               cursor: result.cursor,
+              format: fmt,
             },
-            output: format(result),
+            output: fmt === "narrative" ? renderNarrative(result) : format(result),
           }
         }).pipe(Effect.orDie),
     }

@@ -91,10 +91,8 @@ export type WorkflowNode = {
   status: string
   result_status: string
   fail_reason?: string
-  action_count: number
   attempt: number
   max_attempts: number
-  max_actions: number
   version: number
   position: number
   state_json?: Record<string, unknown>
@@ -1146,10 +1144,6 @@ function Inspector(props: {
                   <div class="text-sm font-medium text-foreground">{props.node!.attempt}/{props.node!.max_attempts}</div>
                 </div>
                 <div class="rounded-lg border border-border/30 bg-muted/20 p-3">
-                  <div class="mb-1 text-xs text-muted-foreground">Actions</div>
-                  <div class="text-sm font-medium text-foreground">{props.node!.action_count}/{props.node!.max_actions}</div>
-                </div>
-                <div class="rounded-lg border border-border/30 bg-muted/20 p-3">
                   <div class="mb-1 text-xs text-muted-foreground">Pending</div>
                   <div class="text-sm font-medium text-foreground">{props.pending}</div>
                 </div>
@@ -1890,7 +1884,6 @@ export function WorkflowRuntimePanel(props: {
             result: cap(node.result_status),
             model: modelLabel(node, fallback),
             attempt: `${node.attempt}/${node.max_attempts}`,
-            actions: `${node.action_count}/${node.max_actions}`,
             sessionId: node.session_id ?? "not started",
             pendingCommands: pending,
             lastControl: control?.payload.command ? String(control.payload.command) : "none",

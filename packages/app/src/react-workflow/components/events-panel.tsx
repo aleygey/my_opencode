@@ -97,7 +97,6 @@ const SIGNAL_KINDS = new Set<string>([
   "node.need_fulfilled",
   "node.need_resolved",
   // Hard budget breaches — user should know we hit a limit.
-  "node.action_limit_reached",
   "node.attempt_limit_reached",
   "node.budget_exceeded",
   "node.stalled",

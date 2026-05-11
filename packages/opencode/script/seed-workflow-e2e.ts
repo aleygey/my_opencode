@@ -136,7 +136,6 @@ const seed = async () => {
             status: "pending",
             result_status: "unknown",
             max_attempts: 2,
-            max_actions: 16,
             position: 0,
           },
           {
@@ -147,7 +146,6 @@ const seed = async () => {
             status: "pending",
             result_status: "unknown",
             max_attempts: 3,
-            max_actions: 20,
             position: 1,
           },
           {
@@ -158,7 +156,6 @@ const seed = async () => {
             status: "ready",
             result_status: "unknown",
             max_attempts: 2,
-            max_actions: 18,
             position: 2,
           },
         ],
@@ -184,7 +181,6 @@ const seed = async () => {
           status: "completed",
           result_status: "success",
           attempt_delta: 1,
-          action_count: 6,
           state_json: {
             value: {
               stage: "implemented",
@@ -226,7 +222,6 @@ const seed = async () => {
           status: "running",
           result_status: "partial",
           attempt_delta: 1,
-          action_count: 4,
           state_json: {
             value: {
               stage: "flash_pending",
@@ -273,7 +268,6 @@ const seed = async () => {
         patch: {
           status: "ready",
           result_status: "unknown",
-          action_count: 0,
           state_json: {
             value: {
               stage: "blocked_by_build",

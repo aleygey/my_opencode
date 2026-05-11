@@ -14,7 +14,7 @@ import type {
   AuthSetErrors,
   AuthSetResponses,
   CommandListResponses,
-  Config as Config4,
+  Config as Config6,
   ConfigGetResponses,
   ConfigProvidersResponses,
   ConfigUpdateErrors,
@@ -53,6 +53,8 @@ import type {
   ExperimentalRefinerExperiencePatchResponses,
   ExperimentalRefinerExperienceReRefineErrors,
   ExperimentalRefinerExperienceReRefineResponses,
+  ExperimentalRefinerExperienceReviewErrors,
+  ExperimentalRefinerExperienceReviewResponses,
   ExperimentalRefinerExperienceUndoRefinementErrors,
   ExperimentalRefinerExperienceUndoRefinementResponses,
   ExperimentalRefinerExportResponses,
@@ -62,14 +64,24 @@ import type {
   ExperimentalRefinerIngestSessionErrors,
   ExperimentalRefinerIngestSessionResponses,
   ExperimentalRefinerListIngestedObservationsResponses,
+  ExperimentalRefinerLogListResponses,
   ExperimentalRefinerObservationDeleteErrors,
   ExperimentalRefinerObservationDeleteResponses,
   ExperimentalRefinerObservationMoveErrors,
   ExperimentalRefinerObservationMoveResponses,
   ExperimentalRefinerOverviewGetResponses,
   ExperimentalRefinerSearchResponses,
+  ExperimentalRefinerStatsGetResponses,
   ExperimentalRefinerTaxonomyGetResponses,
   ExperimentalResourceListResponses,
+  ExperimentalRetrieveConfigGetResponses,
+  ExperimentalRetrieveConfigUpdateErrors,
+  ExperimentalRetrieveConfigUpdateResponses,
+  ExperimentalRetrieveLogListResponses,
+  ExperimentalRetrievePreviewResponses,
+  ExperimentalSandTableConfigGetResponses,
+  ExperimentalSandTableConfigUpdateErrors,
+  ExperimentalSandTableConfigUpdateResponses,
   ExperimentalSessionListResponses,
   ExperimentalWorkspaceAdaptorListResponses,
   ExperimentalWorkspaceCreateErrors,
@@ -288,6 +300,8 @@ import type {
   WorkflowSandTableGetResponses,
   WorkflowSandTableMessageErrors,
   WorkflowSandTableMessageResponses,
+  WorkflowSandTableStartErrors,
+  WorkflowSandTableStartResponses,
   WorkflowScanReadyErrors,
   WorkflowScanReadyResponses,
   WorkflowSessionErrors,
@@ -368,7 +382,7 @@ export class Config extends HeyApiClient {
    */
   public update<ThrowOnError extends boolean = false>(
     parameters?: {
-      config?: Config4
+      config?: Config6
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -1160,6 +1174,49 @@ export class Experience extends HeyApiClient {
   }
 
   /**
+   * Set experience review status
+   *
+   * Move an experience between pending/approved/rejected. Auto-routed experiences land as 'pending' until the user approves them; 'rejected' is a soft delete preserved for audit.
+   */
+  public review<ThrowOnError extends boolean = false>(
+    parameters: {
+      id: string
+      directory?: string
+      workspace?: string
+      status?: "pending" | "approved" | "rejected"
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "id" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "status" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ExperimentalRefinerExperienceReviewResponses,
+      ExperimentalRefinerExperienceReviewErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/refiner/experience/{id}/review",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
    * Augment experience (add observation + re-refine)
    *
    * Attach a user-supplied observation to an existing experience and trigger a fresh refinement.
@@ -1443,6 +1500,70 @@ export class Taxonomy extends HeyApiClient {
   }
 }
 
+export class Stats extends HeyApiClient {
+  /**
+   * Get per-experience usage statistics
+   *
+   * Per-experience injection / usage counters. `injected.by_tier` separates baseline / topical / recall sources. `used.cited` is the refiner judge's count of times the agent applied the experience; `used.recalled` is the count of voluntary `recall_experience` tool calls that returned this experience. Single JSON dict keyed by experience id.
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<ExperimentalRefinerStatsGetResponses, unknown, ThrowOnError>({
+      url: "/experimental/refiner/stats",
+      ...options,
+      ...params,
+    })
+  }
+}
+
+export class Log extends HeyApiClient {
+  /**
+   * Get refiner activity log
+   *
+   * List refiner audit log entries — every refiner run (auto from observation, manual create, from history, etc.) with the per-stage LLM call traces and the final outcome. Includes runs that produced no experience (noise / dropped / errored). Returns { entries: RefinerLogEntry[] }, newest at the end. Optional `session_id` query param filters by session.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<ExperimentalRefinerLogListResponses, unknown, ThrowOnError>({
+      url: "/experimental/refiner/log",
+      ...options,
+      ...params,
+    })
+  }
+}
+
 export class Config2 extends HeyApiClient {
   /**
    * Get refiner config
@@ -1488,6 +1609,7 @@ export class Config2 extends HeyApiClient {
         modelID: string
       } | null
       temperature?: number | null
+      auto_enabled?: boolean | null
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -1500,6 +1622,7 @@ export class Config2 extends HeyApiClient {
             { in: "query", key: "workspace" },
             { in: "body", key: "model" },
             { in: "body", key: "temperature" },
+            { in: "body", key: "auto_enabled" },
           ],
         },
       ],
@@ -1963,6 +2086,16 @@ export class Refiner extends HeyApiClient {
     return (this._taxonomy ??= new Taxonomy({ client: this.client }))
   }
 
+  private _stats?: Stats
+  get stats(): Stats {
+    return (this._stats ??= new Stats({ client: this.client }))
+  }
+
+  private _log?: Log
+  get log(): Log {
+    return (this._log ??= new Log({ client: this.client }))
+  }
+
   private _config?: Config2
   get config(): Config2 {
     return (this._config ??= new Config2({ client: this.client }))
@@ -1986,6 +2119,271 @@ export class Refiner extends HeyApiClient {
   private _edge?: Edge
   get edge(): Edge {
     return (this._edge ??= new Edge({ client: this.client }))
+  }
+}
+
+export class Log2 extends HeyApiClient {
+  /**
+   * Get retrieve injection log
+   *
+   * List retrieve agent audit log entries — what experiences were injected into agent system prompts, when, and why. Newest first.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      session_id?: string
+      limit?: number
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "session_id" },
+            { in: "query", key: "limit" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<ExperimentalRetrieveLogListResponses, unknown, ThrowOnError>({
+      url: "/experimental/retrieve/log",
+      ...options,
+      ...params,
+    })
+  }
+}
+
+export class Config3 extends HeyApiClient {
+  /**
+   * Get retrieve config
+   *
+   * Get the retrieve agent's currently resolved model plus its source (runtime override, agent config, or provider default) and any persisted override.
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<ExperimentalRetrieveConfigGetResponses, unknown, ThrowOnError>({
+      url: "/experimental/retrieve/config",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Update retrieve config
+   *
+   * Persist a runtime override for the retrieve agent's model (and optional temperature). Pass `model: null` to clear the override. Lets the retrieve frontend page swap to a small/fast model without restarting opencode.
+   */
+  public update<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      model?: {
+        providerID: string
+        modelID: string
+      } | null
+      temperature?: number | null
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "model" },
+            { in: "body", key: "temperature" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).put<
+      ExperimentalRetrieveConfigUpdateResponses,
+      ExperimentalRetrieveConfigUpdateErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/retrieve/config",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
+export class Retrieve extends HeyApiClient {
+  /**
+   * Dry-run retrieve preview
+   *
+   * Run the retrieve pipeline without persisting state or advancing the turn index. Returns what WOULD be injected if a turn started now with the given user_text.
+   */
+  public preview<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      session_id?: string
+      agent_name?: string
+      user_text?: string
+      workflow_id?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "session_id" },
+            { in: "body", key: "agent_name" },
+            { in: "body", key: "user_text" },
+            { in: "body", key: "workflow_id" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<ExperimentalRetrievePreviewResponses, unknown, ThrowOnError>({
+      url: "/experimental/retrieve/preview",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  private _log?: Log2
+  get log(): Log2 {
+    return (this._log ??= new Log2({ client: this.client }))
+  }
+
+  private _config?: Config3
+  get config(): Config3 {
+    return (this._config ??= new Config3({ client: this.client }))
+  }
+}
+
+export class Config4 extends HeyApiClient {
+  /**
+   * Get sand-table config
+   *
+   * Read the persisted sand-table planner/evaluator model + agent assignments for the current project. Empty object means defaults.
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<ExperimentalSandTableConfigGetResponses, unknown, ThrowOnError>({
+      url: "/experimental/sand_table/config",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Update sand-table config
+   *
+   * Persist a partial sand-table config override into `experimental.sand_table.*`. Pass `<field>: null` to clear.
+   */
+  public update<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      planner_model?: {
+        providerID: string
+        modelID: string
+      } | null
+      evaluator_model?: {
+        providerID: string
+        modelID: string
+      } | null
+      planner_agent?: string | null
+      evaluator_agent?: string | null
+      max_rounds?: number | null
+      confirm_before_start?: boolean | null
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "planner_model" },
+            { in: "body", key: "evaluator_model" },
+            { in: "body", key: "planner_agent" },
+            { in: "body", key: "evaluator_agent" },
+            { in: "body", key: "max_rounds" },
+            { in: "body", key: "confirm_before_start" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).put<
+      ExperimentalSandTableConfigUpdateResponses,
+      ExperimentalSandTableConfigUpdateErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/sand_table/config",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
+export class SandTable extends HeyApiClient {
+  private _config?: Config4
+  get config(): Config4 {
+    return (this._config ??= new Config4({ client: this.client }))
   }
 }
 
@@ -2079,6 +2477,16 @@ export class Experimental extends HeyApiClient {
   private _refiner?: Refiner
   get refiner(): Refiner {
     return (this._refiner ??= new Refiner({ client: this.client }))
+  }
+
+  private _retrieve?: Retrieve
+  get retrieve(): Retrieve {
+    return (this._retrieve ??= new Retrieve({ client: this.client }))
+  }
+
+  private _sandTable?: SandTable
+  get sandTable(): SandTable {
+    return (this._sandTable ??= new SandTable({ client: this.client }))
   }
 
   private _session?: Session
@@ -2740,7 +3148,7 @@ export class Serial extends HeyApiClient {
   }
 }
 
-export class Config3 extends HeyApiClient {
+export class Config5 extends HeyApiClient {
   /**
    * Get configuration
    *
@@ -2780,7 +3188,7 @@ export class Config3 extends HeyApiClient {
     parameters?: {
       directory?: string
       workspace?: string
-      config?: Config4
+      config?: Config6
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -5540,7 +5948,7 @@ export class Tui extends HeyApiClient {
   }
 }
 
-export class SandTable extends HeyApiClient {
+export class SandTable2 extends HeyApiClient {
   /**
    * Get sand table discussion
    */
@@ -5572,6 +5980,61 @@ export class SandTable extends HeyApiClient {
       url: "/workflow/sand_table/{discussionID}",
       ...options,
       ...params,
+    })
+  }
+
+  /**
+   * Confirm and start a paused sand table discussion
+   *
+   * Releases a discussion stuck in `awaiting_start` (i.e. when `experimental.sand_table.confirm_before_start` is enabled). The request body may override planner / evaluator agent + model — anything left unset keeps the previously-resolved value from config. Returns the updated state. 404 if the discussion ID is unknown; idempotent no-op (returns the live state) if the discussion has already started.
+   */
+  public start<ThrowOnError extends boolean = false>(
+    parameters: {
+      discussionID: string
+      directory?: string
+      workspace?: string
+      planner_model?: {
+        providerID: string
+        modelID: string
+      }
+      evaluator_model?: {
+        providerID: string
+        modelID: string
+      }
+      planner_agent?: string
+      evaluator_agent?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "discussionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "planner_model" },
+            { in: "body", key: "evaluator_model" },
+            { in: "body", key: "planner_agent" },
+            { in: "body", key: "evaluator_agent" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      WorkflowSandTableStartResponses,
+      WorkflowSandTableStartErrors,
+      ThrowOnError
+    >({
+      url: "/workflow/sand_table/{discussionID}/start",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
     })
   }
 
@@ -5651,7 +6114,6 @@ export class Node extends HeyApiClient {
         | "cancelled"
       result_status?: "unknown" | "success" | "fail" | "partial"
       max_attempts?: number
-      max_actions?: number
       position?: number
     },
     options?: Options<never, ThrowOnError>,
@@ -5672,7 +6134,6 @@ export class Node extends HeyApiClient {
             { in: "body", key: "status" },
             { in: "body", key: "result_status" },
             { in: "body", key: "max_attempts" },
-            { in: "body", key: "max_actions" },
             { in: "body", key: "position" },
           ],
         },
@@ -5737,12 +6198,9 @@ export class Node extends HeyApiClient {
           }
         }
         attempt_delta?: number
-        action_count?: number
         max_attempts?: number
-        max_actions?: number
         title?: string
       }
-      action_delta?: number
       event?: {
         kind: string
         target_node_id?: string
@@ -5763,7 +6221,6 @@ export class Node extends HeyApiClient {
             { in: "query", key: "workspace" },
             { in: "body", key: "source" },
             { in: "body", key: "patch" },
-            { in: "body", key: "action_delta" },
             { in: "body", key: "event" },
           ],
         },
@@ -6061,7 +6518,6 @@ export class Edit extends HeyApiClient {
               input_ports?: Array<WorkflowInputPort>
               output_ports?: Array<WorkflowOutputPort>
               max_attempts?: number
-              max_actions?: number
               position?: number
               priority?: number
               holds_resources?: Array<string>
@@ -6086,7 +6542,6 @@ export class Edit extends HeyApiClient {
               input_ports?: Array<WorkflowInputPort>
               output_ports?: Array<WorkflowOutputPort>
               max_attempts?: number
-              max_actions?: number
               position?: number
               priority?: number
               holds_resources?: Array<string>
@@ -6109,7 +6564,6 @@ export class Edit extends HeyApiClient {
               input_ports?: Array<WorkflowInputPort>
               output_ports?: Array<WorkflowOutputPort>
               max_attempts?: number
-              max_actions?: number
               position?: number
               priority?: number
               holds_resources?: Array<string>
@@ -6490,10 +6944,8 @@ export class Workflow extends HeyApiClient {
           | "cancelled"
         result_status?: "unknown" | "success" | "fail" | "partial"
         fail_reason?: string
-        action_count?: number
         attempt?: number
         max_attempts?: number
-        max_actions?: number
         state_json?: {
           [key: string]: unknown
         }
@@ -6684,9 +7136,9 @@ export class Workflow extends HeyApiClient {
     })
   }
 
-  private _sandTable?: SandTable
-  get sandTable(): SandTable {
-    return (this._sandTable ??= new SandTable({ client: this.client }))
+  private _sandTable?: SandTable2
+  get sandTable(): SandTable2 {
+    return (this._sandTable ??= new SandTable2({ client: this.client }))
   }
 
   private _node?: Node
@@ -6982,9 +7434,9 @@ export class OpencodeClient extends HeyApiClient {
     return (this._serial ??= new Serial({ client: this.client }))
   }
 
-  private _config?: Config3
-  get config(): Config3 {
-    return (this._config ??= new Config3({ client: this.client }))
+  private _config?: Config5
+  get config(): Config5 {
+    return (this._config ??= new Config5({ client: this.client }))
   }
 
   private _tool?: Tool

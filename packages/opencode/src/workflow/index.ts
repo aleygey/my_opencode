@@ -134,10 +134,9 @@ const WorkflowEventKind = z.enum([
   "node.transition_rejected",
   "node.input_missing",
   "node.output_invalid",
-  // Node attempt / action accounting
+  // Node attempt accounting
   "node.attempt_reported",
   "node.action",
-  "node.action_limit_reached",
   "node.attempt_limit_reached",
   // Node ↔ orchestrator control channel
   "node.control",
@@ -397,7 +396,6 @@ const EVENT_RETENTION_PROTECTED: ReadonlySet<string> = new Set<string>([
   "node.failed",
   "node.completed",
   "node.interrupted",
-  "node.action_limit_reached",
   "node.attempt_limit_reached",
   "node.output_invalid",
   "node.blocked",
@@ -923,10 +921,8 @@ export namespace Workflow {
       status: WorkflowNodeStatus,
       result_status: WorkflowNodeResultStatus,
       fail_reason: z.string().optional(),
-      action_count: z.number().int().nonnegative(),
       attempt: z.number().int().nonnegative(),
       max_attempts: z.number().int().positive(),
-      max_actions: z.number().int().positive(),
       version: z.number().int().nonnegative(),
       state_json: z.record(z.string(), z.any()).optional(),
       result_json: z.record(z.string(), z.any()).optional(),
@@ -1013,7 +1009,6 @@ export namespace Workflow {
     input_ports: WorkflowInputPortSchema.array().optional(),
     output_ports: WorkflowOutputPortSchema.array().optional(),
     max_attempts: z.number().int().positive().optional(),
-    max_actions: z.number().int().positive().optional(),
     position: z.number().int().nonnegative().optional(),
     priority: z.number().int().optional(),
     holds_resources: z.array(z.string()).optional(),
@@ -1026,7 +1021,6 @@ export namespace Workflow {
     input_ports: WorkflowInputPortSchema.array().optional(),
     output_ports: WorkflowOutputPortSchema.array().optional(),
     max_attempts: z.number().int().positive().optional(),
-    max_actions: z.number().int().positive().optional(),
     position: z.number().int().nonnegative().optional(),
     priority: z.number().int().optional(),
     holds_resources: z.array(z.string()).optional(),
@@ -1243,7 +1237,6 @@ export namespace Workflow {
     ) {
       return { kind: "node.attempt_reported", reason: `attempt reported ${event.payload.result}` }
     }
-    if (event.kind === "node.action_limit_reached") return { kind: "node.limit_reached", reason: "action limit reached" }
     if (event.kind === "node.attempt_limit_reached") return { kind: "node.limit_reached", reason: "attempt limit reached" }
     if (event.kind === "node.stalled") return { kind: "node.stalled", reason: "node stalled without recent pull or update" }
     if (event.kind === "checkpoint.failed") return { kind: "checkpoint.failed", reason: "checkpoint failed" }
@@ -1260,7 +1253,6 @@ export namespace Workflow {
       kind: string
       payload: Record<string, unknown>
     }
-    action_delta?: number
     /** When set, also increments the top-level node.attempt column.
      * Previously `attempt_delta` lived only on the workflow_update
      * tool schema, and the LLM was expected to call it explicitly
@@ -1286,7 +1278,6 @@ export namespace Workflow {
         },
         attempt_delta: input.attempt_delta,
       },
-      action_delta: input.action_delta,
       event: {
         kind: input.event.kind,
         target_node_id: node.id,
@@ -1386,7 +1377,6 @@ export namespace Workflow {
       await patchRun({
         nodeID: node.id,
         run,
-        action_delta: part.state.status === "pending" ? 1 : undefined,
         event: {
           kind,
           payload: {
@@ -1412,7 +1402,6 @@ export namespace Workflow {
     await patchRun({
       nodeID: node.id,
       run,
-      action_delta: part.state.status === "pending" ? 1 : undefined,
       event: {
         kind,
         payload: {
@@ -1937,10 +1926,8 @@ export namespace Workflow {
       status: row.status,
       result_status: row.result_status,
       fail_reason: row.fail_reason ?? undefined,
-      action_count: row.action_count,
       attempt: row.attempt,
       max_attempts: row.max_attempts,
-      max_actions: row.max_actions,
       version: row.version,
       state_json: row.state_json ?? undefined,
       result_json: row.result_json ?? undefined,
@@ -2354,10 +2341,8 @@ export namespace Workflow {
             status: WorkflowNodeStatus.optional(),
             result_status: WorkflowNodeResultStatus.optional(),
             fail_reason: z.string().optional(),
-            action_count: z.number().int().nonnegative().optional(),
             attempt: z.number().int().nonnegative().optional(),
             max_attempts: z.number().int().positive().optional(),
-            max_actions: z.number().int().positive().optional(),
             state_json: z.record(z.string(), z.any()).optional(),
             result_json: z.record(z.string(), z.any()).optional(),
             position: z.number().int().nonnegative().optional(),
@@ -2418,10 +2403,8 @@ export namespace Workflow {
             status: node.status ?? "pending",
             result_status: node.result_status ?? "unknown",
             fail_reason: node.fail_reason,
-            action_count: node.action_count ?? 0,
             attempt: node.attempt ?? 0,
             max_attempts: node.max_attempts ?? 1,
-            max_actions: node.max_actions ?? 20,
             state_json: node.state_json,
             result_json: node.result_json,
             position: node.position ?? index,
@@ -2492,7 +2475,6 @@ export namespace Workflow {
       status: WorkflowNodeStatus.optional(),
       result_status: WorkflowNodeResultStatus.optional(),
       max_attempts: z.number().int().positive().optional(),
-      max_actions: z.number().int().positive().optional(),
       position: z.number().int().nonnegative().optional(),
     }),
     async (input) => {
@@ -2531,7 +2513,6 @@ export namespace Workflow {
             status: input.status ?? "pending",
             result_status: input.result_status ?? "unknown",
             max_attempts: input.max_attempts ?? 1,
-            max_actions: input.max_actions ?? 20,
             position: input.position ?? 0,
           })
           .returning()
@@ -2894,7 +2875,6 @@ export namespace Workflow {
                 status: "pending",
                 result_status: "unknown",
                 max_attempts: op.node.max_attempts ?? 1,
-                max_actions: op.node.max_actions ?? 20,
                 position: op.node.position ?? 0,
                 priority: op.node.priority ?? 0,
                 holds_resources: op.node.holds_resources,
@@ -2925,8 +2905,8 @@ export namespace Workflow {
             tx.update(WorkflowNodeTable)
               .set({
                 // Wholesale replace of declarative fields; preserve runtime-
-                // owned counters (status, attempt, action_count, version,
-                // time_*) so we don't blow away in-flight work.
+                // owned counters (status, attempt, version, time_*) so we
+                // don't blow away in-flight work.
                 title: op.node.title,
                 agent: op.node.agent,
                 model: op.node.model ?? null,
@@ -2934,7 +2914,6 @@ export namespace Workflow {
                 input_ports: op.node.input_ports ?? null,
                 output_ports: op.node.output_ports ?? null,
                 max_attempts: op.node.max_attempts ?? cur.max_attempts,
-                max_actions: op.node.max_actions ?? cur.max_actions,
                 position: op.node.position ?? cur.position,
                 priority: op.node.priority ?? 0,
                 holds_resources: op.node.holds_resources ?? null,
@@ -2976,7 +2955,6 @@ export namespace Workflow {
                 ...(p.input_ports !== undefined ? { input_ports: p.input_ports } : {}),
                 ...(p.output_ports !== undefined ? { output_ports: p.output_ports } : {}),
                 ...(p.max_attempts !== undefined ? { max_attempts: p.max_attempts } : {}),
-                ...(p.max_actions !== undefined ? { max_actions: p.max_actions } : {}),
                 ...(p.position !== undefined ? { position: p.position } : {}),
                 ...(p.priority !== undefined ? { priority: p.priority } : {}),
                 ...(p.holds_resources !== undefined ? { holds_resources: p.holds_resources } : {}),
@@ -3609,12 +3587,9 @@ export namespace Workflow {
           value: z.record(z.string(), z.any()).optional(),
         }).optional(),
         attempt_delta: z.number().int().optional(),
-        action_count: z.number().int().nonnegative().optional(),
         max_attempts: z.number().int().positive().optional(),
-        max_actions: z.number().int().positive().optional(),
         title: z.string().optional(),
       }),
-      action_delta: z.number().int().optional(),
       event: z
         .object({
           kind: z.string(),
@@ -3741,8 +3716,6 @@ export namespace Workflow {
         }
         const nextStatus = requestedStatus
         const attempt = current.attempt + (input.patch.attempt_delta ?? 0)
-        const actionCount =
-          input.patch.action_count ?? current.action_count + (input.action_delta ?? 0)
         const updated = tx
           .update(WorkflowNodeTable)
           .set({
@@ -3779,9 +3752,7 @@ export namespace Workflow {
                     input.patch.result_json.mode ?? "merge",
                   ) ?? null),
             attempt,
-            action_count: actionCount,
             max_attempts: input.patch.max_attempts ?? current.max_attempts,
-            max_actions: input.patch.max_actions ?? current.max_actions,
             title: input.patch.title ?? current.title,
             version: current.version + 1,
             time_started: current.time.started ?? (nextStatus === "running" ? Date.now() : null),
@@ -3891,26 +3862,11 @@ export namespace Workflow {
             ...(input.event?.payload ?? {}),
             status: row.status,
             result_status: row.result_status,
-            action_count: row.action_count,
             attempt: row.attempt,
             ...(statePatchInfo ? { state_patch: statePatchInfo } : {}),
             ...(resultPatchInfo ? { result_patch: resultPatchInfo } : {}),
           },
         })
-        if (row.action_count >= row.max_actions) {
-          await writeEvent({
-            workflowID: row.workflow_id,
-            nodeID: row.id,
-            sessionID: row.session_id,
-            target_node_id: row.id,
-            source: "runtime",
-            kind: "node.action_limit_reached",
-            payload: {
-              action_count: row.action_count,
-              max_actions: row.max_actions,
-            },
-          })
-        }
         if (row.attempt >= row.max_attempts) {
           await writeEvent({
             workflowID: row.workflow_id,
