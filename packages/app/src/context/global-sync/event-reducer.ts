@@ -161,6 +161,7 @@ export function applyDirectoryEvent(input: {
         )
       }
       cleanupSessionCaches(input.setStore, info.id, input.setSessionTodo)
+      input.setStore("sessionError", info.id, undefined)
       if (info.parentID) break
       input.setStore("sessionTotal", (value) => Math.max(0, value - 1))
       break
@@ -168,6 +169,33 @@ export function applyDirectoryEvent(input: {
     case "session.diff": {
       const props = event.properties as { sessionID: string; diff: SnapshotFileDiff[] }
       input.setStore("session_diff", props.sessionID, reconcile(list(props.diff), { key: "file" }))
+      break
+    }
+    case "session.compaction_failed": {
+      // Compaction tried but couldn't bring the session below the
+      // model context limit. The session's last assistant message
+      // also gets a ContextOverflowError set in `message.error`, but
+      // that's invisible until the user scrolls back — so we also
+      // park a session-level error banner here that the UI renders
+      // as a dismissable toast / inline alert. Clears on
+      // session.deleted / session.updated.
+      const props = event.properties as {
+        sessionID: string
+        reason: string
+        replay: boolean
+      }
+      input.setStore("sessionError", props.sessionID, {
+        kind: "compaction_failed",
+        reason: props.reason,
+        replay: props.replay,
+      })
+      break
+    }
+    case "session.compacted": {
+      // Successful compaction — clear any previous error banner so a
+      // re-run that succeeded doesn't keep showing stale error UI.
+      const props = event.properties as { sessionID: string }
+      input.setStore("sessionError", props.sessionID, undefined)
       break
     }
     case "todo.updated": {

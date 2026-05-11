@@ -72,6 +72,16 @@ export type State = {
   part: {
     [messageID: string]: Part[]
   }
+  /* Session-level error banners surfaced to the UI. Today only
+   * populated by `session.compaction_failed` events — previously
+   * compaction failures only set a `message.error` field on the
+   * last assistant message, which the user had to scroll back to
+   * see, so they reported the session "just froze with no
+   * indication". The banner clears when the user dismisses it or
+   * the session is removed. */
+  sessionError: {
+    [sessionID: string]: { kind: "compaction_failed"; reason: string; replay: boolean } | undefined
+  }
 }
 
 export type VcsCache = {

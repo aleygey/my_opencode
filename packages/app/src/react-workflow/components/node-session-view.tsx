@@ -279,7 +279,7 @@ export function NodeSessionView(props: NodeSessionViewProps) {
   )
 
   return (
-    <div className="flex h-full flex-col bg-[var(--wf-bg)]">
+    <div className="flex h-full w-full min-w-0 flex-1 flex-col bg-[var(--wf-bg)]">
       {/* ─── TopBar (glass, matches main page) ─── */}
       <div className="wf-topbar">
         <div className="absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-[var(--wf-line-strong)] to-transparent" />
@@ -410,8 +410,18 @@ export function NodeSessionView(props: NodeSessionViewProps) {
         </div>
       )}
 
-      {/* ─── 2-column body: chat | plugin slot (plugin fills remaining width) ─── */}
-      <div ref={bodyRef} className="flex min-h-0 flex-1">
+      {/* ─── 2-column body: chat | plugin slot (plugin fills remaining width) ───
+        *
+        * `w-full` on the body row is load-bearing — the column flex
+        * above is `flex-col`, so `flex-1` only grants vertical grow.
+        * Without `w-full` here the chat + splitbar + plugin chain
+        * would collapse to content-width and the user reported
+        * (a) left whitespace, (b) plugin slot not reaching the right
+        * edge, (c) dragging the splitbar moving the whole right
+        * column left instead of resizing the chat. All three
+        * symptoms vanish once the body actually fills its parent
+        * horizontally. */}
+      <div ref={bodyRef} className="flex min-h-0 w-full min-w-0 flex-1">
         {/* ── Left: Chat (shared ChatPanel — identical to root page) ── */}
         <div className="flex min-h-0 flex-shrink-0 flex-col" style={{ width: left.size }}>
           <ChatPanel

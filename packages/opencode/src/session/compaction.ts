@@ -28,6 +28,24 @@ export const Event = {
       sessionID: SessionID.zod,
     }),
   ),
+  /* Published when an attempted compaction fails to bring the session
+   * below the context limit (typically because the conversation is so
+   * large that even after stripping media + truncating the tail it
+   * still exceeds the model's window). Previously the only signal of
+   * this failure was a `MessageV2.ContextOverflowError` written into
+   * the last assistant message's `error` field — the frontend had no
+   * listener for it, so the session just appeared to freeze. Surfacing
+   * this as a top-level bus event lets the UI render a banner the
+   * user can actually see and react to (start a new session, manually
+   * trim, raise the model context window, etc.). */
+  CompactionFailed: BusEvent.define(
+    "session.compaction_failed",
+    z.object({
+      sessionID: SessionID.zod,
+      reason: z.string(),
+      replay: z.boolean(),
+    }),
+  ),
 }
 
 export const PRUNE_MINIMUM = 20_000
@@ -352,13 +370,24 @@ export const layer: Layer.Layer<
       })
 
       if (result === "compact") {
+        const reason = replay
+          ? "Conversation history too large to compact - exceeds model context limit"
+          : "Session too large to compact - context exceeds model limit even after stripping media"
         processor.message.error = new MessageV2.ContextOverflowError({
-          message: replay
-            ? "Conversation history too large to compact - exceeds model context limit"
-            : "Session too large to compact - context exceeds model limit even after stripping media",
+          message: reason,
         }).toObject()
         processor.message.finish = "error"
         yield* session.updateMessage(processor.message)
+        // Publish a top-level event so the frontend can surface a
+        // banner / error toast. Previously the only signal was the
+        // `error` field on the assistant message, which the user had
+        // to scroll back to find — they reported the session just
+        // appeared to freeze with no UI indication of what went wrong.
+        yield* bus.publish(Event.CompactionFailed, {
+          sessionID: input.sessionID,
+          reason,
+          replay: !!replay,
+        })
         return "stop"
       }
 

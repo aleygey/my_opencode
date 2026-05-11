@@ -748,9 +748,19 @@ export default function Page() {
      * lands here to talk to the orchestrator first; Canvas is a view
      * they switch into after the graph has nodes worth inspecting. */
     workflowTab: "chat" as string,
-    /** Set of currently-opened node/sand-table tab ids. Each id encodes
-     *  its kind via the prefix ("node:" / "sand:"). Order = insertion. */
-    workflowOpenTabs: [] as Array<{ id: string; kind: "node" | "sand"; title: string }>,
+    /** Per-session map of currently-opened node/sand-table tab lists.
+     *  Was previously a flat global array (`Array<{ id, kind, title }>`),
+     *  but the user reported that opening a node card under Task A
+     *  and switching to Task B left A's card visible in B's view
+     *  (the substrip rendered all tabs regardless of which session
+     *  was active). Keying by session id makes the substrip
+     *  per-task: A keeps its opened tabs, B keeps its own, and
+     *  switching back to A restores what A had. The substrip render
+     *  below reads `workflowOpenTabs[params.id]`. */
+    workflowOpenTabs: {} as Record<
+      string,
+      Array<{ id: string; kind: "node" | "sand"; title: string }> | undefined
+    >,
     newSessionWorktree: "main",
     deferRender: false,
   })
@@ -1968,10 +1978,17 @@ export default function Page() {
       const ce = ev as CustomEvent<{ id: string; kind: "node" | "sand"; title: string }>
       const d = ce.detail
       if (!d?.id) return
+      const sid = params.id
+      if (!sid) return
       const tabId = `${d.kind}:${d.id}`
-      const existing = store.workflowOpenTabs.find((t) => t.id === d.id && t.kind === d.kind)
+      const existing = (store.workflowOpenTabs[sid] ?? []).find(
+        (t) => t.id === d.id && t.kind === d.kind,
+      )
       if (!existing) {
-        setStore("workflowOpenTabs", (prev) => [...prev, { id: d.id, kind: d.kind, title: d.title }])
+        setStore("workflowOpenTabs", sid, (prev) => [
+          ...(prev ?? []),
+          { id: d.id, kind: d.kind, title: d.title },
+        ])
       }
       setStore("workflowTab", tabId)
     }
@@ -2137,16 +2154,17 @@ export default function Page() {
           ...(snap ? [{ id: "canvas", name: "Canvas" }] : []),
           { id: "chat", name: "Chat" },
           ...(snap ? [{ id: "events", name: "Events", count: snap?.events?.length }] : []),
-          ...store.workflowOpenTabs.map((t) => ({
+          ...((params.id && store.workflowOpenTabs[params.id]) || []).map((t) => ({
             id: `${t.kind}:${t.id}`,
             // Distill the planner-emitted title before truncation so
             // the substrip tab shows a clean task name instead of a
             // raw "Plan · ## Goal …" prefix.
             name: distillTitle(t.title, 18),
             onClose: () => {
-              setStore(
-                "workflowOpenTabs",
-                store.workflowOpenTabs.filter((x) => x.id !== t.id),
+              const sid = params.id
+              if (!sid) return
+              setStore("workflowOpenTabs", sid, (prev) =>
+                (prev ?? []).filter((x) => x.id !== t.id),
               )
               if (store.workflowTab === `${t.kind}:${t.id}`) {
                 setStore("workflowTab", snap ? "canvas" : "chat")

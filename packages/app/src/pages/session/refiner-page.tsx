@@ -3812,7 +3812,19 @@ function Filterbar(props: {
           type="text"
           placeholder="搜索经验、观察、标签…"
           value={props.query}
-          onInput={(e) => props.setQuery(e.currentTarget.value)}
+          onCompositionStart={(e) => {
+            ;(e.currentTarget as HTMLInputElement & { _composing?: boolean })._composing = true
+          }}
+          onCompositionEnd={(e) => {
+            const el = e.currentTarget as HTMLInputElement & { _composing?: boolean }
+            el._composing = false
+            props.setQuery(el.value)
+          }}
+          onInput={(e) => {
+            const el = e.currentTarget as HTMLInputElement & { _composing?: boolean }
+            if (el._composing) return
+            props.setQuery(el.value)
+          }}
         />
         <Show when={props.query}>
           <button
@@ -5308,6 +5320,14 @@ export default function RefinerPage() {
   const [activeTag, setActiveTag] = createSignal<string | undefined>()
   const [activeKind, setActiveKind] = createSignal<Kind | undefined>()
   const [query, setQuery] = createSignal<string>("")
+  // Track IME composition so we don't fire `setQuery` mid-pinyin.
+  // Chinese / Japanese IME fires `input` events on every keystroke
+  // during composition (each pinyin letter), and updating the
+  // controlled signal mid-way resets the underlying input element,
+  // breaking the IME's selection popup. The user reported "搜索框
+  // 只能一个字一个字输入" — that's the symptom. The composition
+  // bracket below + the gated onInput restore normal multi-char IME.
+  const [composing, setComposing] = createSignal(false)
   // Refiner activity log modal state. `showLogs` toggles the modal;
   // `logEntries` is reloaded when the modal opens. The modal browses
   // every refiner run (including queries that never crystallised into
@@ -6007,14 +6027,14 @@ export default function RefinerPage() {
               type="button"
               class="rune-btn"
               data-size="sm"
-              disabled={selectedIds().length < 2}
-              onClick={() => setAction({ type: "merge", ids: selectedIds() })}
+              disabled={mergeIDs().size < 2}
+              onClick={() => setAction({ type: "merge", ids: Array.from(mergeIDs()) })}
               title="将多条选中的 experience 合并为一条（保留全部 observation）"
             >
               ⥁ Merge
-              <Show when={selectedIds().length >= 2}>
+              <Show when={mergeIDs().size >= 2}>
                 <span style={{ "margin-left": "4px", "font-variant-numeric": "tabular-nums" }}>
-                  ·{selectedIds().length}
+                  ·{mergeIDs().size}
                 </span>
               </Show>
             </button>
@@ -6108,7 +6128,17 @@ export default function RefinerPage() {
                 type="text"
                 placeholder="搜索 exp…"
                 value={query()}
-                onInput={(e) => setQuery(e.currentTarget.value)}
+                onCompositionStart={() => setComposing(true)}
+                onCompositionEnd={(e) => {
+                  setComposing(false)
+                  setQuery(e.currentTarget.value)
+                }}
+                onInput={(e) => {
+                  // Suppress controlled-input rewrites during IME
+                  // composition so multi-stroke pinyin works.
+                  if (composing()) return
+                  setQuery(e.currentTarget.value)
+                }}
               />
               <Show when={query()}>
                 <button

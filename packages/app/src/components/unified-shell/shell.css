@@ -245,6 +245,17 @@
 
 .rune-shell .rune-rail-sec {
   padding: var(--rune-u4) var(--rune-u4) var(--rune-u);
+  /* When there are many workflow tasks under the Workflow module, the
+   * sub-list grew unbounded and pushed the rail content beyond the
+   * viewport (the user reported "workflow session 较多时，会超过长度").
+   * Make the section flex-fill the remaining rail height and scroll
+   * its own content vertically, so the brand at top and any
+   * footer/account chrome below stay in place while the task list
+   * scrolls independently. */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 .rune-shell[data-rail="collapsed"] .rune-rail-sec { display: none; }
 

@@ -2710,9 +2710,17 @@ export function WorkflowRuntimePanel(props: {
     }
   }
 
-  // Poll every 2s when running
+  // Poll every 2s — ALWAYS, not just when running. Previously gated
+  // on `status() === "running"`, but a sub-agent session can call
+  // `question()` and transition to `idle` (waiting for input) before
+  // the master picks it up. With the gate, polling stopped → the
+  // pending question never reached the frontend → user saw a frozen
+  // session with no input prompt. The user reported this as a hard
+  // deadlock. Polling 2s unconditionally is cheap (the endpoint
+  // returns `[]` quickly when there's nothing pending) and ensures
+  // the dialog renders the moment any agent — master OR child node —
+  // asks the user something.
   createEffect(() => {
-    if (status() !== "running") return
     void pollQuestionsAndPermissions()
     const timer = setInterval(pollQuestionsAndPermissions, 2000)
     onCleanup(() => clearInterval(timer))
@@ -2777,6 +2785,26 @@ export function WorkflowRuntimePanel(props: {
           patterns: p.patterns ?? [],
           metadata: p.metadata ?? {},
         },
+      })
+    }
+
+    // Surface session-level errors (currently: compaction failures)
+    // as a final virtual system message. Without this the user only
+    // sees the session "freeze" — the actual error is buried on the
+    // last assistant message's `error` field, which they have to
+    // scroll back to find. This bubbles it to the top so they know
+    // immediately *why* nothing's happening.
+    const sessErr = (sync.data.sessionError ?? {})[rid]
+    if (sessErr?.kind === "compaction_failed") {
+      rootMsgs.push({
+        id: `compaction-error:${rid}`,
+        role: "system" as const,
+        content:
+          `⚠ 会话压缩失败：${sessErr.reason}` +
+          (sessErr.replay
+            ? "\n\n压缩历史时上下文仍超出模型限制。考虑开新 session 或换更大上下文窗口的模型。"
+            : "\n\n上下文超出模型限制，即使裁掉媒体内容也无法压下。请开新 session 或换更大上下文窗口的模型。"),
+        timestamp: fmt(Date.now()),
       })
     }
 

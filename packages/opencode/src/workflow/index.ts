@@ -1817,7 +1817,31 @@ export namespace Workflow {
       const wake = classify(info)
       if (!wake) return
       const workflow = await workflowRow(info.workflow_id)
-      if (!workflow || ["completed", "failed", "cancelled"].includes(workflow.status)) return
+      if (!workflow) return
+      // Previously: dropped ALL wakes when workflow was terminal
+      // (completed/failed/cancelled). That created a race condition
+      // the user hit reliably — the FINAL node.completed event would
+      // arrive milliseconds after the master had already called
+      // workflow_finalize, so the master never got its "report final
+      // result" wake and the session sat idle waiting for input.
+      //
+      // Now: still drop chrome wakes (orchestrator_wake_*, node.pulled,
+      // command_acked) when the workflow is terminal — those are
+      // genuinely useless after finalize — but ALWAYS deliver the
+      // "I'm done" signals (node.completed / node.failed /
+      // node.interrupted) plus error / budget breach signals so
+      // master can do final cleanup / summary even after finalize.
+      const isTerminal = ["completed", "failed", "cancelled"].includes(workflow.status)
+      const isSignalKind =
+        info.kind === "node.completed" ||
+        info.kind === "node.failed" ||
+        info.kind === "node.interrupted" ||
+        info.kind === "node.attempt_reported" ||
+        info.kind === "node.budget_exceeded" ||
+        info.kind === "node.stalled" ||
+        info.kind === "checkpoint.pending" ||
+        info.kind === "checkpoint.failed"
+      if (isTerminal && !isSignalKind) return
       await writeEvent({
         workflowID: info.workflow_id,
         sessionID: workflow.session_id,
