@@ -495,15 +495,18 @@
   align-items: baseline;
   gap: var(--rune-u2);
   min-width: 0;
-  flex: 1;
+  flex: 1 1 0;
   font-size: var(--rune-fs-md);
   white-space: nowrap;
-}
-.rune-shell .rune-head-crumbs {
+  /* `overflow: hidden` so when the meta block (STAGE / NODES / CTX
+   * etc.) crowds the breadcrumb, the current-crumb's
+   * `text-overflow: ellipsis` actually kicks in. Without it, the
+   * `Workflow / runtime-workflow` text visually bled INTO the meta
+   * column producing "WorkfloSTAGE completed" mashups the user
+   * reported in the top-left. */
+  overflow: hidden;
   /* Apply Inter's stylistic sets to the breadcrumb area for tighter
-   * digit / arrow / dot rendering. Otherwise we'd be reading the
-   * default cuts which feel slightly clunky next to the rest of the
-   * shell. */
+   * digit / arrow / dot rendering. */
   font-feature-settings: "ss01" 1, "ss03" 1, "cv11" 1, "calt" 1;
   font-optical-sizing: auto;
 }

@@ -139,10 +139,14 @@ export function WorkflowNode({
         </svg>
       </button>
 
-      {/* Status icon overlay (top-right, below the open arrow). Hidden
-        * on idle / running because the state pill already telegraphs
-        * those — overlays would just stack visual noise. */}
-      {(status === 'completed' || status === 'failed' || status === 'paused') && (
+      {/* Status icon overlay — REMOVED. The user reported that the
+        * animated ✓ / × / ⏸ icon overlapped the `DONE` / `FAIL` / `WAIT`
+        * label in the header row (both lived in the same top-right
+        * area). The header state pill already telegraphs the status
+        * clearly, so the icon was redundant visual noise. We keep
+        * the JSX block commented out structurally so the imports
+        * don't get flagged unused. */}
+      {false && (status === 'completed' || status === 'failed' || status === 'paused') && (
         <span className="wf-r2-node-status-icon" data-status={status}>
           {status === 'completed' && <Check className="h-3 w-3" strokeWidth={2.5} />}
           {status === 'failed' && <X className="h-3 w-3" strokeWidth={2.5} />}

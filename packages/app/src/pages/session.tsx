@@ -589,7 +589,29 @@ export default function Page() {
    * already prompts the user for confirm before invoking this so we
    * just dispatch the delete and clean up navigation when the deleted
    * task was the active one. */
+  // Track sessions the user has deleted but whose `session.deleted`
+  // SSE event hasn't arrived yet. The rail filter below excludes
+  // them so the X click feels instant — without this, the user
+  // reported "点击 X 后 task 还在" because the rail re-rendered with
+  // the stale `sync.data.session` array before SSE caught up.
+  const [pendingDeletes, setPendingDeletes] = createSignal<Set<string>>(new Set())
   const deleteWorkflowTask = async (sessionId: string) => {
+    // Optimistic UI removal — flip the local "hidden" set before the
+    // network round-trip. If DELETE fails we restore.
+    setPendingDeletes((prev) => {
+      const next = new Set(prev)
+      next.add(sessionId)
+      return next
+    })
+    // Capture the navigation target now (BEFORE the deleted session
+    // disappears from rail / pendingDeletes filter), so the redirect
+    // below picks the right "next" task.
+    const remainingForNav =
+      params.id === sessionId
+        ? (sync.data.session ?? []).find(
+            (s) => !s.parentID && s.id !== sessionId && !pendingDeletes().has(s.id),
+          )
+        : null
     try {
       // The workflow service exposes DELETE /workflow/session/:id which
       // tears down the workflow + root session in one call. SDK doesn't
@@ -599,20 +621,25 @@ export default function Page() {
       if (!res.ok) throw new Error(`DELETE failed: ${res.status}`)
     } catch (err) {
       console.error("delete task failed", err)
+      // Roll back the optimistic removal.
+      setPendingDeletes((prev) => {
+        const next = new Set(prev)
+        next.delete(sessionId)
+        return next
+      })
       return
     }
     // Force a sync tick so the deleted session disappears from
     // sync.data.session immediately rather than waiting for the next
-    // background poll.
+    // background poll. (SSE should also fire `session.deleted` which
+    // the event-reducer handles — pendingDeletes covers the gap
+    // between OK response and SSE arrival.)
     void sync.session.sync(sessionId, { force: true }).catch(() => undefined)
     // If the deleted task was the active one, navigate to the next
     // remaining root session (or the project's default).
     if (params.id === sessionId) {
-      const remaining = (sync.data.session ?? []).find(
-        (s) => !s.parentID && s.id !== sessionId,
-      )
       const slug = params.dir ?? base64Encode(sdk.directory)
-      navigate(remaining ? `/${slug}/session/${remaining.id}` : `/${slug}`)
+      navigate(remainingForNav ? `/${slug}/session/${remainingForNav.id}` : `/${slug}`)
     }
   }
 
@@ -1978,8 +2005,9 @@ export default function Page() {
   })
   const rootSessions = createMemo(() => {
     const all = sync.data.session ?? []
+    const hidden = pendingDeletes()
     return all
-      .filter((s) => !s.parentID && !s.time?.archived)
+      .filter((s) => !s.parentID && !s.time?.archived && !hidden.has(s.id))
       .sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0))
       .slice(0, 60)
   })

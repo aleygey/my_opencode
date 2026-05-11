@@ -7060,7 +7060,14 @@
   position: relative;
   flex: 1;
   background: var(--wf-bg);
-  overflow: hidden;
+  /* `overflow: auto` so the bottom of large graphs is reachable via
+   * scroll — the pan transform inside still works for drag, but the
+   * user reported "画布下半部分有遮挡" (bottom half occluded) which
+   * was strictly an overflow-hidden artifact: tall graphs got
+   * silently clipped at the viewport bottom and pan was the only
+   * way to reach them, which isn't discoverable. The native
+   * scrollbar makes the cut-off content addressable. */
+  overflow: auto;
   background-image: radial-gradient(circle, var(--wf-line-faint, var(--wf-line)) 1px, transparent 1px);
   background-size: 28px 28px;
   background-position: 0 0;

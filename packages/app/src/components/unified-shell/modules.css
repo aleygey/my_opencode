@@ -222,7 +222,7 @@
 /* ── Trace Logs modal ─────────────────────────────────────────────
  * Full-page scrim + centred panel. The panel scrolls internally so
  * very long prompts/responses don't blow out the viewport. */
-.rune-shell .rt-logs-scrim {
+.rt-logs-scrim {
   position: fixed;
   inset: 0;
   /* Heavy scrim + blur so underlying Trace cards / Knowledge graph
@@ -237,7 +237,7 @@
   z-index: 1100;
   padding: 32px;
 }
-.rune-shell .rt-logs-modal {
+.rt-logs-modal {
   display: flex;
   flex-direction: column;
   width: min(960px, 100%);
@@ -254,30 +254,30 @@
   overflow: hidden;
   isolation: isolate;
 }
-.rune-shell .rt-logs-hd {
+.rt-logs-hd {
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 12px 16px;
   border-bottom: 1px solid var(--rune-line-faint);
 }
-.rune-shell .rt-logs-hd-l {
+.rt-logs-hd-l {
   display: flex;
   align-items: baseline;
   gap: 12px;
   flex: 1;
   min-width: 0;
 }
-.rune-shell .rt-logs-title {
+.rt-logs-title {
   font-weight: 600;
   font-size: 13px;
   color: var(--rune-fg);
 }
-.rune-shell .rt-logs-meta {
+.rt-logs-meta {
   font-size: 11px;
   color: var(--rune-fg-faint);
 }
-.rune-shell .rt-logs-close {
+.rt-logs-close {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -290,14 +290,14 @@
   cursor: pointer;
   border-radius: var(--rune-r-sm, 4px);
 }
-.rune-shell .rt-logs-close:hover {
+.rt-logs-close:hover {
   background: var(--rune-bg-surface);
   color: var(--rune-fg);
 }
 /* Sub-header row — session pill + query excerpt. Surfaces "which
  * conversation did this recall fire in?" right under the title so
  * cross-session audits stay anchored. */
-.rune-shell .rt-logs-hd-sub {
+.rt-logs-hd-sub {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -305,7 +305,7 @@
   padding: 8px 16px 12px;
   border-bottom: 1px solid var(--rune-line-faint);
 }
-.rune-shell .rt-logs-session {
+.rt-logs-session {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -319,16 +319,16 @@
   max-width: 320px;
   overflow: hidden;
 }
-.rune-shell .rt-logs-session[data-clickable="true"] {
+.rt-logs-session[data-clickable="true"] {
   cursor: pointer;
   transition: background 100ms ease, border-color 100ms ease;
 }
-.rune-shell .rt-logs-session[data-clickable="true"]:hover {
+.rt-logs-session[data-clickable="true"]:hover {
   background: var(--rune-ac-soft);
   border-color: color-mix(in oklab, var(--rune-ac) 35%, var(--rune-line));
   color: var(--rune-ac-text);
 }
-.rune-shell .rt-logs-session-i {
+.rt-logs-session-i {
   font-family: var(--rune-font-mono);
   font-size: 9px;
   font-weight: 600;
@@ -339,24 +339,24 @@
   background: var(--rune-bg-raised);
   color: var(--rune-fg-faint);
 }
-.rune-shell .rt-logs-session[data-clickable="true"]:hover .rt-logs-session-i {
+.rt-logs-session[data-clickable="true"]:hover .rt-logs-session-i {
   background: white;
   color: var(--rune-ac-text);
 }
-.rune-shell .rt-logs-session-name {
+.rt-logs-session-name {
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 220px;
 }
-.rune-shell .rt-logs-session-go {
+.rt-logs-session-go {
   font-size: 10px;
   color: var(--rune-fg-faint);
 }
-.rune-shell .rt-logs-session[data-clickable="true"]:hover .rt-logs-session-go {
+.rt-logs-session[data-clickable="true"]:hover .rt-logs-session-go {
   color: var(--rune-ac-text);
 }
-.rune-shell .rt-logs-query {
+.rt-logs-query {
   flex: 1;
   min-width: 0;
   font-size: 11.5px;
@@ -366,7 +366,7 @@
   text-overflow: ellipsis;
   font-style: italic;
 }
-.rune-shell .rt-logs-body {
+.rt-logs-body {
   flex: 1;
   overflow-y: auto;
   padding: 16px;
@@ -374,12 +374,12 @@
   flex-direction: column;
   gap: 16px;
 }
-.rune-shell .rt-logs-sec {
+.rt-logs-sec {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
-.rune-shell .rt-logs-sec-hd {
+.rt-logs-sec-hd {
   margin: 0;
   font-size: 11px;
   font-weight: 600;
@@ -387,7 +387,7 @@
   text-transform: uppercase;
   color: var(--rune-fg-faint);
 }
-.rune-shell .rt-logs-pre {
+.rt-logs-pre {
   margin: 0;
   padding: 10px 12px;
   background: var(--rune-bg-surface);
@@ -402,11 +402,11 @@
   max-height: 360px;
   overflow-y: auto;
 }
-.rune-shell .rt-logs-pre-reasoning {
+.rt-logs-pre-reasoning {
   color: var(--rune-fg-faint);
   font-style: italic;
 }
-.rune-shell .rt-logs-sec-err .rt-logs-pre {
+.rt-logs-sec-err .rt-logs-pre {
   border-color: var(--rune-warn-edge, #ef4444);
   color: var(--rune-warn-text, #b91c1c);
 }
@@ -1279,7 +1279,7 @@
  * to breathe) but render block-level Markdown. The Markdown component
  * outputs an unstyled `.markdown` host class; we scope our overrides
  * inside `.rt-logs-md`. */
-.rune-shell .rt-logs-md {
+.rt-logs-md {
   padding: 10px 12px;
   background: var(--rune-bg-surface);
   border: 1px solid var(--rune-line-faint);
@@ -1290,36 +1290,36 @@
   line-height: 1.6;
   color: var(--rune-fg);
 }
-.rune-shell .rt-logs-md p,
-.rune-shell .rt-logs-md ul,
-.rune-shell .rt-logs-md ol,
-.rune-shell .rt-logs-md pre,
-.rune-shell .rt-logs-md blockquote {
+.rt-logs-md p,
+.rt-logs-md ul,
+.rt-logs-md ol,
+.rt-logs-md pre,
+.rt-logs-md blockquote {
   margin: 0 0 8px;
 }
-.rune-shell .rt-logs-md p:last-child,
-.rune-shell .rt-logs-md ul:last-child,
-.rune-shell .rt-logs-md ol:last-child,
-.rune-shell .rt-logs-md pre:last-child { margin-bottom: 0; }
-.rune-shell .rt-logs-md ul,
-.rune-shell .rt-logs-md ol { padding-left: 18px; }
-.rune-shell .rt-logs-md h1,
-.rune-shell .rt-logs-md h2,
-.rune-shell .rt-logs-md h3,
-.rune-shell .rt-logs-md h4 {
+.rt-logs-md p:last-child,
+.rt-logs-md ul:last-child,
+.rt-logs-md ol:last-child,
+.rt-logs-md pre:last-child { margin-bottom: 0; }
+.rt-logs-md ul,
+.rt-logs-md ol { padding-left: 18px; }
+.rt-logs-md h1,
+.rt-logs-md h2,
+.rt-logs-md h3,
+.rt-logs-md h4 {
   font-size: 12.5px;
   font-weight: 600;
   margin: 10px 0 4px;
   color: var(--rune-fg);
 }
-.rune-shell .rt-logs-md code {
+.rt-logs-md code {
   font-family: var(--rune-font-mono);
   font-size: 11.5px;
   padding: 1px 4px;
   background: var(--rune-bg-inset);
   border-radius: 3px;
 }
-.rune-shell .rt-logs-md pre {
+.rt-logs-md pre {
   padding: 8px 10px;
   background: var(--rune-bg-inset);
   border: 1px solid var(--rune-line-faint);
@@ -1327,7 +1327,7 @@
   overflow-x: auto;
   font-size: 11px;
 }
-.rune-shell .rt-logs-md pre code { padding: 0; background: transparent; }
-.rune-shell .rt-logs-md-reasoning {
+.rt-logs-md pre code { padding: 0; background: transparent; }
+.rt-logs-md-reasoning {
   color: var(--rune-fg-faint);
 }
