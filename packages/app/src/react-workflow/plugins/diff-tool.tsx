@@ -70,17 +70,37 @@ function DiffTool({ nodeId, nodeStatus, detail }: PluginContext<Detail | null>) 
         </div>
         <div className="mt-3 flex flex-wrap gap-2">
           {files.length > 0 ? (
-            files.map((item, idx) => (
-              <button
-                key={item.file}
-                className={`wf-detail-file-tab ${idx === tab ? "wf-detail-file-tab--active" : ""}`}
-                onClick={() => setTab(idx)}
-              >
-                <FileCode2 className="h-3 w-3" strokeWidth={1.8} />
-                {item.file.split("/").at(-1)}
-                <span className="text-[var(--wf-ok)]">+{item.additions}</span>
-              </button>
-            ))
+            files.map((item, idx) => {
+              // Per the user's "上面的文件没有对应的目录" — show the
+              // PARENT directory next to the filename so tabs scan as
+              // "src/foo · bar.ts" instead of just "bar.ts" (which
+              // collides whenever two paths end with the same name).
+              const parts = item.file.split("/")
+              const filename = parts.at(-1) ?? item.file
+              // Take the last 2 segments of the parent dir — enough to
+              // disambiguate without exploding tab width on very deep
+              // paths like `packages/opencode/src/foo/bar/...`.
+              const parentSegments = parts.slice(0, -1)
+              const parentShort =
+                parentSegments.length <= 2
+                  ? parentSegments.join("/")
+                  : `…/${parentSegments.slice(-2).join("/")}`
+              return (
+                <button
+                  key={item.file}
+                  className={`wf-detail-file-tab ${idx === tab ? "wf-detail-file-tab--active" : ""}`}
+                  onClick={() => setTab(idx)}
+                  title={item.file}
+                >
+                  <FileCode2 className="h-3 w-3" strokeWidth={1.8} />
+                  {parentShort && (
+                    <span className="text-[10px] text-[var(--wf-dim)]">{parentShort}/</span>
+                  )}
+                  <span>{filename}</span>
+                  <span className="text-[var(--wf-ok)]">+{item.additions}</span>
+                </button>
+              )
+            })
           ) : (
             <div className="wf-detail-file-tab wf-detail-file-tab--active">
               <FileCode2 className="h-3 w-3" strokeWidth={1.8} />
@@ -91,7 +111,17 @@ function DiffTool({ nodeId, nodeStatus, detail }: PluginContext<Detail | null>) 
       </div>
 
       <div className="flex items-center gap-2 border-b border-[var(--wf-line)] bg-[var(--wf-bg)] px-5 py-2">
-        <span className="font-mono text-[11px] text-[var(--wf-dim)]">{active?.file ?? "No file selected"}</span>
+        {/* Full path breadcrumb above the diff. The tab above only
+         * shows the last 2 parent segments to keep the tab compact;
+         * here we render the FULL path so the user can read the
+         * exact location. `truncate` keeps it on one line; the
+         * tooltip on hover surfaces the full string regardless. */}
+        <span
+          className="truncate font-mono text-[11px] text-[var(--wf-dim)]"
+          title={active?.file}
+        >
+          {active?.file ?? "No file selected"}
+        </span>
       </div>
 
       <div className="wf-detail-diff">

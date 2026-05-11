@@ -4404,11 +4404,21 @@
   -webkit-backdrop-filter: blur(4px);
 }
 
-/* Each diff line — gutter + sign + content */
+/* Each diff line — gutter + sign + content.
+ *
+ * `min-width: max-content` is the fix for the user's "code diff
+ * 被直接拉到窗口外" report: without it, `flex: 1; min-width: 0` on
+ * the text column made each row shrink to fit the container, and
+ * long lines (e.g. `CONSTRAINT \`fk_…\` FOREIGN KEY (…)`) were
+ * silently clipped at the panel's right edge. With max-content the
+ * row grows to its natural width, the outer `.wf-detail-diff`'s
+ * `overflow: auto` kicks in, and a horizontal scrollbar appears so
+ * users can see the rest of the line. */
 .workflow-make .wf-detail-diff-line {
   display: flex;
   align-items: stretch;
   min-height: 20px;
+  min-width: max-content;
   border-left: 3px solid transparent;
   transition: background-color 60ms ease;
 }

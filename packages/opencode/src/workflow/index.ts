@@ -3332,6 +3332,12 @@ export namespace Workflow {
        *  context on tool/skill step-by-step noise. UI clients should pass
        *  `all` to get the full timeline. */
       audience: z.enum(["orchestrator", "ui", "all"]).optional(),
+      /** Cap on returned events. Defaults to 50 for `orchestrator` (master
+       *  context is precious — each wake should ship the latest activity
+       *  delta, not the entire history; older events are still in the DB
+       *  and retrievable with a fresh cursor when needed). Defaults to
+       *  unbounded for `ui` / `all`. Set explicitly to override. */
+      limit: z.number().int().positive().optional(),
     }),
     async (input) => {
       await state()
@@ -3348,11 +3354,23 @@ export namespace Workflow {
           .all(),
       )
       const aud = input.audience ?? "orchestrator"
-      const events = rawEvents.filter((row) => {
+      const filtered = rawEvents.filter((row) => {
         if (aud === "all") return true
         const a = audienceOf(row.kind)
         return aud === "ui" ? a !== "orchestrator" : a !== "ui"
       })
+      // Cap event payload size for orchestrator audience. Default 50
+      // newest events; UI / all default unbounded. Master can pass an
+      // explicit higher limit or use a smaller cursor to backfill if
+      // it wants more history — the audit trail is fully retained
+      // server-side. Keeps per-wake context cost predictable as the
+      // graph grows long.
+      const eventCap =
+        input.limit ?? (aud === "orchestrator" ? 50 : undefined)
+      const events =
+        eventCap !== undefined && filtered.length > eventCap
+          ? filtered.slice(-eventCap)
+          : filtered
       const changedNodeIDs = [...new Set(events.map((row) => row.node_id).filter(Boolean))] as string[]
       const changedNodes = changedNodeIDs.length
         ? Database.use((db) =>
@@ -3406,7 +3424,28 @@ export namespace Workflow {
         }
         return out
       }
-      const projectedChangedNodes = changedNodes.map((node) => {
+      // Trim state_json.attempt_history for orchestrator audience —
+      // keep only the last 2 attempts. attempt_history (under
+      // state_json) is per-attempt verbose (`summary` + `needs` +
+      // `actions[]` + `errors[]`), so on a node that retried 5 times
+      // the master would otherwise see ~5× verbose attempt records
+      // every wake. Master only needs the freshest 1-2 attempts to
+      // decide what to do next; older history is still in the DB and
+      // available to the UI for audit (which uses audience !== "orchestrator").
+      const trimAttemptHistory = (node: typeof changedNodes[number]) => {
+        if (aud !== "orchestrator") return node
+        const sj = node.state_json as Record<string, unknown> | undefined
+        const hist = sj && Array.isArray((sj as { attempt_history?: unknown }).attempt_history)
+          ? ((sj as { attempt_history?: unknown[] }).attempt_history as unknown[])
+          : undefined
+        if (!hist || hist.length <= 2) return node
+        return {
+          ...node,
+          state_json: { ...(sj ?? {}), attempt_history: hist.slice(-2) },
+        }
+      }
+      const projectedChangedNodes = changedNodes.map((raw) => {
+        const node = trimAttemptHistory(raw)
         const stateInfo = collectPatchKeys(node.id, "state_patch")
         const resultInfo = collectPatchKeys(node.id, "result_patch")
         // If neither field was touched in this window, the node only
