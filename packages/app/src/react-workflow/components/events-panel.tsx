@@ -69,6 +69,49 @@ type Props = {
 
 type Tone = "ok" | "err" | "warn" | "run" | "idle"
 
+/* Event kinds the user actually wants to see on the timeline —
+ * "what task ran, what was the purpose, what was done, what's the
+ * result". Everything else (workflow.orchestrator_wake, node.pulled,
+ * node.command_acked, graph.edit.*, etc.) is bureaucratic chrome
+ * that's useful for debugging but pure noise day-to-day. We default
+ * the panel to this signal set and offer a "Show chrome" toggle to
+ * unfilter when the user needs the full audit view.
+ *
+ * `node.attempt_reported` is the most important one — the agent's
+ * per-attempt summary lives in its payload.summary, and
+ * workflow-panel.tsx's projection now surfaces that text as the
+ * row's display summary. So a single row reads as e.g. "Implemented
+ * timer schema — added cron column · success". */
+const SIGNAL_KINDS = new Set<string>([
+  // Per-attempt agent reports — the headline signal.
+  "node.attempt_reported",
+  // Terminal node states.
+  "node.completed",
+  "node.failed",
+  "node.cancelled",
+  "node.interrupted",
+  // Node "needs input" / blocked states — user attention required.
+  "node.waiting",
+  "node.blocked",
+  "node.need_opened",
+  "node.need_fulfilled",
+  "node.need_resolved",
+  // Hard budget breaches — user should know we hit a limit.
+  "node.action_limit_reached",
+  "node.attempt_limit_reached",
+  "node.budget_exceeded",
+  "node.stalled",
+  // Manual review gates.
+  "checkpoint.pending",
+  "checkpoint.failed",
+  // Workflow-level lifecycle.
+  "workflow.created",
+  "workflow.completed",
+  "workflow.failed",
+  "workflow.cancelled",
+  "workflow_finalized",
+])
+
 /* Map an event kind string to a coarse tone. Mirrors the original
  * inline impl so existing user mental model survives. */
 function eventTone(kind: string): Tone {
@@ -406,6 +449,22 @@ function FlatTimeline({
 
 export function EventsPanel({ events, nodes, onSelectNode }: Props) {
   const [mode, setMode] = useState<"by-node" | "timeline">("by-node")
+  // Signal vs chrome filter. Default is `signal` — the user reported
+  // the timeline was full of `workflow.orchestrator_wake` /
+  // `node.pulled` / `graph.edit.*` noise and asked to see "what task
+  // ran, what was done, what's the result". `SIGNAL_KINDS` defines
+  // exactly that subset. Flipping to `all` brings the audit view
+  // back for debugging.
+  const [filterLevel, setFilterLevel] = useState<"signal" | "all">("signal")
+
+  // Apply the signal/chrome filter BEFORE bucketing — both the
+  // swimlane overview and the grouped accordion read the filtered
+  // list so chrome doesn't inflate node-level event counts either.
+  const visibleEvents = useMemo(() => {
+    if (filterLevel === "all") return events
+    return events.filter((ev) => SIGNAL_KINDS.has(ev.kind))
+  }, [events, filterLevel])
+  const hiddenChromeCount = events.length - visibleEvents.length
 
   // ── Bucketing ────────────────────────────────────────────────────
   // Build a stable, ordered list of groups: real nodes first, then
@@ -414,7 +473,7 @@ export function EventsPanel({ events, nodes, onSelectNode }: Props) {
   // completed"). The group order itself is by first-event time so the
   // groups appear in the same order the workflow activated them.
   const { groups, windowStart, windowEnd, totals } = useMemo(() => {
-    if (events.length === 0) {
+    if (visibleEvents.length === 0) {
       return {
         groups: [] as Group[],
         windowStart: 0,
@@ -426,7 +485,7 @@ export function EventsPanel({ events, nodes, onSelectNode }: Props) {
     for (const n of nodes ?? []) nodeIndex.set(n.id, n)
 
     const buckets = new Map<string, EventRow[]>()
-    for (const ev of events) {
+    for (const ev of visibleEvents) {
       const key = ev.nodeID ?? SYSTEM_KEY
       const arr = buckets.get(key) ?? []
       arr.push(ev)
@@ -461,9 +520,9 @@ export function EventsPanel({ events, nodes, onSelectNode }: Props) {
       return a.firstTime - b.firstTime
     })
 
-    let lo = events[0].time
-    let hi = events[0].time
-    for (const ev of events) {
+    let lo = visibleEvents[0].time
+    let hi = visibleEvents[0].time
+    for (const ev of visibleEvents) {
       if (ev.time < lo) lo = ev.time
       if (ev.time > hi) hi = ev.time
     }
@@ -475,11 +534,11 @@ export function EventsPanel({ events, nodes, onSelectNode }: Props) {
       windowEnd: hi === lo ? lo + 1 : hi,
       totals: {
         nodes: nodeCount,
-        events: events.length,
+        events: visibleEvents.length,
         durationMs: hi - lo,
       },
     }
-  }, [events, nodes])
+  }, [visibleEvents, nodes])
 
   if (events.length === 0) {
     return (
@@ -537,6 +596,41 @@ export function EventsPanel({ events, nodes, onSelectNode }: Props) {
             Timeline
           </button>
         </div>
+        {/* Signal / chrome filter. Default is "signal" so the panel
+          * surfaces only the events the user actually wants to read
+          * ("what task ran, what was done, result"). Chrome (orch
+          * wakes, command lifecycle, graph edits, pull events) is
+          * one click away when debugging. The hidden count makes it
+          * discoverable. */}
+        <div className="wf-events-bar-toggle" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={filterLevel === "signal"}
+            className="wf-events-bar-toggle-btn"
+            data-active={filterLevel === "signal" ? "true" : "false"}
+            onClick={() => setFilterLevel("signal")}
+            title="Show only attempt reports, completions, blockers, budget breaches, and workflow lifecycle"
+          >
+            Signal
+            {hiddenChromeCount > 0 && filterLevel === "signal" && (
+              <span className="ml-1 text-[9px] opacity-60">
+                ·{hiddenChromeCount}
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={filterLevel === "all"}
+            className="wf-events-bar-toggle-btn"
+            data-active={filterLevel === "all" ? "true" : "false"}
+            onClick={() => setFilterLevel("all")}
+            title="Include orchestrator wakes, command acks, graph edits, and other chrome events"
+          >
+            All
+          </button>
+        </div>
       </div>
 
       {mode === "by-node" ? (
@@ -589,7 +683,7 @@ export function EventsPanel({ events, nodes, onSelectNode }: Props) {
           </div>
         </>
       ) : (
-        <FlatTimeline events={events} onSelectNode={onSelectNode} />
+        <FlatTimeline events={visibleEvents} onSelectNode={onSelectNode} />
       )}
     </div>
   )

@@ -2874,16 +2874,31 @@ export function WorkflowRuntimePanel(props: {
           const node = ev.node_id
             ? props.snapshot.nodes.find((n) => n.id === ev.node_id)
             : undefined
-          // Build a human-readable summary from the payload — the kind
-          // alone is too terse, but the full payload is too noisy. Pick
-          // a few common fields if present.
+          // Build a human-readable summary from the payload. For
+          // `node.attempt_reported` the agent writes a one-line
+          // summary describing what it just did — surface THAT as
+          // the row's primary text so users see "Implemented timer
+          // schema, added cron column" instead of a generic
+          // "node.attempt_reported · result=success". Falls back to
+          // the older status/reason/message/result/error projection
+          // for kinds without an explicit summary field.
           const p = (ev.payload ?? {}) as Record<string, unknown>
-          const summaryBits: string[] = []
-          for (const k of ["status", "reason", "message", "result", "error"]) {
-            const v = p[k]
-            if (typeof v === "string" && v.length > 0) {
-              summaryBits.push(`${k}=${v.length > 60 ? v.slice(0, 60) + "…" : v}`)
+          const summary = typeof p["summary"] === "string" ? (p["summary"] as string).trim() : ""
+          let display: string
+          if (summary) {
+            const result = typeof p["result"] === "string" ? (p["result"] as string) : ""
+            display = result
+              ? `${summary}${result !== "success" ? ` · ${result}` : ""}`
+              : summary
+          } else {
+            const summaryBits: string[] = []
+            for (const k of ["status", "reason", "message", "result", "error"]) {
+              const v = p[k]
+              if (typeof v === "string" && v.length > 0) {
+                summaryBits.push(`${k}=${v.length > 60 ? v.slice(0, 60) + "…" : v}`)
+              }
             }
+            display = summaryBits.length > 0 ? summaryBits.join(" · ") : ev.kind
           }
           return {
             id: ev.id,
@@ -2891,7 +2906,7 @@ export function WorkflowRuntimePanel(props: {
             source: ev.source,
             nodeID: ev.node_id ?? undefined,
             nodeTitle: node?.title,
-            summary: summaryBits.length > 0 ? summaryBits.join(" · ") : ev.kind,
+            summary: display,
             time: ev.time_created,
           }
         }),

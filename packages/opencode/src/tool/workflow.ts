@@ -724,17 +724,66 @@ export const WorkflowNodeStartTool = Tool.define(
             }),
           )
 
-          // Fire-and-forget prompt — matches legacy `void prompt(...).catch(...)`.
-          yield* Effect.forkDetach(
-            prompt({
-              workflowID: node.workflow_id,
-              nodeID: node.id,
-              agent: node.agent,
-              sessionID: childSession.id,
-              model: picked,
-              text: input.initial_prompt,
-            }).pipe(Effect.ignore),
+          // Fire-and-forget prompt — historically wrapped in
+          // `Effect.ignore` which silently swallowed EVERY error from
+          // the agent runtime (agent name not found, model resolution
+          // failure, runtime panic, etc.). The user's symptom of
+          // "node created but session is empty / no response" was
+          // exactly this silent-fail mode: workflow_node_start would
+          // happily return a node_id + session_id, but the forked
+          // prompt died on `Agent.get("coding")` → throw → ignored.
+          // From the master's perspective the node was running but
+          // nothing was happening.
+          //
+          // Now: catch any error from the forked prompt, log it
+          // server-side via the elog stream, AND surface it to the
+          // master + UI via a `node.failed` event with the error
+          // message in `fail_reason`. Master gets a wake immediately
+          // and can re-plan or surface the error to the user — no
+          // more silent hangs.
+          const nodeID = node.id
+          const workflowID = node.workflow_id
+          const nodeAgent = node.agent
+          // Fork the prompt so the tool returns immediately, but
+          // CATCH the error path so a failed start (agent name not
+          // found, model resolution failure, runtime panic) gets
+          // surfaced as `node.failed` instead of being swallowed.
+          // Without this catch, the master sees `workflow_node_start`
+          // return OK + a session_id but the agent never actually
+          // ran — the exact "节点创建了但 session 空空" state the
+          // user reported.
+          const startedAgent = prompt({
+            workflowID,
+            nodeID,
+            agent: nodeAgent,
+            sessionID: childSession.id,
+            model: picked,
+            text: input.initial_prompt,
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.promise(() => {
+                const reason = String(cause).slice(0, 500)
+                return Workflow.patchNode({
+                  nodeID,
+                  source: "runtime",
+                  patch: {
+                    status: "failed",
+                    result_status: "fail",
+                    fail_reason: `start_failed: ${reason}`,
+                  },
+                  event: {
+                    kind: "node.failed",
+                    payload: {
+                      reason,
+                      phase: "start",
+                      agent: nodeAgent,
+                    },
+                  },
+                }).catch(() => undefined)
+              }),
+            ),
           )
+          yield* startedAgent.pipe(Effect.forkDetach)
 
           return {
             title: node.title,

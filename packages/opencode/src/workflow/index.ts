@@ -1481,6 +1481,27 @@ export namespace Workflow {
     }
     if (!msg) return
     const rep = report(node, msg)
+    // Payload dedup — if the new report is byte-identical to the
+    // last one we emitted for this node (same result + summary +
+    // needs + actions + errors), skip the patchRun + event emission
+    // entirely. Drops the case where an agent loops the same
+    // summary across retries / replays, which would otherwise feed
+    // the master the same paragraph N times. The `result === waiting`
+    // case is intentionally excluded — those are pause checkpoints
+    // and shouldn't be deduped (the user wants to see each "i'm
+    // waiting on X" hit). Hash skips message_id + time so distinct
+    // messages with the same content hash the same.
+    const reportFingerprint = JSON.stringify({
+      r: rep.result,
+      s: rep.summary,
+      n: rep.needs,
+      a: rep.actions,
+      e: rep.errors,
+    })
+    if (rep.result !== "waiting" && curr.reportHash[node.id] === reportFingerprint) {
+      return
+    }
+    curr.reportHash[node.id] = reportFingerprint
     const delta = messageUsage(msg)
     // P3 #15 — pull advisory limits from workflow.config once per message.
     // `limitsFromConfig` returns undefined when none are set, in which case
@@ -1770,6 +1791,12 @@ export namespace Workflow {
     stall: Record<string, string>
     parts: Record<string, string>
     msg: Record<string, number>
+    /** Per-node hash of the last `node.attempt_reported` payload we
+     *  actually emitted. Used in onMessage() to drop identical
+     *  reports (different message_id but byte-identical summary +
+     *  result + needs + actions + errors), which the user reported
+     *  was inflating event-stream noise / master context bloat. */
+    reportHash: Record<string, string>
   }
   function createState(): State {
     const unsubPart = Bus.subscribe(MessageV2.Event.PartUpdated, async (event) => {
@@ -1832,6 +1859,7 @@ export namespace Workflow {
       stall: {} as Record<string, string>,
       parts: {} as Record<string, string>,
       msg: {} as Record<string, number>,
+      reportHash: {} as Record<string, string>,
     }
   }
   const state = instanceState<State>(createState, async (entry) => {
