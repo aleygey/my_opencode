@@ -198,6 +198,68 @@ export function applyDirectoryEvent(input: {
       input.setStore("sessionError", props.sessionID, undefined)
       break
     }
+    case "session.error": {
+      // Backend publishes `session.error` with a MessageV2 error union
+      // (ContextOverflowError, ProviderAuthError, APIError,
+      // MessageOutputLengthError, StructuredOutputError,
+      // MessageAbortedError, or NamedError.Unknown for catch-alls).
+      // Previously the only consumer was Notification.tsx which fired
+      // OS toasts — the in-session UI showed nothing, so a session
+      // that hit e.g. an auth error just appeared frozen. Now we
+      // park the error on `sessionError[sid]` so the chat panel
+      // banner can render it inline.
+      const props = event.properties as {
+        sessionID?: string
+        error?: { name?: string; data?: Record<string, unknown> }
+      }
+      const sid = props.sessionID
+      const err = props.error
+      if (!sid || !err) break
+      const data = (err.data ?? {}) as Record<string, unknown>
+      const message = typeof data["message"] === "string" ? (data["message"] as string) : ""
+      const provider = typeof data["providerID"] === "string" ? (data["providerID"] as string) : undefined
+      const statusCode = typeof data["statusCode"] === "number" ? (data["statusCode"] as number) : undefined
+      // Map MessageV2 error class names to our UI-friendly kinds.
+      // Names match `namedSchemaError(...)` in message-v2.ts.
+      let mapped: State["sessionError"][string]
+      switch (err.name) {
+        case "ContextOverflowError":
+          mapped = { kind: "context_overflow", message: message || "Context window exceeded" }
+          break
+        case "ProviderAuthError":
+          mapped = { kind: "auth", provider, message: message || "Provider authentication failed" }
+          break
+        case "APIError":
+          mapped = {
+            kind: "api",
+            message: message || "Provider returned an error",
+            statusCode,
+            retryable: data["isRetryable"] === true,
+          }
+          break
+        case "MessageOutputLengthError":
+          mapped = { kind: "output_length", message: message || undefined }
+          break
+        case "StructuredOutputError":
+          mapped = {
+            kind: "structured_output",
+            message: message || "Model returned malformed structured output",
+            retries: typeof data["retries"] === "number" ? (data["retries"] as number) : undefined,
+          }
+          break
+        case "MessageAbortedError":
+          mapped = { kind: "aborted", message: message || undefined }
+          break
+        default:
+          mapped = {
+            kind: "unknown",
+            name: err.name,
+            message: message || (err.name ? `Error: ${err.name}` : "Unknown error"),
+          }
+      }
+      input.setStore("sessionError", sid, mapped)
+      break
+    }
     case "todo.updated": {
       const props = event.properties as { sessionID: string; todos: Todo[] }
       input.setStore("todo", props.sessionID, reconcile(props.todos, { key: "id" }))
@@ -214,20 +276,62 @@ export function applyDirectoryEvent(input: {
       const messages = input.store.message[info.sessionID]
       if (!messages) {
         input.setStore("message", info.sessionID, [info])
-        break
+      } else {
+        const result = Binary.search(messages, info.id, (m) => m.id)
+        if (result.found) {
+          input.setStore("message", info.sessionID, result.index, reconcile(info))
+        } else {
+          input.setStore(
+            "message",
+            info.sessionID,
+            produce((draft) => {
+              draft.splice(result.index, 0, info)
+            }),
+          )
+        }
       }
-      const result = Binary.search(messages, info.id, (m) => m.id)
-      if (result.found) {
-        input.setStore("message", info.sessionID, result.index, reconcile(info))
-        break
+      // Mirror prompt-pipeline errors that don't fire `session.error`
+      // (e.g. `agent_not_found`, `model_not_found`, `file_read_failed`
+      // via NamedError on the assistant message) into the session-
+      // level banner store. Skip when a richer banner from
+      // `session.error` is already present (avoids overwriting an
+      // explicit ContextOverflow / Auth / API error with a generic
+      // "unknown" mapping when both events fire for the same
+      // incident).
+      const errInfo = info as unknown as {
+        role?: string
+        sessionID?: string
+        error?: { name?: string; data?: Record<string, unknown> }
       }
-      input.setStore(
-        "message",
-        info.sessionID,
-        produce((draft) => {
-          draft.splice(result.index, 0, info)
-        }),
-      )
+      if (errInfo.role === "assistant" && errInfo.error && errInfo.sessionID) {
+        const sid = errInfo.sessionID
+        if (!input.store.sessionError[sid]) {
+          const data = (errInfo.error.data ?? {}) as Record<string, unknown>
+          const message =
+            typeof data["message"] === "string" ? (data["message"] as string) : ""
+          const name = errInfo.error.name ?? ""
+          let mapped: State["sessionError"][string]
+          if (/AgentNotFound|Agent.*not.found/i.test(name) || /Agent not found/i.test(message)) {
+            mapped = { kind: "agent_not_found", message: message || "Agent not found" }
+          } else if (
+            /Model.*not.found|ProviderNoModel/i.test(name) ||
+            /Model not found/i.test(message)
+          ) {
+            mapped = { kind: "model_not_found", message: message || "Model not found" }
+          } else if (/Command.*not.found/i.test(name) || /Command not found/i.test(message)) {
+            mapped = { kind: "command_not_found", message: message || "Command not found" }
+          } else if (/File.*read|FileRead/i.test(name)) {
+            mapped = { kind: "file_read_failed", message: message || "File read failed" }
+          } else if (name === "ContextOverflowError") {
+            mapped = { kind: "context_overflow", message: message || "Context window exceeded" }
+          } else if (name) {
+            mapped = { kind: "unknown", name, message: message || `Error: ${name}` }
+          } else {
+            mapped = { kind: "unknown", message: message || "Unknown error" }
+          }
+          input.setStore("sessionError", sid, mapped)
+        }
+      }
       break
     }
     case "message.removed": {

@@ -2788,24 +2788,82 @@ export function WorkflowRuntimePanel(props: {
       })
     }
 
-    // Surface session-level errors (currently: compaction failures)
-    // as a final virtual system message. Without this the user only
-    // sees the session "freeze" — the actual error is buried on the
-    // last assistant message's `error` field, which they have to
-    // scroll back to find. This bubbles it to the top so they know
+    // Surface session-level errors as a final virtual system
+    // message. Covers every kind the event-reducer can park on
+    // `sessionError[rid]` (compaction failures, provider auth/api
+    // errors, context overflow, output length cuts, structured
+    // output failures, agent/model/command-not-found, file read
+    // failures, unknown). Without this the user only sees the
+    // session "freeze" — the actual error is buried on the last
+    // assistant message's `error` field, which they have to scroll
+    // back to find. The banner bubbles it to the top so they know
     // immediately *why* nothing's happening.
     const sessErr = (sync.data.sessionError ?? {})[rid]
-    if (sessErr?.kind === "compaction_failed") {
-      rootMsgs.push({
-        id: `compaction-error:${rid}`,
-        role: "system" as const,
-        content:
-          `⚠ 会话压缩失败：${sessErr.reason}` +
-          (sessErr.replay
-            ? "\n\n压缩历史时上下文仍超出模型限制。考虑开新 session 或换更大上下文窗口的模型。"
-            : "\n\n上下文超出模型限制，即使裁掉媒体内容也无法压下。请开新 session 或换更大上下文窗口的模型。"),
-        timestamp: fmt(Date.now()),
-      })
+    if (sessErr) {
+      const errorText = (() => {
+        switch (sessErr.kind) {
+          case "compaction_failed":
+            return (
+              `⚠ 会话压缩失败：${sessErr.reason}` +
+              (sessErr.replay
+                ? "\n\n压缩历史时上下文仍超出模型限制。考虑开新 session 或换更大上下文窗口的模型。"
+                : "\n\n上下文超出模型限制，即使裁掉媒体内容也无法压下。请开新 session 或换更大上下文窗口的模型。")
+            )
+          case "context_overflow":
+            return `⚠ 上下文超出模型限制：${sessErr.message}\n\n建议开新 session 或切到上下文窗口更大的模型。`
+          case "auth":
+            return (
+              `⚠ Provider 认证失败${sessErr.provider ? `（${sessErr.provider}）` : ""}：` +
+              `${sessErr.message}\n\n请检查 API key 是否正确 / 是否过期 / 是否有调用权限。`
+            )
+          case "api":
+            return (
+              `⚠ Provider 接口错误${sessErr.statusCode ? `（HTTP ${sessErr.statusCode}）` : ""}：${sessErr.message}` +
+              (sessErr.retryable
+                ? "\n\n可重试 — 再发一次或等待 provider 限流恢复。"
+                : "\n\n非可重试错误，先确认请求内容和 provider 状态。")
+            )
+          case "output_length":
+            return (
+              `⚠ 模型输出被 provider 截断${sessErr.message ? `：${sessErr.message}` : ""}。` +
+              "\n\n模型的单次响应到达 max_tokens 上限。请让模型继续输出，或拆分任务。"
+            )
+          case "structured_output":
+            return (
+              `⚠ 结构化输出解析失败${typeof sessErr.retries === "number" ? `（重试 ${sessErr.retries} 次）` : ""}：${sessErr.message}` +
+              "\n\n模型多次返回不符合 JSON schema 的内容。考虑换模型 / 简化 schema。"
+            )
+          case "aborted":
+            return `⚠ 会话被中止${sessErr.message ? `：${sessErr.message}` : ""}`
+          case "agent_not_found":
+            return (
+              `⚠ ${sessErr.message}` +
+              "\n\nAgent 名称无法解析，可能是 (a) 该 agent 未注册 / 未启用，(b) 本地 .opencode/agent/ 配置文件冲突。检查 orchestrator 计划中引用的 agent 是否存在。"
+            )
+          case "model_not_found":
+            return (
+              `⚠ ${sessErr.message}` +
+              "\n\nModel 解析失败，可能是 provider / model id 拼写错误 / provider 未配置 / model 列表未刷新。"
+            )
+          case "command_not_found":
+            return `⚠ ${sessErr.message}\n\n斜杠命令找不到。`
+          case "file_read_failed":
+            return `⚠ ${sessErr.message}\n\n文件读取失败 — 检查路径 / 权限 / 文件是否存在。`
+          case "unknown":
+            return (
+              `⚠ ${sessErr.name ? `${sessErr.name}：` : ""}${sessErr.message}` +
+              "\n\n未分类错误。如重复出现请截图反馈，附上 server log 中的 stack。"
+            )
+        }
+      })()
+      if (errorText) {
+        rootMsgs.push({
+          id: `session-error:${rid}:${sessErr.kind}`,
+          role: "system" as const,
+          content: errorText,
+          timestamp: fmt(Date.now()),
+        })
+      }
     }
 
     return { ...base, [rid]: rootMsgs }

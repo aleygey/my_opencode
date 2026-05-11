@@ -72,15 +72,47 @@ export type State = {
   part: {
     [messageID: string]: Part[]
   }
-  /* Session-level error banners surfaced to the UI. Today only
-   * populated by `session.compaction_failed` events — previously
-   * compaction failures only set a `message.error` field on the
-   * last assistant message, which the user had to scroll back to
-   * see, so they reported the session "just froze with no
-   * indication". The banner clears when the user dismisses it or
-   * the session is removed. */
+  /* Session-level error banners surfaced to the UI. Captures every
+   * error class the backend publishes via `session.error` plus the
+   * compaction-failed event. The chat panel renders a banner for
+   * whatever's parked here; cleared on session.deleted, success
+   * paths (e.g. session.compacted), or future explicit dismiss.
+   *
+   * Each kind maps 1:1 to a `MessageV2` error class on the backend
+   * (see `packages/opencode/src/session/message-v2.ts`):
+   *
+   *   compaction_failed   — Event.CompactionFailed (after compaction
+   *                         can't shrink session under context cap)
+   *   context_overflow    — ContextOverflowError (provider rejected
+   *                         the request as too large)
+   *   auth                — ProviderAuthError (API key invalid/missing)
+   *   api                 — APIError (rate limit / 5xx / network)
+   *   output_length       — MessageOutputLengthError (response cut by
+   *                         provider mid-stream)
+   *   structured_output   — StructuredOutputError (model emitted
+   *                         malformed JSON for a json_schema response)
+   *   aborted             — MessageAbortedError (user cancelled)
+   *   agent_not_found     — Agent.get() returned null in prompt.ts
+   *   model_not_found     — Provider.ModelNotFoundError on model resolve
+   *   command_not_found   — Slash command lookup miss
+   *   file_read_failed    — File attachment couldn't be read
+   *   unknown             — fall-back for any uncategorised error
+   */
   sessionError: {
-    [sessionID: string]: { kind: "compaction_failed"; reason: string; replay: boolean } | undefined
+    [sessionID: string]:
+      | { kind: "compaction_failed"; reason: string; replay: boolean }
+      | { kind: "context_overflow"; message: string }
+      | { kind: "auth"; provider?: string; message: string }
+      | { kind: "api"; message: string; statusCode?: number; retryable?: boolean }
+      | { kind: "output_length"; message?: string }
+      | { kind: "structured_output"; message: string; retries?: number }
+      | { kind: "aborted"; message?: string }
+      | { kind: "agent_not_found"; agent?: string; message: string }
+      | { kind: "model_not_found"; provider?: string; model?: string; message: string }
+      | { kind: "command_not_found"; command?: string; message: string }
+      | { kind: "file_read_failed"; path?: string; message: string }
+      | { kind: "unknown"; name?: string; message: string }
+      | undefined
   }
 }
 
