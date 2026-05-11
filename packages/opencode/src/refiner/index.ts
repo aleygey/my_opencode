@@ -684,7 +684,27 @@ async function settings() {
       ? refiner.directory
       : path.join(Instance.worktree, refiner.directory)
     : path.join(Instance.worktree, ".opencode", "refiner-memory")
-  return { enabled, base }
+  // `auto_enabled` priority: per-project override file (set via the
+  // UI toggle) > global config (.opencode/config) > default true.
+  // We read the override here so the toggle takes effect without
+  // requiring a config edit. The master `enabled` flag still trumps
+  // this — when `enabled === false`, refiner is OFF regardless of
+  // `auto_enabled`.
+  let auto_enabled = refiner?.auto_enabled ?? true
+  try {
+    const overridePath = path.join(base, "config.json")
+    if (await Filesystem.exists(overridePath)) {
+      const raw = await Filesystem.readJson<unknown>(overridePath).catch(() => undefined)
+      const parsed = ConfigOverrideSchema.safeParse(raw)
+      if (parsed.success && typeof parsed.data.auto_enabled === "boolean") {
+        auto_enabled = parsed.data.auto_enabled
+      }
+    }
+  } catch {
+    // Read failure is non-fatal — fall back to whatever auto_enabled
+    // already resolved to from global config / default.
+  }
+  return { enabled, auto_enabled, base }
 }
 
 // -----------------------------------------------------------------------------
@@ -1215,6 +1235,14 @@ const ConfigOverrideSchema = z.object({
     })
     .optional(),
   temperature: z.number().min(0).max(2).optional(),
+  /* Per-project switch for the per-message auto-precipitate hook.
+   * When false, `observeUserMessage` short-circuits and the refiner
+   * stops burning tokens on every user message (the user asked for
+   * this as a token-cost control). Manual refiner triggers via the
+   * UI are unaffected. Falls back to
+   * `experimental.refiner.auto_enabled` from global config, then to
+   * `true` as the default. */
+  auto_enabled: z.boolean().optional(),
 })
 type ConfigOverride = z.infer<typeof ConfigOverrideSchema>
 
@@ -2535,6 +2563,19 @@ export namespace Refiner {
   export async function observeUserMessage(input: { sessionID: SessionID; messageID: MessageID }) {
     const cfg = await settings()
     if (!cfg.enabled) return
+    // Per-message auto-refinement gate. The user reported wanting a
+    // switch to "stop refiner from running on every message" for
+    // token cost control. Setting `experimental.refiner.auto_enabled
+    // = false` skips the entire observe pipeline; manual triggers
+    // from the refiner UI still work because they enter through
+    // different entry points (ingestExperience / refineExisting).
+    if (!cfg.auto_enabled) {
+      log.debug("refiner.observe: auto_enabled=false, skipping per-message refine", {
+        sessionID: input.sessionID,
+        messageID: input.messageID,
+      })
+      return
+    }
     // Slave/child sessions carry a parentID — they are spawned by the `task`
     // tool (see src/tool/task.ts:71) when a master/root agent dispatches work
     // to a sub-agent. In that case the "user" message is in fact a master
@@ -2617,6 +2658,7 @@ export namespace Refiner {
   export async function setConfig(input: {
     model?: { providerID: string; modelID: string } | null
     temperature?: number | null
+    auto_enabled?: boolean | null
   }) {
     const existing: ConfigOverride = (await readConfigOverride()) ?? {}
     const next: ConfigOverride = { ...existing }
@@ -2632,6 +2674,11 @@ export namespace Refiner {
     if ("temperature" in input) {
       if (input.temperature === null) delete next.temperature
       else if (typeof input.temperature === "number") next.temperature = input.temperature
+    }
+
+    if ("auto_enabled" in input) {
+      if (input.auto_enabled === null) delete next.auto_enabled
+      else if (typeof input.auto_enabled === "boolean") next.auto_enabled = input.auto_enabled
     }
 
     await writeConfigOverride(next)

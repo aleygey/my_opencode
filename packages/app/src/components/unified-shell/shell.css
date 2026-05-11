@@ -245,25 +245,29 @@
 
 .rune-shell .rune-rail-sec {
   padding: var(--rune-u4) var(--rune-u4) var(--rune-u);
-  /* When there are many workflow tasks under the Workflow module, the
-   * sub-list grew unbounded and pushed the rail content beyond the
-   * viewport (the user reported "workflow session 较多时，会超过长度").
-   * Make the section flex-fill the remaining rail height and scroll
-   * its own content vertically, so the brand at top and any
-   * footer/account chrome below stay in place while the task list
-   * scrolls independently. */
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
+  flex: 0 0 auto;
 }
 .rune-shell[data-rail="collapsed"] .rune-rail-sec { display: none; }
 
+/* `.rune-rail-group` is the actual modules + sub-tasks list. THIS is
+ * the element that needs to fill remaining rail height and scroll
+ * — not `.rune-rail-sec` (which is only the "Modules" kicker
+ * header). A prior fix mistakenly stretched `.rune-rail-sec`,
+ * pushing all the real content (Workflow / Knowledge / Trace + sub
+ * tasks) to the bottom of the rail with empty space above the
+ * kicker — the screenshot the user just sent shows exactly that.
+ * Moving the flex-grow + overflow here puts content right under
+ * the Modules kicker as designed, and the task list scrolls
+ * internally if it exceeds the rail height. */
 .rune-shell .rune-rail-group {
   display: flex;
   flex-direction: column;
   gap: 2px;
   padding: 0 var(--rune-u2);
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 .rune-shell .rune-rail-item {
   display: flex;

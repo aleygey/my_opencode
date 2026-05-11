@@ -480,7 +480,11 @@ type ConfigSource = "override" | "agent" | "default" | "none"
 type RefinerConfig = {
   resolved?: { providerID: string; modelID: string }
   source: ConfigSource
-  override: { model?: { providerID: string; modelID: string }; temperature?: number } | null
+  override: {
+    model?: { providerID: string; modelID: string }
+    temperature?: number
+    auto_enabled?: boolean
+  } | null
 }
 
 async function fetchConfig(input: {
@@ -508,7 +512,11 @@ async function putConfig(input: {
   password?: string
   username?: string
   fetcher?: typeof fetch
-  body: { model?: { providerID: string; modelID: string } | null; temperature?: number | null }
+  body: {
+    model?: { providerID: string; modelID: string } | null
+    temperature?: number | null
+    auto_enabled?: boolean | null
+  }
 }) {
   const url = new URL("/experimental/refiner/config", input.baseUrl)
   const res = await (input.fetcher ?? fetch)(url, {
@@ -5772,6 +5780,26 @@ export default function RefinerPage() {
     void refetchConfig()
   }
 
+  // Per-message auto-precipitate switch. Off → refiner stops running on
+  // every user message (token-cost control). Default (no override) is on.
+  const updateAutoEnabled = async (next: boolean) => {
+    const current = server.current
+    if (!current) return
+    try {
+      await putConfig({
+        baseUrl: current.http.url,
+        directory: sdk.directory,
+        username: current.http.username,
+        password: current.http.password,
+        fetcher: platform.fetch,
+        body: { auto_enabled: next },
+      })
+    } catch (err) {
+      console.warn("[refiner] update auto_enabled failed", err)
+    }
+    void refetchConfig()
+  }
+
   const flash = (msg: string) => {
     setBanner(msg)
     setTimeout(() => setBanner(undefined), 3500)
@@ -6167,6 +6195,21 @@ export default function RefinerPage() {
                 {(t) => <option value={t.tag}>#{t.tag} · {t.count}</option>}
               </For>
             </select>
+            {/* Per-message auto-precipitate toggle. Override file (if
+              * present) wins; otherwise defaults to `true`. Flipping it
+              * off makes the refiner stop running on every user message
+              * — manual triggers from this page still work. */}
+            <label
+              class="rune-refiner-auto-toggle"
+              title="开启后每条用户消息都会触发 refiner 自动沉淀经验；关闭以减少 token 消耗（仍可手动运行）"
+            >
+              <input
+                type="checkbox"
+                checked={config()?.override?.auto_enabled !== false}
+                onChange={(e) => void updateAutoEnabled(e.currentTarget.checked)}
+              />
+              <span>自动沉淀</span>
+            </label>
             <RuneModelPicker
               current={config()?.resolved ?? overview()?.model}
               source={config()?.source}

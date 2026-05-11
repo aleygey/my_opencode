@@ -3613,3 +3613,31 @@
 }
 .rf-logs-md pre code { padding: 0; border: 0; background: transparent; }
 .rf-logs-md-reasoning { color: var(--rune-fg-faint); }
+
+/* Auto-precipitate toggle in the Knowledge substrip right cluster. Inline
+ * checkbox + label — chrome matches the surrounding `.rune-btn[data-size=sm]`
+ * controls (search, tag select, model picker) so it doesn't break the row's
+ * vertical rhythm. */
+.rune-refiner-auto-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  height: 24px;
+  font-size: 11px;
+  color: var(--rune-fg-faint);
+  border: 1px solid var(--rune-line-faint);
+  border-radius: var(--rune-r-sm);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.rune-refiner-auto-toggle:hover { color: var(--rune-fg); }
+.rune-refiner-auto-toggle input[type="checkbox"] {
+  margin: 0;
+  width: 12px;
+  height: 12px;
+  cursor: pointer;
+  accent-color: var(--rune-accent, currentColor);
+}
+.rune-refiner-auto-toggle:has(input:checked) { color: var(--rune-fg); }

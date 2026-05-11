@@ -473,6 +473,12 @@ export const ExperimentalRoutes = lazy(() =>
             ])
             .optional(),
           temperature: z.union([z.number().min(0).max(2), z.null()]).optional(),
+          /* `auto_enabled` toggles per-message auto-precipitation
+           * (writes to `experimental.refiner.auto_enabled`). User-
+           * facing switch for the "stop refiner from burning tokens
+           * on every message" request. `null` clears the override
+           * → back to default (true). */
+          auto_enabled: z.union([z.boolean(), z.null()]).optional(),
         }),
       ),
       async (c) => {

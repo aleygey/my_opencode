@@ -233,6 +233,12 @@ export const Info = Schema.Struct({
           enabled: Schema.optional(Schema.Boolean).annotate({
             description: "Enable the background refiner agent",
           }),
+          auto_enabled: Schema.optional(Schema.Boolean).annotate({
+            description:
+              "Auto-precipitate experiences on every user message. Defaults to true. " +
+              "Set to false to stop the refiner from running on each message (saves tokens); " +
+              "manual triggers via the refiner UI still work. The master `enabled` flag overrides this.",
+          }),
           directory: Schema.optional(Schema.String).annotate({
             description: "Directory for persisted refiner memory artifacts",
           }),
