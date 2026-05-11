@@ -2136,6 +2136,14 @@ export function WorkflowRuntimePanel(props: {
     }
 
     for (const node of allNodes) {
+      // Hide cancelled / interrupted leftovers. When the orchestrator
+      // aborts a run mid-flight (manual stop, replan, attempt-limit
+      // bailout), nodes get marked `cancelled` / `interrupted` but
+      // stay in the snapshot. The user reported that these "残留"
+      // turn the canvas into a graveyard of dead cards (issue 8).
+      // Drop them from the canvas projection — the Events tab still
+      // shows the abort events so audit history isn't lost.
+      if (node.status === "cancelled" || node.status === "interrupted") continue
       const startRev = node.graph_rev_at_start
       const stale =
         typeof startRev === "number" && typeof wfRev === "number" && startRev < wfRev
@@ -2165,7 +2173,19 @@ export function WorkflowRuntimePanel(props: {
     const allNodes = nodes()
     const wfEdges = props.snapshot.edges ?? []
 
+    // Mirror the canvas memo's filter: edges that touch a hidden
+    // cancelled / interrupted node need to disappear too, otherwise
+    // the canvas tries to draw bezier curves to ids that aren't in
+    // the positioned-nodes map and they just get skipped silently
+    // (or render to (0,0)).
+    const liveIDs = new Set(
+      allNodes
+        .filter((n) => n.status !== "cancelled" && n.status !== "interrupted")
+        .map((n) => n.id),
+    )
+
     for (const e of wfEdges) {
+      if (!liveIDs.has(e.from_node_id) || !liveIDs.has(e.to_node_id)) continue
       const k = (e as { kind?: string }).kind
       out.push({
         from: e.from_node_id,
@@ -2178,20 +2198,19 @@ export function WorkflowRuntimePanel(props: {
     }
 
     const plan = sandPlan()
-    if (plan && allNodes.length > 0) {
+    if (plan && liveIDs.size > 0) {
       const planID = `sand-table:${plan.id}`
-      // Roots of the execution DAG (in-degree 0 within the wfEdges
-      // graph). The plan node "produces" all of them, so we draw a
-      // support edge from the plan to each — solid lines stay
-      // reserved for true execution dependencies.
+      // Roots of the execution DAG (in-degree 0 within the LIVE
+      // subgraph — we only count edges between still-visible nodes).
       const inDeg = new Map<string, number>()
-      for (const n of allNodes) inDeg.set(n.id, 0)
+      for (const id of liveIDs) inDeg.set(id, 0)
       for (const e of wfEdges) {
-        if (inDeg.has(e.to_node_id)) inDeg.set(e.to_node_id, (inDeg.get(e.to_node_id) ?? 0) + 1)
+        if (!liveIDs.has(e.from_node_id) || !liveIDs.has(e.to_node_id)) continue
+        inDeg.set(e.to_node_id, (inDeg.get(e.to_node_id) ?? 0) + 1)
       }
-      for (const n of allNodes) {
-        if ((inDeg.get(n.id) ?? 0) === 0) {
-          out.push({ from: planID, to: n.id, kind: "support" })
+      for (const id of liveIDs) {
+        if ((inDeg.get(id) ?? 0) === 0) {
+          out.push({ from: planID, to: id, kind: "support" })
         }
       }
     }
