@@ -4,125 +4,9 @@ import z from "zod"
 import { Workflow } from "@/workflow"
 import { errors } from "../../error"
 import { Snapshot } from "@/snapshot"
-import {
-  discussionGet,
-  discussionStart,
-  discussionWrite,
-  SandTableDiscussionSchema,
-} from "@/tool/sand-table"
 
 export function WorkflowRoutes() {
   return new Hono()
-    .get(
-      "/sand_table/:discussionID",
-      describeRoute({
-        summary: "Get sand table discussion",
-        operationId: "workflow.sand_table.get",
-        responses: {
-          200: {
-            description: "Sand table discussion",
-            content: {
-              "application/json": {
-                schema: resolver(SandTableDiscussionSchema),
-              },
-            },
-          },
-          ...errors(404),
-        },
-      }),
-      validator("param", z.object({ discussionID: z.string() })),
-      async (c) => {
-        const result = discussionGet(c.req.valid("param").discussionID)
-        if (!result) return c.body(null, 404)
-        return c.json(result)
-      },
-    )
-    .post(
-      "/sand_table/:discussionID/start",
-      describeRoute({
-        summary: "Confirm and start a paused sand table discussion",
-        description:
-          "Releases a discussion stuck in `awaiting_start` (i.e. when " +
-          "`experimental.sand_table.confirm_before_start` is enabled). The " +
-          "request body may override planner / evaluator agent + model — " +
-          "anything left unset keeps the previously-resolved value from " +
-          "config. Returns the updated state. 404 if the discussion ID is " +
-          "unknown; idempotent no-op (returns the live state) if the " +
-          "discussion has already started.",
-        operationId: "workflow.sand_table.start",
-        responses: {
-          200: {
-            description: "Started sand table discussion",
-            content: {
-              "application/json": {
-                schema: resolver(SandTableDiscussionSchema),
-              },
-            },
-          },
-          ...errors(404),
-        },
-      }),
-      validator("param", z.object({ discussionID: z.string() })),
-      validator(
-        "json",
-        z
-          .object({
-            planner_model: z
-              .object({ providerID: z.string(), modelID: z.string() })
-              .optional(),
-            evaluator_model: z
-              .object({ providerID: z.string(), modelID: z.string() })
-              .optional(),
-            planner_agent: z.string().optional(),
-            evaluator_agent: z.string().optional(),
-          })
-          .optional(),
-      ),
-      async (c) => {
-        const param = c.req.valid("param")
-        const body = c.req.valid("json") ?? {}
-        const result = discussionStart(param.discussionID, body)
-        if (!result) return c.body(null, 404)
-        return c.json(result)
-      },
-    )
-    .post(
-      "/sand_table/:discussionID/message",
-      describeRoute({
-        summary: "Write sand table discussion message",
-        operationId: "workflow.sand_table.message",
-        responses: {
-          200: {
-            description: "Updated sand table discussion",
-            content: {
-              "application/json": {
-                schema: resolver(SandTableDiscussionSchema),
-              },
-            },
-          },
-          ...errors(400, 404),
-        },
-      }),
-      validator("param", z.object({ discussionID: z.string() })),
-      validator(
-        "json",
-        z.object({
-          content: z.string().min(1),
-          role: z.enum(["planner", "evaluator", "orchestrator"]).optional(),
-        }),
-      ),
-      async (c) => {
-        const param = c.req.valid("param")
-        const body = c.req.valid("json")
-        const result = await discussionWrite({
-          discussionID: param.discussionID,
-          content: body.content,
-          role: body.role,
-        })
-        if (!result) return c.body(null, 404)
-        return c.json(result)
-      },
-    )
     .get(
       "/session/:sessionID",
       describeRoute({
@@ -630,6 +514,37 @@ export function WorkflowRoutes() {
       async (c) => {
         return c.json(
           await Workflow.abortNode({
+            nodeID: c.req.valid("param").nodeID,
+            source: "ui",
+            reason: c.req.valid("json")?.reason,
+          }),
+        )
+      },
+    )
+    .post(
+      "/node/:nodeID/uncancel",
+      describeRoute({
+        summary: "Uncancel workflow node",
+        description:
+          "Flip a cancelled node back to `pending` so it can be re-started. Preserves the bound child session so a subsequent start resumes from accumulated transcript. Use when adding follow-up context to the SAME task; for genuinely different work, use INSERT_NODE via workflow_graph_propose instead.",
+        operationId: "workflow.node.uncancel",
+        responses: {
+          200: {
+            description: "Uncancelled workflow node",
+            content: {
+              "application/json": {
+                schema: resolver(Workflow.Node),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator("param", z.object({ nodeID: z.string() })),
+      validator("json", z.object({ reason: z.string().optional() }).optional()),
+      async (c) => {
+        return c.json(
+          await Workflow.uncancelNode({
             nodeID: c.req.valid("param").nodeID,
             source: "ui",
             reason: c.req.valid("json")?.reason,

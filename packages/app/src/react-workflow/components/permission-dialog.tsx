@@ -27,7 +27,6 @@ const permissionLabels: Record<string, { title: string; desc: string }> = {
   'write':       { title: 'Write File',          desc: 'The agent wants to create or overwrite a file' },
   'read':        { title: 'Read File',           desc: 'The agent wants to read a file' },
   'task':        { title: 'Spawn Subagent',      desc: 'The agent wants to create a subagent task' },
-  'sand_table':  { title: 'Sand Table',          desc: 'The agent wants to run a planning discussion' },
 }
 
 function getPermissionLabel(perm: string) {

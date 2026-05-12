@@ -113,6 +113,11 @@ const WorkflowNodeAbortParameters = z.object({
   reason: z.string().optional(),
 })
 
+const WorkflowNodeUncancelParameters = z.object({
+  node_id: z.string(),
+  reason: z.string().optional(),
+})
+
 const WorkflowEdgeCreateParameters = z.object({
   workflow_id: z.string(),
   from_node_id: z.string(),
@@ -627,9 +632,21 @@ export const WorkflowNodeStartTool = Tool.define(
       parameters: WorkflowNodeStartParameters,
       execute: (input: z.infer<typeof WorkflowNodeStartParameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
-          const current = yield* Effect.promise(() => Workflow.getNode(input.node_id))
+          let current = yield* Effect.promise(() => Workflow.getNode(input.node_id))
           if (current.status === "cancelled") {
-            throw new Error(`Workflow node ${current.id} is cancelled and cannot be started again.`)
+            // Auto-uncancel: the master called start on a cancelled node,
+            // which means they intend to revive it. Flip to pending first,
+            // then continue with the normal start flow. The bound session
+            // (if any) is preserved so the slave resumes from accumulated
+            // transcript. If the master wanted a clean abort, they should
+            // not call start in the first place.
+            current = yield* Effect.promise(() =>
+              Workflow.uncancelNode({
+                nodeID: current.id,
+                source: "orchestrator",
+                reason: "auto_uncancel_on_start",
+              }),
+            )
           }
           if (current.status === "completed") {
             throw new Error(
@@ -857,6 +874,36 @@ export const WorkflowNodeAbortTool = Tool.define(
             metadata: {
               workflowID: node.workflow_id,
               nodeID: node.id,
+            },
+            output: format(node),
+          }
+        }).pipe(Effect.orDie),
+    }
+  }),
+)
+
+export const WorkflowNodeUncancelTool = Tool.define(
+  "workflow_node_uncancel",
+  Effect.gen(function* () {
+    return {
+      description:
+        "Revive a cancelled workflow node so it can be re-started. The bound child session is preserved, so a follow-up workflow_node_start resumes the slave from its accumulated transcript instead of starting cold. Use when the user wants to add follow-up context (e.g. debug → fix → retry) on the SAME task. For a genuinely different task, use workflow_graph_propose with INSERT_NODE instead.",
+      parameters: WorkflowNodeUncancelParameters,
+      execute: (input: z.infer<typeof WorkflowNodeUncancelParameters>, _ctx: Tool.Context) =>
+        Effect.gen(function* () {
+          const node = yield* Effect.promise(() =>
+            Workflow.uncancelNode({
+              nodeID: input.node_id,
+              source: "orchestrator",
+              reason: input.reason,
+            }),
+          )
+          return {
+            title: node.title,
+            metadata: {
+              workflowID: node.workflow_id,
+              nodeID: node.id,
+              status: node.status,
             },
             output: format(node),
           }

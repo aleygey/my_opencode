@@ -8,7 +8,6 @@ import {
 import { Spin } from './spin'
 import { SlashPopover } from './slash-popover'
 import { PlanCard, type WorkflowPlan } from './plan-card'
-import { SandTableCard, type SandTableResult } from './sand-table-card'
 import { Markdown } from './markdown'
 import { QuestionDialog, type QuestionRequest } from './question-dialog'
 import { PermissionDialog, type PermissionRequest, type PermissionReply } from './permission-dialog'
@@ -39,8 +38,6 @@ export interface Msg {
   toolCall?: ToolCall
   /** When present, renders a structured plan card instead of normal text */
   plan?: WorkflowPlan
-  /** When present, renders a sand table discussion card */
-  sandTable?: SandTableResult
   /** When present, renders a question dialog */
   question?: QuestionRequest
   /** When present, renders a permission dialog */
@@ -201,10 +198,6 @@ function toolOneLiner(name: string, input?: Record<string, unknown>): string {
     case "task": {
       const desc = str("description") ?? str("subagent_type") ?? ""
       return desc ? `task: ${trim(desc, 50)}` : "task"
-    }
-    case "sand_table": {
-      const topic = str("topic") ?? str("goal") ?? ""
-      return topic ? `plan: ${trim(topic, 50)}` : "plan"
     }
     case "webfetch":
     case "web_fetch":
@@ -1212,17 +1205,6 @@ export function ChatPanel(props: Props) {
             )
           }
           const item = group.item
-
-          // ── Sand table card — left ──
-          if (item.sandTable) {
-            return (
-              <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={{ animationDelay: `${i * 30}ms` }}>
-                <div className="wf-msg-left-content">
-                  <SandTableCard result={item.sandTable} />
-                </div>
-              </div>
-            )
-          }
 
           // ── Question dialog — left ──
           if (item.question) {

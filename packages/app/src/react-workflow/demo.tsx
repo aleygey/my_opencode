@@ -161,23 +161,6 @@ const mockProps: WorkflowAppProps = {
       { id: "m4a", role: "assistant" as const, content: "", timestamp: "14:22:05", subtask: { description: "Cross-compile for ARM target", agent: "Build Agent", prompt: "Compile hello_fancy.c for ARM Linux using gcc-arm-linux-gnueabihf" } },
       // Step finish
       { id: "m4b", role: "assistant" as const, content: "", timestamp: "14:22:10", stepFinish: { reason: "Code generation complete", cost: 0.0042, tokens: { input: 1250, output: 860 } } },
-      // Sand table card
-      {
-        id: "m4c", role: "assistant" as const, content: "", timestamp: "14:22:15",
-        sandTable: {
-          id: "st-001",
-          topic: "Deployment strategy for ARM target",
-          rounds: 2,
-          status: "approved",
-          messages: [
-            { role: "planner", model: "GPT-5.4", content: "## Deployment Plan\n\n1. Verify serial connection at /dev/ttyS0 (115200 baud)\n2. Use `sx` (XMODEM) to transfer binary\n3. Set execute permission via `chmod +x`\n4. Run and capture stdout\n5. Verify output contains expected ANSI sequences", round: 1 },
-            { role: "evaluator", model: "Claude-3.5-Sonnet", content: "REVISE: The plan should include a fallback for when XMODEM is not available on the target. Consider using `cat` with base64 encoding as alternative. Also add a timeout for the serial connection check.", round: 1 },
-            { role: "planner", model: "GPT-5.4", content: "## Revised Deployment Plan\n\n1. Probe serial at /dev/ttyS0 with 3s timeout\n2. Check for `sx` availability; fallback to base64+cat transfer\n3. Transfer binary (~6KB)\n4. `chmod +x ./hello_fancy && ./hello_fancy`\n5. Capture and validate output (expect ANSI escape codes)\n6. Cleanup: remove binary from target", round: 2 },
-            { role: "evaluator", model: "Claude-3.5-Sonnet", content: "APPROVE: The revised plan covers the fallback scenario and includes proper cleanup. The 3s timeout is reasonable for serial probe.", round: 2 },
-          ],
-          finalPlan: "## Revised Deployment Plan\n\n1. Probe serial at /dev/ttyS0 with 3s timeout\n2. Check for `sx` availability; fallback to base64+cat transfer\n3. Transfer binary (~6KB)\n4. `chmod +x ./hello_fancy && ./hello_fancy`\n5. Capture and validate output (expect ANSI escape codes)\n6. Cleanup: remove binary from target",
-        } as any,
-      },
       // Retry
       { id: "m4d", role: "assistant" as const, content: "", timestamp: "14:22:30", retry: { attempt: 2, error: "Connection timeout on /dev/ttyS0 — retrying with different baud rate" } },
       // Running tool

@@ -10,15 +10,10 @@ import type { SlashCommand } from "./commands"
 import type { Task } from "./components/task-sidebar"
 import { NodeSessionView } from "./components/node-session-view"
 import { EventsPanel } from "./components/events-panel"
-import {
-  SandTableSessionView,
-  type SandTableDiscussion,
-} from "./components/sand-table-session-view"
 import { SplitBar, useSplit } from "./components/split"
 import type { WorkflowPlan } from "./components/plan-card"
 import { PlanOverlay } from "./components/plan-overlay"
 import { GraphEditsDrawer } from "./components/graph-edits-drawer"
-import type { SandTableResult } from "./components/sand-table-card"
 import { ChevronUp } from "lucide-react"
 import { initPlugins } from "./plugins"
 import { WorkflowRuntimeProvider, type WorkflowRuntime } from "./runtime-context"
@@ -74,12 +69,6 @@ export type Detail = {
   stateJson: Record<string, unknown>
   codeChanges?: FileDiff[]
   executionLog?: string[]
-  /** Plan-node only: the two sub-agent models contributing to a sand_table
-   * discussion. Surfaced in the Inspector so users can see which model
-   * drafted the plan and which one critiqued it without drilling into the
-   * full Plan view. */
-  plannerModel?: string
-  evaluatorModel?: string
 }
 
 type Agent = {
@@ -173,7 +162,6 @@ export type WorkflowAppProps = {
   agents: Agent[]
   chats: Record<string, Msg[]>
   tokenStats?: TokenStats
-  sandTables?: Record<string, SandTableDiscussion | undefined>
   onSession: (node?: string) => void
   onRefiner?: (node?: string) => void
   onRetrieve?: (node?: string) => void
@@ -213,21 +201,6 @@ export type WorkflowAppProps = {
   onQuestionReply?: (requestID: string, answers: string[][]) => void
   onQuestionReject?: (requestID: string) => void
   onPermissionReply?: (requestID: string, reply: "once" | "always" | "reject", message?: string) => void
-  onSandTableSend?: (nodeID: string, text: string) => void
-  /* Confirms a sand_table discussion that is parked in
-   * `awaiting_start` (set when `experimental.sand_table.confirm_before_start`
-   * is enabled). Parent posts `POST /workflow/sand_table/:id/start` with
-   * the user-chosen agent / model overrides; backend resolves the
-   * parked promise and the rounds begin. */
-  onSandTableStart?: (
-    nodeID: string,
-    overrides: {
-      planner_model?: { providerID: string; modelID: string }
-      evaluator_model?: { providerID: string; modelID: string }
-      planner_agent?: string
-      evaluator_agent?: string
-    },
-  ) => void
   /** Master-session chat history pagination — the underlying sync store
    * only hydrates the first page of messages (80) on session mount. For
    * conversations longer than that, the ChatPanel "Load earlier messages"
@@ -542,24 +515,6 @@ export function WorkflowApp(props: WorkflowAppProps) {
     const sNode = allNodes.find((n) => n.id === sessionNode) ?? null
     const sDetail = props.details[sessionNode] ?? null
     const sMessages = props.chats[sNode?.session ?? ""] ?? []
-    const sSand = props.sandTables?.[sessionNode]
-
-    if (sNode?.type === "plan" && sSand) {
-      return (
-        <SandTableSessionView
-          nodeId={sessionNode}
-          nodeTitle={sNode.title}
-          nodeStatus={sNode.status}
-          discussion={sSand}
-          onBack={() => setSessionNode(null)}
-          onStop={() => props.onStop(sessionNode)}
-          onSend={(text) => props.onSandTableSend?.(sessionNode, text)}
-          onStart={(overrides) => props.onSandTableStart?.(sessionNode, overrides)}
-          agentOptions={props.rootAgents ?? []}
-          modelOptions={props.models ?? []}
-        />
-      )
-    }
 
     return (
       <div className="workflow-make h-full w-full overflow-hidden">
@@ -832,69 +787,13 @@ export function WorkflowApp(props: WorkflowAppProps) {
               })()
             )}
 
-            {/* Dynamic node / sand-table tab body — renders inside the
-              * substrip flow (the close × button is on the substrip tab
-              * itself). The legacy back-button still works as a fallback
-              * for inline cases. */}
+            {/* Dynamic node tab body — renders inside the substrip flow
+              * (the close × button is on the substrip tab itself). */}
             {dynamicTab && (() => {
               const id = dynamicTab.id
               const sNode = allNodes.find((n) => n.id === id) ?? null
               const sDetail = props.details[id] ?? null
               const sMessages = props.chats[sNode?.session ?? ""] ?? []
-              const sSand = props.sandTables?.[id]
-              if (dynamicTab.kind === "sand") {
-                if (!sSand || !sNode) {
-                  return (
-                    <div className="wf-tab-empty">
-                      Sand-table data unavailable for this node.
-                    </div>
-                  )
-                }
-                // Look up the planner / evaluator inner sessions via the
-                // sand-table discussion's participant list; the inner
-                // session messages live in the WorkflowApp `chats` map
-                // keyed by session id. The InnerStreamPane projects them
-                // into reasoning / tool / agent rows.
-                const plannerPart = sSand.participants.find((p) => p.role === "planner")
-                const evaluatorPart = sSand.participants.find((p) => p.role === "evaluator")
-                const projectInner = (msgs: ChatMsg[] | undefined) =>
-                  (msgs ?? []).map((m) => {
-                    let role = m.role as string
-                    if (m.toolCall) role = "tool"
-                    if (m.reasoning?.text) role = "reason"
-                    return {
-                      id: m.id,
-                      role,
-                      text: m.reasoning?.text ?? m.content,
-                      tool: m.toolCall ? (m.toolCall as { name?: string }).name ?? "tool" : undefined,
-                      out: m.toolCall ? ((m.toolCall as { output?: string }).output ?? undefined) : undefined,
-                      t: m.timestamp,
-                      dur: m.thinking?.status === "running" ? "…" : undefined,
-                      stream: m.thinking?.status === "running",
-                    }
-                  })
-                const innerMessages = {
-                  planner: plannerPart ? projectInner(props.chats[plannerPart.sessionID]) : undefined,
-                  evaluator: evaluatorPart ? projectInner(props.chats[evaluatorPart.sessionID]) : undefined,
-                }
-                return (
-                  <div className="flex min-h-0 flex-1">
-                    <SandTableSessionView
-                      nodeId={id}
-                      nodeTitle={sNode.title}
-                      nodeStatus={sNode.status}
-                      discussion={sSand}
-                      onBack={() => undefined}
-                      onStop={() => props.onStop(id)}
-                      onSend={(text) => props.onSandTableSend?.(id, text)}
-                      onStart={(overrides) => props.onSandTableStart?.(id, overrides)}
-                      agentOptions={props.rootAgents ?? []}
-                      modelOptions={props.models ?? []}
-                      innerMessages={innerMessages}
-                    />
-                  </div>
-                )
-              }
               return (
                 <div className="flex min-h-0 flex-1">
                   <NodeSessionView

@@ -304,7 +304,6 @@ const MASTER_AGENTS = new Set([
   "plan",
   "primary",
   "orchestrator",
-  "sandtable",
 ])
 
 function agentLayer(agentName: string): "master" | "slave" {

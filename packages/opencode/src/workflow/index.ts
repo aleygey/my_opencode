@@ -125,6 +125,7 @@ const WorkflowEventKind = z.enum([
   "node.failed",
   "node.paused",
   "node.aborted",
+  "node.uncancelled",
   "node.interrupted",
   "node.cancelled",
   "node.stalled",
@@ -229,7 +230,13 @@ const NODE_TRANSITIONS: Record<WorkflowNodeStatus, ReadonlySet<WorkflowNodeStatu
   // Terminal states require restart (runtime-source) to leave.
   completed: new Set([]),
   failed: new Set(["running", "cancelled"]),
-  cancelled: new Set([]),
+  // `cancelled → pending` is the uncancel path: the master can revive a
+  // cancelled node (preserving its bound session + transcript) so the
+  // slave continues from accumulated context instead of starting cold.
+  // Note: orchestrator-source patches will use this. The session itself
+  // was aborted by `abortNode`, so the slave's in-flight generation is
+  // gone, but the session record + message history is preserved on disk.
+  cancelled: new Set(["pending"]),
 }
 
 function isLegalNodeTransition(from: WorkflowNodeStatus, to: WorkflowNodeStatus): boolean {
@@ -3634,10 +3641,15 @@ export namespace Workflow {
             missing?: string[]
           }
         | {
-            type: "checkpoint_blocked"
+            type: "upstream_checkpoint_blocked"
             nodeID: string
             workflow_id: string
-            blockers: Array<{ id: string; label: string; status: string }>
+            blockers: Array<{
+              id: string
+              label: string
+              status: string
+              upstream_node_id: string
+            }>
           }
       let rejection: Rejection | undefined
       const row = Database.transaction((tx) => {
@@ -3701,30 +3713,62 @@ export namespace Workflow {
               return current
             }
           }
-          // Block completion if any attached checkpoint is still pending or
-          // explicitly failed. `skipped` and `passed` are both acceptable.
-          const openCheckpoints = tx
-            .select()
-            .from(WorkflowCheckpointTable)
-            .where(
-              and(
-                eq(WorkflowCheckpointTable.node_id, current.id),
-                inArray(WorkflowCheckpointTable.status, ["pending", "failed"]),
-              ),
-            )
+          // Checkpoint completion gate REMOVED here on purpose. The slave is
+          // allowed to mark its own node `completed` regardless of attached
+          // checkpoints — those gate "downstream nodes can start consuming
+          // this output", not "the slave can finish its own work". The
+          // start-side guard below enforces the downstream block.
+        }
+
+        // P5+ — checkpoint START gate. Block transitions into a slot-
+        // consuming state (`running` / `ready` / `waiting`) if any UPSTREAM
+        // node has a checkpoint in `pending` or `failed`. Rationale: a
+        // checkpoint attached to node A means "A's output needs human
+        // confirmation before downstream B can use it". The old design
+        // (block A from completing) trapped A's slave in waiting forever
+        // — slave couldn't report success because the runtime refused the
+        // transition. New design: A finishes freely, B blocks on its
+        // upstream's checkpoints.
+        if (
+          (requestedStatus === "running" ||
+            requestedStatus === "ready" ||
+            requestedStatus === "waiting") &&
+          current.status !== requestedStatus &&
+          input.source !== "runtime"
+        ) {
+          const incomingEdges = tx
+            .select({ from_node_id: WorkflowEdgeTable.from_node_id })
+            .from(WorkflowEdgeTable)
+            .where(eq(WorkflowEdgeTable.to_node_id, current.id))
             .all()
-          if (openCheckpoints.length > 0) {
-            rejection = {
-              type: "checkpoint_blocked",
-              nodeID: current.id,
-              workflow_id: current.workflow_id,
-              blockers: openCheckpoints.map((cp) => ({
-                id: cp.id,
-                label: cp.label,
-                status: cp.status,
-              })),
+          const upstreamIDs = incomingEdges
+            .map((e) => e.from_node_id)
+            .filter((id): id is string => typeof id === "string" && id.length > 0)
+          if (upstreamIDs.length > 0) {
+            const blockingCheckpoints = tx
+              .select()
+              .from(WorkflowCheckpointTable)
+              .where(
+                and(
+                  inArray(WorkflowCheckpointTable.node_id, upstreamIDs),
+                  inArray(WorkflowCheckpointTable.status, ["pending", "failed"]),
+                ),
+              )
+              .all()
+            if (blockingCheckpoints.length > 0) {
+              rejection = {
+                type: "upstream_checkpoint_blocked",
+                nodeID: current.id,
+                workflow_id: current.workflow_id,
+                blockers: blockingCheckpoints.map((cp) => ({
+                  id: cp.id,
+                  label: cp.label,
+                  status: cp.status,
+                  upstream_node_id: cp.node_id,
+                })),
+              }
+              return current
             }
-            return current
           }
         }
         const nextStatus = requestedStatus
@@ -3815,7 +3859,7 @@ export namespace Workflow {
             missing: rejection.missing,
           })
         }
-        if (rejection.type === "checkpoint_blocked") {
+        if (rejection.type === "upstream_checkpoint_blocked") {
           await writeEvent({
             workflowID: rejection.workflow_id,
             nodeID: rejection.nodeID,
@@ -3823,12 +3867,12 @@ export namespace Workflow {
             source: input.source,
             kind: "node.blocked",
             payload: {
-              reason: "checkpoint_blocked",
+              reason: "upstream_checkpoint_blocked",
               blockers: rejection.blockers,
               requested_by: input.source,
             },
           })
-          throw new NodeCompletionBlockedError(rejection.nodeID, "checkpoint_blocked", {
+          throw new NodeCompletionBlockedError(rejection.nodeID, "upstream_checkpoint_blocked", {
             blockers: rejection.blockers,
           })
         }
@@ -4289,6 +4333,51 @@ export namespace Workflow {
         },
         event: {
           kind: "node.aborted",
+          payload: input.reason
+            ? {
+                reason: input.reason,
+              }
+            : undefined,
+        },
+      })
+    },
+  )
+
+  /**
+   * Revive a cancelled node so it can be re-started. The bound child
+   * session is preserved (we never delete it on abort), so calling
+   * `workflow_node_start` after `uncancelNode` resumes the slave from
+   * its accumulated transcript — no cold restart. Used when the master
+   * wants to add follow-up context to the same task (debug → fix loop)
+   * instead of paying the cost of a fresh slave.
+   *
+   * NOTE: this only flips state machine status `cancelled → pending`.
+   * The actual restart is the caller's responsibility (workflow_control
+   * with `retry` or `inject_context`, or workflow_node_start). Keeping
+   * the steps separate lets the master decide whether to also inject a
+   * new prompt before the slave gets the next round.
+   */
+  export const uncancelNode = fn(
+    z.object({
+      nodeID: z.string(),
+      source: z.string(),
+      reason: z.string().optional(),
+    }),
+    async (input) => {
+      await state()
+      const node = await getNode(input.nodeID)
+      if (node.status !== "cancelled") return node
+      return patchNode({
+        nodeID: node.id,
+        source: input.source,
+        patch: {
+          status: "pending",
+          // Clear the prior fail_reason so the inspector doesn't keep
+          // showing the cancellation cause once we're back in play.
+          fail_reason: null,
+        },
+        event: {
+          kind: "node.uncancelled",
           payload: input.reason
             ? {
                 reason: input.reason,

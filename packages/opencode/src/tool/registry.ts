@@ -26,7 +26,6 @@ import { Flag } from "@/flag/flag"
 import { Log } from "@/util"
 import { LspTool } from "./lsp"
 import * as Truncate from "./truncate"
-import { SandTableTool, MsgReadTool, MsgWriteTool } from "./sand-table"
 import {
   SerialListPortsTool,
   SerialListTool,
@@ -55,6 +54,7 @@ import {
   WorkflowNodeCreateTool,
   WorkflowNodePauseTool,
   WorkflowNodeStartTool,
+  WorkflowNodeUncancelTool,
   WorkflowPullTool,
   WorkflowReadTool,
   WorkflowUpdateTool,
@@ -150,9 +150,6 @@ export const layer: Layer.Layer<
     const patchtool = yield* ApplyPatchTool
     const skilltool = yield* SkillTool
     const recalltool = yield* RecallExperienceTool
-    const sandtable = yield* SandTableTool
-    const msgread = yield* MsgReadTool
-    const msgwrite = yield* MsgWriteTool
     const serialListPorts = yield* SerialListPortsTool
     const serialList = yield* SerialListTool
     const serialCreate = yield* SerialCreateTool
@@ -168,6 +165,7 @@ export const layer: Layer.Layer<
     const workflowNodeStart = yield* WorkflowNodeStartTool
     const workflowNodePause = yield* WorkflowNodePauseTool
     const workflowNodeAbort = yield* WorkflowNodeAbortTool
+    const workflowNodeUncancel = yield* WorkflowNodeUncancelTool
     const workflowEdgeCreate = yield* WorkflowEdgeCreateTool
     const workflowCheckpointCreate = yield* WorkflowCheckpointCreateTool
     const workflowRead = yield* WorkflowReadTool
@@ -263,9 +261,6 @@ export const layer: Layer.Layer<
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
           plan: Tool.init(plan),
-          sandtable: Tool.init(sandtable),
-          msgread: Tool.init(msgread),
-          msgwrite: Tool.init(msgwrite),
           serialListPorts: Tool.init(serialListPorts),
           serialList: Tool.init(serialList),
           serialCreate: Tool.init(serialCreate),
@@ -281,6 +276,7 @@ export const layer: Layer.Layer<
           workflowNodeStart: Tool.init(workflowNodeStart),
           workflowNodePause: Tool.init(workflowNodePause),
           workflowNodeAbort: Tool.init(workflowNodeAbort),
+          workflowNodeUncancel: Tool.init(workflowNodeUncancel),
           workflowEdgeCreate: Tool.init(workflowEdgeCreate),
           workflowCheckpointCreate: Tool.init(workflowCheckpointCreate),
           workflowRead: Tool.init(workflowRead),
@@ -315,9 +311,6 @@ export const layer: Layer.Layer<
             tool.skill,
             tool.recall,
             tool.patch,
-            tool.sandtable,
-            tool.msgread,
-            tool.msgwrite,
             tool.serialListPorts,
             tool.serialList,
             tool.serialCreate,
@@ -333,6 +326,7 @@ export const layer: Layer.Layer<
             tool.workflowNodeStart,
             tool.workflowNodePause,
             tool.workflowNodeAbort,
+            tool.workflowNodeUncancel,
             tool.workflowEdgeCreate,
             tool.workflowCheckpointCreate,
             tool.workflowRead,

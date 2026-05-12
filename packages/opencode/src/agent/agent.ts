@@ -430,24 +430,6 @@ export const layer = Layer.effect(
             ),
             prompt: PROMPT_RETRIEVE,
           },
-          sandtable: {
-            name: "sandtable",
-            mode: "primary",
-            native: true,
-            hidden: true,
-            prompt:
-              "You are a sand table participant. Use msg_read to see the discussion history, and msg_write to share your output. Be structured and actionable.",
-            permission: Permission.merge(
-              defaults,
-              Permission.fromConfig({
-                msg_read: "allow",
-                msg_write: "allow",
-                "*": "deny",
-              }),
-              user,
-            ),
-            options: {},
-          },
         }
 
         for (const [key, value] of Object.entries(cfg.agent ?? {})) {

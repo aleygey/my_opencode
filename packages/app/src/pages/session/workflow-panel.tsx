@@ -16,7 +16,6 @@ import { getSessionContextMetrics } from "@/components/session/session-context-m
 import { WorkflowApp, type WorkflowAppProps } from "@/react-workflow/app"
 import type { Msg } from "@/react-workflow/components/chat-panel"
 import type { WorkflowPlan } from "@/react-workflow/components/plan-card"
-import type { SandTableDiscussion } from "@/react-workflow/components/sand-table-session-view"
 import { Identifier } from "@/utils/id"
 import { extractPromptFromParts } from "@/utils/prompt"
 import { createElement } from "react"
@@ -242,7 +241,6 @@ type Row = {
   retry?: { attempt: number; error: string }
   agent?: { name: string }
   plan?: WorkflowPlan
-  sandTable?: unknown
   question?: unknown
   permission?: unknown
 }
@@ -517,124 +515,6 @@ const splitPlanFromBody = (body: string): { text: string; plan?: WorkflowPlan } 
   return { text: body }
 }
 
-type SandTableMessage = {
-  role?: string
-  model?: string
-  content?: string
-  round?: number
-}
-
-type SandTableOutput = {
-  sand_table_id?: string
-  status?: string
-  rounds?: number
-  final_plan?: string
-  last_evaluation?: string
-  history?: SandTableMessage[]
-}
-
-const parseSandTableOutput = (raw?: string) => {
-  if (!raw) return
-  try {
-    const parsed = JSON.parse(raw) as SandTableOutput
-    return parsed && typeof parsed === "object" ? parsed : undefined
-  } catch {
-    return
-  }
-}
-
-const sandTableSummary = (messages: Message[], parts: Record<string, Part[] | undefined>) => {
-  let latest:
-    | {
-        message: Message
-        part: ToolPart
-        output?: SandTableOutput
-      }
-    | undefined
-
-  for (const message of messages) {
-    for (const part of parts[message.id] ?? []) {
-      if (part.type !== "tool" || part.tool !== "sand_table") continue
-      latest = {
-        message,
-        part,
-        output:
-          part.state.status === "completed"
-            ? parseSandTableOutput(typeof part.state.output === "string" ? part.state.output : undefined)
-            : undefined,
-      }
-    }
-  }
-
-  if (!latest) return
-
-  const input =
-    latest.part.state.status !== "pending" &&
-    latest.part.state.input &&
-    typeof latest.part.state.input === "object"
-      ? (latest.part.state.input as Record<string, unknown>)
-      : undefined
-  const topic = typeof input?.topic === "string" ? input.topic.trim() : ""
-  const title = topic ? clip(`Plan · ${topic}`, 48) : "Plan via Sand Table"
-  const status =
-    latest.part.state.status === "error"
-      ? "failed"
-      : latest.part.state.status === "running"
-        ? "running"
-        : latest.part.state.status === "pending"
-          ? "pending"
-        : latest.output?.status === "failed"
-          ? "failed"
-          : "completed"
-
-  const output = latest.output
-  const history = Array.isArray(output?.history) ? output.history : []
-  // When the tool output exceeds opencode's size limit, the runtime replaces
-  // `state.output` with a plain-text notice and JSON.parse returns undefined.
-  // The tool still records the real discussion id under `state.metadata`, so
-  // prefer that — otherwise the fetch URL falls back to the tool part id and
-  // every `/workflow/sand_table/:id` request 404s.
-  const metadata =
-    latest.part.state.status !== "pending" && typeof latest.part.state.metadata === "object"
-      ? (latest.part.state.metadata as Record<string, unknown>)
-      : undefined
-  const metadataID = typeof metadata?.sandTableID === "string" ? metadata.sandTableID : undefined
-  // The backend registers each discussion under both its real `discussionID`
-  // (published via ctx.metadata.sandTableID) AND the tool `callID`, so we can
-  // fall back to callID when metadata hasn't propagated yet. `part.id` is a
-  // last-resort fallback that won't match, but we keep it as a defined id so
-  // React keys stay stable.
-  return {
-    id: output?.sand_table_id ?? metadataID ?? latest.part.callID ?? latest.part.id,
-    title,
-    topic: topic || "Planning discussion",
-    status: status as "pending" | "running" | "completed" | "failed",
-    rounds: typeof output?.rounds === "number" ? output.rounds : 0,
-    finalPlan: output?.final_plan,
-    lastEvaluation: output?.last_evaluation,
-    history,
-    sessionID: latest.message.sessionID,
-  }
-}
-
-const sandPlanBadges = (plan: NonNullable<ReturnType<typeof sandTableSummary>>) => {
-  const badges: string[] = []
-  if (plan.rounds > 0) badges.push(`${plan.rounds} round${plan.rounds > 1 ? "s" : ""}`)
-  if (plan.history.length > 0) badges.push(`${plan.history.length} msgs`)
-  if (plan.status === "completed") {
-    badges.push(plan.finalPlan ? "plan ready" : "complete")
-  } else if (plan.status === "failed") {
-    badges.push("failed")
-  } else if (plan.lastEvaluation && /approve/i.test(plan.lastEvaluation)) {
-    badges.push("approved")
-  } else if (plan.lastEvaluation && /revise/i.test(plan.lastEvaluation)) {
-    badges.push("revise")
-  } else if (plan.status === "running") {
-    badges.push("discussing")
-  }
-  return badges.slice(0, 3)
-}
-
 const buildRows = (input: {
   dir: string
   messages: Message[]
@@ -684,35 +564,6 @@ const buildRows = (input: {
     parts
       .filter((part): part is ToolPart => part.type === "tool")
       .forEach((part, idx) => {
-        // Check if this is a sand_table tool call — emit sandTable row
-        if (part.tool === "sand_table" && part.state.status === "completed" && (part.state as any).output) {
-          try {
-            const parsed = JSON.parse((part.state as any).output)
-            rows.push({
-              id: `${msg.id}:sandtable:${idx}`,
-              role: "assistant",
-              label: "Sand Table",
-              time: fmt(msg.time.created),
-              body: "",
-              sandTable: {
-                id: parsed.sand_table_id ?? "",
-                topic: parsed.final_plan?.slice(0, 60) ?? "Planning",
-                rounds: parsed.rounds ?? 0,
-                status: parsed.status ?? "completed",
-                messages: (parsed.history ?? []).map((m: any) => ({
-                  role: m.role ?? "orchestrator",
-                  model: m.model ?? "",
-                  content: m.content ?? "",
-                  round: m.round ?? 1,
-                })),
-                finalPlan: parsed.final_plan,
-              },
-            })
-            return
-          } catch {
-            // Fall through to normal tool rendering
-          }
-        }
         rows.push({
           id: `${msg.id}:tool:${idx}`,
           role: "tool",
@@ -1637,7 +1488,6 @@ export function WorkflowRuntimePanel(props: {
   const params = useParams()
   const [state, setState] = createStore({
     diff: {} as Record<string, FileDiff[] | undefined>,
-    sand: {} as Record<string, SandTableDiscussion | undefined>,
   })
   let el: HTMLDivElement | undefined
   let root: Root | undefined
@@ -1722,11 +1572,6 @@ export function WorkflowRuntimePanel(props: {
     for (const node of nodes()) {
       if (node?.session_id) ids.add(node.session_id)
     }
-    for (const sand of Object.values(state.sand)) {
-      for (const part of sand?.participants ?? []) {
-        if (part.sessionID) ids.add(part.sessionID)
-      }
-    }
     const nodeBySession = new Map<string, WorkflowNode>()
     for (const node of nodes()) {
       if (node?.session_id) nodeBySession.set(node.session_id, node)
@@ -1757,7 +1602,6 @@ export function WorkflowRuntimePanel(props: {
             retry: row.retry,
             agent: row.agent,
             plan: row.plan,
-            sandTable: row.sandTable as Msg["sandTable"],
             question: row.question as Msg["question"],
             permission: row.permission as Msg["permission"],
           })),
@@ -1898,27 +1742,6 @@ export function WorkflowRuntimePanel(props: {
       }),
     )
   })
-  // The plan is derived from the master session's `sand_table` tool call.
-  // During context compaction, history pagination, or transient sync windows
-  // (e.g. brief moments while messages are re-fetched), `sandTableSummary`
-  // can return `undefined` even though a plan still logically exists for
-  // this root — the user reported "plan节点莫名消失" (plan node mysteriously
-  // disappearing). To absorb those flickers, hold onto the last seen plan
-  // keyed by rootID and surface it again whenever the live derivation
-  // briefly drops to undefined. We invalidate the cache when the rootID
-  // changes (so it never leaks across task switches).
-  let sandPlanCache: { rootID: string; value: ReturnType<typeof sandTableSummary> } | undefined
-  const sandPlan = createMemo(() => {
-    const root = rootID()
-    const fresh = sandTableSummary(sync.data.message[root] ?? [], sync.data.part)
-    if (fresh) {
-      sandPlanCache = { rootID: root, value: fresh }
-      return fresh
-    }
-    if (sandPlanCache && sandPlanCache.rootID === root) return sandPlanCache.value
-    return undefined
-  })
-
   // Token stats for the root (master) session. We reuse the same helper
   // the per-session Context tab uses so numbers line up everywhere. The
   // metric is anchored to the *last* assistant message that reported
@@ -1937,121 +1760,11 @@ export function WorkflowRuntimePanel(props: {
       contextLength: ctx.limit,
     }
   })
-  const fetchSandTable = async (discussionID: string) => {
-    const result = await request<SandTableDiscussion>(`/workflow/sand_table/${discussionID}`)
-    setState("sand", discussionID, result)
-    // The planner / evaluator sub-sessions live OUTSIDE the workflow node
-    // graph (they're spawned by the orchestrator's `sand_table` tool, not
-    // registered as workflow nodes), so the regular per-node sync sweep
-    // doesn't pull their messages into `sync.data.message`. Poke each
-    // participant's session into the sync store now that we know its id —
-    // otherwise the InnerStreamPane is stuck on "Waiting for planner to
-    // start thinking…" forever, even after planner has produced output.
-    for (const part of result?.participants ?? []) {
-      if (part.sessionID) void sync.session.sync(part.sessionID).catch(() => undefined)
-    }
-    return result
-  }
-  createEffect(() => {
-    const plan = sandPlan()
-    if (!plan?.id) return
-    // Always fetch once on plan identity change — covers the "user just
-    // opened the plan node" case so the view is not stuck on the fallback
-    // object while waiting for the next poll tick.
-    void fetchSandTable(plan.id).catch(() => undefined)
-    if (plan.status !== "running") return
-    // While the discussion is live, poll aggressively. The server is local
-    // and the payload is small, so 1s keeps planner/evaluator bubbles
-    // showing up nearly as soon as they post without waiting for the user
-    // to exit and re-enter the node.
-    const timer = setInterval(() => {
-      void fetchSandTable(plan.id).catch(() => undefined)
-    }, 1000)
-    onCleanup(() => clearInterval(timer))
-  })
   // Legacy `chainData` / `chainTail` projection is gone — the new
   // layered-graph canvas (`canvas` + `canvasEdges` below) handles
   // fan-in / fan-out natively via bezier edges from a flat node /
   // edge list, so the previous ~370 lines of topological lane
   // decomposition + tail-merge heuristic was dead weight.
-  const detailsWithPlan = createMemo<WorkflowAppProps["details"]>(() => {
-    const base = details()
-    const plan = sandPlan()
-    if (!plan) return base
-    return {
-      ...base,
-      [`sand-table:${plan.id}`]: {
-        id: `sand-table:${plan.id}`,
-        title: plan.title,
-        type: "plan",
-        status: plan.status,
-        result:
-          plan.status === "completed"
-            ? plan.finalPlan
-              ? "Plan ready"
-              : "Discussion complete"
-            : plan.status === "failed"
-              ? "Planning failed"
-              : "Planning in progress",
-        model:
-          [...new Set(plan.history.map((item) => item.model).filter((item): item is string => !!item))]
-            .slice(0, 2)
-            .join(" / ") || "multi-agent",
-        // Pull the first-seen planner / evaluator model out of the
-        // discussion history so the Inspector can surface them as two
-        // distinct chips. Before, the Inspector collapsed both into a
-        // single "X / Y" Model chip and users couldn't tell which model
-        // was drafting vs critiquing without opening the Plan view.
-        plannerModel: plan.history.find((item) => item.role === "planner" && !!item.model)?.model ?? undefined,
-        evaluatorModel: plan.history.find((item) => item.role === "evaluator" && !!item.model)?.model ?? undefined,
-        attempt: `${Math.max(plan.rounds, 0)}`,
-        actions: `${plan.history.length} messages`,
-        sessionId: plan.sessionID,
-        pendingCommands: 0,
-        lastControl: "n/a",
-        lastPull: "n/a",
-        lastUpdate: "n/a",
-        stateJson: {
-          sand_table_id: plan.id,
-          topic: plan.topic,
-          rounds: plan.rounds,
-          status: plan.status,
-          final_plan: plan.finalPlan,
-          last_evaluation: plan.lastEvaluation,
-        },
-        executionLog: plan.history.map((item) => {
-          const role = item.role ? cap(item.role) : "Message"
-          return `${role}${item.round ? ` · round ${item.round}` : ""} · ${clip(item.content ?? "", 140)}`
-        }),
-      },
-    }
-  })
-  const sandTables = createMemo<WorkflowAppProps["sandTables"]>(() => {
-    const plan = sandPlan()
-    if (!plan) return {}
-    return {
-      [`sand-table:${plan.id}`]: state.sand[plan.id] ?? {
-        id: plan.id,
-        topic: plan.topic,
-        context: "",
-        round: plan.rounds,
-        max_rounds: Math.max(plan.rounds, 3),
-        status: (plan.status === "pending" ? "running" : plan.status) as SandTableDiscussion["status"],
-        participants: [],
-        current_plan: plan.finalPlan,
-        last_evaluation: plan.lastEvaluation,
-        messages: plan.history.map((item) => ({
-          role: (item.role === "planner" || item.role === "evaluator" || item.role === "orchestrator"
-            ? item.role
-            : "orchestrator") as "planner" | "evaluator" | "orchestrator",
-          model: item.model ?? "",
-          content: item.content ?? "",
-          round: item.round ?? 1,
-          timestamp: Date.now(),
-        })),
-      },
-    }
-  })
   const flow = createMemo<WorkflowAppProps["flow"]>(() => ({
     goal: goal(props.snapshot),
     phase: cap(props.snapshot.runtime.phase),
@@ -2111,23 +1824,6 @@ export function WorkflowRuntimePanel(props: {
 
     const allNodes = nodes()
     const out: WorkflowAppProps["nodes"] = []
-
-    // Plan (sand_table) head — when present we surface it as a virtual
-    // node at the top of the graph so the planning round is visible
-    // alongside its execution children. The new canvas's layered
-    // layout treats it like any other node; we synthesise edges from
-    // it to all execution-graph roots in `canvasEdges` below.
-    const plan = sandPlan()
-    if (plan) {
-      out.push({
-        id: `sand-table:${plan.id}`,
-        title: plan.title,
-        type: "plan",
-        status: plan.status,
-        session: rootID(),
-        summary: sandPlanBadges(plan),
-      })
-    }
 
     for (const node of allNodes) {
       // Hide cancelled / interrupted leftovers. When the orchestrator
@@ -2191,23 +1887,6 @@ export function WorkflowRuntimePanel(props: {
       })
     }
 
-    const plan = sandPlan()
-    if (plan && liveIDs.size > 0) {
-      const planID = `sand-table:${plan.id}`
-      // Roots of the execution DAG (in-degree 0 within the LIVE
-      // subgraph — we only count edges between still-visible nodes).
-      const inDeg = new Map<string, number>()
-      for (const id of liveIDs) inDeg.set(id, 0)
-      for (const e of wfEdges) {
-        if (!liveIDs.has(e.from_node_id) || !liveIDs.has(e.to_node_id)) continue
-        inDeg.set(e.to_node_id, (inDeg.get(e.to_node_id) ?? 0) + 1)
-      }
-      for (const id of liveIDs) {
-        if ((inDeg.get(id) ?? 0) === 0) {
-          out.push({ from: planID, to: id, kind: "support" })
-        }
-      }
-    }
     return out
   })
 
@@ -2663,51 +2342,6 @@ export function WorkflowRuntimePanel(props: {
       `Revise the current workflow plan using this additional context before execution:\n\n${extra}`,
     )
   }
-  const sendSandTable = async (nodeID: string, text: string) => {
-    const detail = detailsWithPlan()[nodeID]
-    const discussionID =
-      typeof detail?.stateJson?.sand_table_id === "string" ? detail.stateJson.sand_table_id : undefined
-    const body = text.trim()
-    if (!discussionID || !body) return
-    const result = await request<SandTableDiscussion>(`/workflow/sand_table/${discussionID}/message`, {
-      method: "POST",
-      body: {
-        content: body,
-        role: "orchestrator",
-      },
-    })
-    setState("sand", discussionID, result)
-  }
-
-  /* Confirms the awaiting_start pause emitted by sand_table when
-   * `experimental.sand_table.confirm_before_start` is set. The user
-   * picks planner / evaluator agent + model in the inline confirm panel
-   * (rendered by SandTableSessionView when status === "awaiting_start"),
-   * we POST the chosen overrides; the backend resolves the parked
-   * promise inside the tool and the rounds begin. The polling loop
-   * already running for "running" status takes over from there, so we
-   * just need to seed the immediate response so the UI stops showing
-   * the confirm panel without waiting for the next poll tick. */
-  const startSandTable = async (
-    nodeID: string,
-    overrides: {
-      planner_model?: { providerID: string; modelID: string }
-      evaluator_model?: { providerID: string; modelID: string }
-      planner_agent?: string
-      evaluator_agent?: string
-    },
-  ) => {
-    const detail = detailsWithPlan()[nodeID]
-    const discussionID =
-      typeof detail?.stateJson?.sand_table_id === "string" ? detail.stateJson.sand_table_id : undefined
-    if (!discussionID) return
-    const result = await request<SandTableDiscussion>(`/workflow/sand_table/${discussionID}/start`, {
-      method: "POST",
-      body: overrides,
-    })
-    setState("sand", discussionID, result)
-  }
-
   // ── Question & Permission polling ──────────────────────────────────
 
   const [pendingQuestions, setPendingQuestions] = createStore<any[]>([])
@@ -2980,7 +2614,7 @@ export function WorkflowRuntimePanel(props: {
             reason,
           }
         }),
-        details: detailsWithPlan(),
+        details: details(),
         flow: flow(),
         agents: agents(),
         tokenStats: tokenStats(),
@@ -3029,7 +2663,6 @@ export function WorkflowRuntimePanel(props: {
         }),
         chats: chatsWithDialogs(),
         chatExtraCommands: chatExtraCommands(),
-        sandTables: sandTables(),
         onSession: openSession,
         onRefiner: openRefiner,
         onRetrieve: openRetrieve,
@@ -3066,12 +2699,6 @@ export function WorkflowRuntimePanel(props: {
         onQuestionReply: replyQuestion,
         onQuestionReject: rejectQuestion,
         onPermissionReply: replyPermission,
-        onSandTableSend: (nodeID, text) => {
-          void sendSandTable(nodeID, text).catch(() => undefined)
-        },
-        onSandTableStart: (nodeID, overrides) => {
-          void startSandTable(nodeID, overrides).catch(() => undefined)
-        },
         // History pagination for the master (root) session. Without these
         // the ChatPanel "Load earlier messages" button runs out of
         // in-memory groups at 80 messages and the earliest turns are
