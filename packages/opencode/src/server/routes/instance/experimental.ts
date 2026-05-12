@@ -168,7 +168,6 @@ export const ExperimentalRoutes = lazy(() =>
           session_id: z.string().optional(),
           workflow_id: z.string().optional(),
           limit: z.coerce.number().optional(),
-          include_archived: z.coerce.boolean().optional(),
           scope: z.enum(["all", "session", "workflow"]).optional(),
         }),
       ),
@@ -179,7 +178,6 @@ export const ExperimentalRoutes = lazy(() =>
             sessionID: query.session_id,
             workflowID: query.workflow_id,
             limit: query.limit ?? 40,
-            includeArchived: query.include_archived,
             scope: query.scope,
           }),
         )
@@ -647,29 +645,6 @@ export const ExperimentalRoutes = lazy(() =>
       },
     )
     .post(
-      "/refiner/experience/:id/archive",
-      describeRoute({
-        summary: "Archive experience",
-        description: "Flag an experience as archived; overview hides archived experiences by default.",
-        operationId: "experimental.refiner.experience.archive",
-        responses: {
-          200: {
-            description: "Archive result",
-            content: { "application/json": { schema: resolver(z.record(z.string(), z.unknown())) } },
-          },
-          ...errors(400),
-        },
-      }),
-      validator("json", z.object({ archived: z.boolean() })),
-      async (c) => {
-        const id = c.req.param("id")
-        const { archived } = c.req.valid("json")
-        const result = await Refiner.setArchived(id, archived)
-        if (!result.ok) return c.json({ error: result.error, id }, 404)
-        return c.json(result)
-      },
-    )
-    .post(
       "/refiner/experience/:id/review",
       describeRoute({
         summary: "Set experience review status",
@@ -940,17 +915,9 @@ export const ExperimentalRoutes = lazy(() =>
           },
         },
       }),
-      validator(
-        "query",
-        z.object({
-          include_archived: z.coerce.boolean().optional(),
-        }),
-      ),
       async (c) => {
-        const query = c.req.valid("query")
         const overview = await Refiner.overview({
           limit: 10000,
-          includeArchived: query.include_archived ?? false,
           scope: "all",
         })
         const edges = await Refiner.listEdges()
@@ -963,7 +930,6 @@ export const ExperimentalRoutes = lazy(() =>
             task_type: exp.task_type,
             scope: exp.scope,
             categories: exp.categories,
-            archived: !!exp.archived,
             review_status: exp.review_status,
             reviewed_at: exp.reviewed_at,
             observation_count: exp.observations.length,
@@ -1085,13 +1051,12 @@ export const ExperimentalRoutes = lazy(() =>
         z.object({
           q: z.string().min(1),
           limit: z.coerce.number().optional(),
-          include_archived: z.coerce.boolean().optional(),
         }),
       ),
       async (c) => {
         const q = c.req.valid("query")
         return c.json(
-          await Refiner.search({ q: q.q, limit: q.limit, includeArchived: q.include_archived }),
+          await Refiner.search({ q: q.q, limit: q.limit }),
         )
       },
     )

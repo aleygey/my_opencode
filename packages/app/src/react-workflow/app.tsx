@@ -154,6 +154,18 @@ export type WorkflowAppProps = {
    * "no edges known" rendering of nodes alone. The legacy `chains`
    * prop is gone; the layered layout subsumes it. */
   edges?: Array<{ from: string; to: string; kind?: 'flow' | 'support' }>
+  /** Checkpoints attached to nodes. Each checkpoint belongs to exactly
+   * one node (via `nodeId`) and gates that node's completion — the
+   * canvas renders them as small satellite cards anchored to their
+   * owning node so the user can see "there's a manual confirmation
+   * gate here" at a glance. Status drives the card tone. */
+  checkpoints?: Array<{
+    id: string
+    nodeId: string
+    label: string
+    status: 'pending' | 'passed' | 'failed' | 'skipped'
+    reason?: string
+  }>
   tasks?: Task[]
   activeTaskId?: string
   details: Record<string, Detail>
@@ -682,6 +694,7 @@ export function WorkflowApp(props: WorkflowAppProps) {
                 }}
                 nodes={allNodes}
                 edges={canvasEdges}
+                checkpoints={props.checkpoints ?? []}
                 selectedNodeId={pick}
                 onNodeSelect={(id) => {
                   // Selecting a node only updates the inspector — it never

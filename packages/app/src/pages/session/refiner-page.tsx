@@ -103,8 +103,6 @@ type Experience = {
   scope: Scope
   categories?: string[]
   conflicts_with?: string[]
-  archived?: boolean
-  archived_at?: number
   review_status?: ReviewStatus
   reviewed_at?: number
   observations: Observation[]
@@ -215,7 +213,6 @@ type ChainGraphExperienceLite = {
   task_type?: string
   scope?: Scope
   categories?: string[]
-  archived?: boolean
   review_status?: ReviewStatus
   reviewed_at?: number
   observation_count?: number
@@ -382,7 +379,6 @@ async function fetchOverview(input: {
   directory: string
   sessionID: string
   scope: "all" | "session"
-  includeArchived?: boolean
   password?: string
   username?: string
   fetcher?: typeof fetch
@@ -391,7 +387,6 @@ async function fetchOverview(input: {
   url.searchParams.set("session_id", input.sessionID)
   url.searchParams.set("limit", "40")
   url.searchParams.set("scope", input.scope)
-  if (input.includeArchived) url.searchParams.set("include_archived", "true")
   const res = await (input.fetcher ?? fetch)(url, {
     headers: buildHeaders({
       directory: input.directory,
@@ -602,13 +597,8 @@ const fetchCategories = (b: ApiBase): Promise<CategoriesResponse> =>
     return { categories: [] }
   })
 
-const fetchChainGraph = (
-  b: ApiBase,
-  opts?: { includeArchived?: boolean },
-): Promise<ChainGraphResponse> =>
-  apiRequest<ChainGraphResponse>(b, "/experimental/refiner/graph", {
-    query: opts?.includeArchived ? { include_archived: true } : undefined,
-  }).catch((err) => {
+const fetchChainGraph = (b: ApiBase): Promise<ChainGraphResponse> =>
+  apiRequest<ChainGraphResponse>(b, "/experimental/refiner/graph").catch((err) => {
     console.warn("[refiner] graph endpoint unavailable:", err)
     return { experiences: [], edges: [] }
   })
@@ -637,12 +627,6 @@ const apiDeleteExperience = (b: ApiBase, id: string, opts?: { cascade?: boolean;
   apiRequest(b, `/experimental/refiner/experience/${encodeURIComponent(id)}`, {
     method: "DELETE",
     query: { cascade: opts?.cascade, reason: opts?.reason },
-  })
-
-const apiArchiveExperience = (b: ApiBase, id: string, archived: boolean) =>
-  apiRequest(b, `/experimental/refiner/experience/${encodeURIComponent(id)}/archive`, {
-    method: "POST",
-    json: { archived },
   })
 
 const apiReviewExperience = (b: ApiBase, id: string, status: ReviewStatus) =>
@@ -726,12 +710,11 @@ const apiMergeExperiences = (b: ApiBase, ids: string[], reason?: string) =>
     json: { ids, reason },
   })
 
-const apiSearch = (b: ApiBase, q: string, opts?: { limit?: number; includeArchived?: boolean }) =>
+const apiSearch = (b: ApiBase, q: string, opts?: { limit?: number }) =>
   apiRequest<SearchResponse>(b, `/experimental/refiner/search`, {
     query: {
       q,
       limit: opts?.limit,
-      include_archived: opts?.includeArchived,
     },
   })
 
@@ -1652,12 +1635,11 @@ function ImportModal(props: {
 
 function SearchModal(props: {
   initialQuery?: string
-  runSearch: (q: string, includeArchived: boolean) => Promise<SearchResponse>
+  runSearch: (q: string) => Promise<SearchResponse>
   onPick: (experienceID: string) => void
   onClose: () => void
 }) {
   const [q, setQ] = createSignal(props.initialQuery ?? "")
-  const [includeArchived, setIncludeArchived] = createSignal(false)
   const [busy, setBusy] = createSignal(false)
   const [response, setResponse] = createSignal<SearchResponse | undefined>()
   const [error, setError] = createSignal<string | undefined>()
@@ -1673,7 +1655,7 @@ function SearchModal(props: {
     setBusy(true)
     setError(undefined)
     try {
-      const res = await props.runSearch(query, includeArchived())
+      const res = await props.runSearch(query)
       setResponse(res)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -1685,7 +1667,6 @@ function SearchModal(props: {
   createEffect(() => {
     // eslint-disable-next-line @typescript-eslint/no-unused-expressions
     q()
-    includeArchived()
     if (debounceTimer) clearTimeout(debounceTimer)
     debounceTimer = setTimeout(() => void run(), 200)
   })
@@ -1699,16 +1680,6 @@ function SearchModal(props: {
       title="Search refiner memory"
       onClose={props.onClose}
       wide
-      footer={
-        <label class="rf-checkline">
-          <input
-            type="checkbox"
-            checked={includeArchived()}
-            onChange={(e) => setIncludeArchived(e.currentTarget.checked)}
-          />
-          <span>Include archived</span>
-        </label>
-      }
     >
       <input
         type="text"
@@ -1746,9 +1717,6 @@ function SearchModal(props: {
                   <span class="rf-search-hit-kind">
                     {kindDisplay(hit.experience.kind)}
                   </span>
-                  <Show when={hit.experience.archived}>
-                    <span class="rf-search-hit-archived">Archived</span>
-                  </Show>
                 </div>
                 <div class="rf-search-hit-title">{hit.experience.title}</div>
                 <Show when={hit.matches.length > 0}>
@@ -1852,7 +1820,7 @@ function MoveObservationModal(props: {
 
   const candidates = createMemo(() =>
     props.allExperiences
-      .filter((e) => e.id !== props.experience.id && !e.archived)
+      .filter((e) => e.id !== props.experience.id)
       .sort((a, b) => b.last_refined_at - a.last_refined_at),
   )
 
@@ -2806,7 +2774,6 @@ type ExperiencePeekProps = {
   onAction: (a: ActionKind) => void
   onReRefine: () => Promise<void> | void
   onUndo: () => Promise<void> | void
-  onArchiveToggle: () => Promise<void> | void
   onReview: (status: ReviewStatus) => Promise<void> | void
   onToggleMergeSelect: (id: string) => void
   mergeSelected: boolean
@@ -2869,9 +2836,6 @@ function ExperiencePeek(props: ExperiencePeekProps) {
             <span class="rf-peek-catpill-dot" />
             {kindDisplay(exp().kind)}
           </span>
-          <Show when={exp().archived}>
-            <span class="rf-peek-head-archived">Archived</span>
-          </Show>
           <Show when={(exp().review_status ?? "approved") !== "approved"}>
             <span
               class="rf-peek-head-tag"
@@ -3248,15 +3212,15 @@ function ExperiencePeek(props: ExperiencePeekProps) {
       </div>
 
       {/* Restored full action set: Add obs / Edit / Re-refine / Undo /
-        * Archive / Approve / Reject / Re-queue / Delete. Earlier these
-        * were cut to align with the design template's "single Refine
-        * button" but the user wants the full power-user toolkit back. */}
+        * Approve / Reject / Re-queue / Delete. The Archive action was
+        * removed (user never used it; soft-delete-via-archive added no
+        * value over hard delete). */}
       <div class="rf-peek-foot">
         <button
           type="button"
           class="rune-btn"
           data-size="sm"
-          disabled={!!acting() || exp().archived}
+          disabled={!!acting()}
           onClick={() => props.onAction({ type: "augment", experience: exp() })}
           title="追加一条 observation 并触发 re-refine"
         >
@@ -3276,7 +3240,7 @@ function ExperiencePeek(props: ExperiencePeekProps) {
           type="button"
           class="rune-btn"
           data-size="sm"
-          disabled={!!acting() || exp().observations.length === 0 || exp().archived}
+          disabled={!!acting() || exp().observations.length === 0}
           onClick={() => void run("refine", () => props.onReRefine())}
           title="基于当前 observations 重新运行 refiner 模型"
         >
@@ -3291,16 +3255,6 @@ function ExperiencePeek(props: ExperiencePeekProps) {
           title={undoable() ? "回滚到上一次快照" : "没有可回滚的快照"}
         >
           ⤺ Undo
-        </button>
-        <button
-          type="button"
-          class="rune-btn"
-          data-size="sm"
-          disabled={!!acting()}
-          onClick={() => void run("archive", () => props.onArchiveToggle())}
-          title={exp().archived ? "取消归档" : "归档（从概览中隐藏）"}
-        >
-          {exp().archived ? "⬒ Unarchive" : "⬓ Archive"}
         </button>
         <Show when={(exp().review_status ?? "approved") === "pending"}>
           <button
@@ -3372,7 +3326,6 @@ function ExperienceModal(props: {
   onAction: (a: ActionKind) => void
   onReRefine: (id: string) => Promise<void> | void
   onUndo: (id: string) => Promise<void> | void
-  onArchiveToggle: (id: string, archived: boolean) => Promise<void> | void
   onReview: (id: string, status: ReviewStatus) => Promise<void> | void
   onToggleMergeSelect: (id: string) => void
   mergeSelected: (id: string) => boolean
@@ -3419,9 +3372,6 @@ function ExperienceModal(props: {
               onAction={props.onAction}
               onReRefine={() => props.onReRefine(exp().id)}
               onUndo={() => props.onUndo(exp().id)}
-              onArchiveToggle={() =>
-                props.onArchiveToggle(exp().id, !exp().archived)
-              }
               onReview={(status) => props.onReview(exp().id, status)}
               onToggleMergeSelect={props.onToggleMergeSelect}
               mergeSelected={props.mergeSelected(exp().id)}
@@ -3578,7 +3528,6 @@ function ExperienceRow(props: {
       class="rf-row"
       data-palette={palette()}
       data-selected={props.selected ? "true" : "false"}
-      data-archived={props.item.archived ? "true" : "false"}
       data-checked={props.mergeSel ? "true" : "false"}
       data-any-selected={props.anySelected ? "true" : "false"}
       onClick={props.onOpen}
@@ -3609,12 +3558,12 @@ function ExperienceRow(props: {
       <div class="rf-row-body">
         <div class="rf-row-title" title={props.item.title}>
           {highlightMatch(props.item.title, props.query)}
-          <Show when={props.item.archived}>
-            <span class="rf-row-archived">archived</span>
-          </Show>
           {/* Review-status badge — surface pending items so the user can spot
               what auto-routing has admitted but not yet vetted. Approved items
-              show no chip (default state), keeping the list clean. */}
+              show no chip (default state), keeping the list clean. The
+              `.rf-row-archived` class is reused here purely for visual style
+              consistency with the deleted archived badge — it's a generic
+              status pill at this point. */}
           <Show when={(props.item.review_status ?? "approved") === "pending"}>
             <span
               class="rf-row-archived"
@@ -4723,7 +4672,6 @@ function ExperienceGraphView(props: {
   activeTag?: string
   activeEdgeKinds: Set<ChainEdgeKind>
   toggleEdgeKind: (k: ChainEdgeKind) => void
-  includeArchived: boolean
 }) {
   let containerRef: HTMLDivElement | undefined
   const [size, setSize] = createSignal({ w: 960, h: 640 })
@@ -4743,7 +4691,6 @@ function ExperienceGraphView(props: {
     const cat = props.activeCategory
     const tag = props.activeTag
     return src.filter((e) => {
-      if (!props.includeArchived && e.archived) return false
       if (kind && e.kind !== kind) return false
       if (cat && !(e.categories ?? []).includes(cat)) return false
       if (tag && !(e.categories ?? []).includes(tag)) return false
@@ -5112,13 +5059,11 @@ function ExperienceGraphView(props: {
               const exp = node.exp
               const pal = paletteFor(exp.kind)
               const isHovered = () => hovered() === node.id
-              const isArchived = !!exp.archived
               return (
                 <g
                   class="rf-graph-node"
                   data-palette={pal}
                   data-hovered={isHovered() ? "true" : "false"}
-                  data-archived={isArchived ? "true" : "false"}
                   transform={`translate(${node.x},${node.y})`}
                   onMouseEnter={() => setHovered(node.id)}
                   onMouseLeave={() => setHovered(null)}
@@ -5345,7 +5290,6 @@ export default function RefinerPage() {
   const [logEntries, setLogEntries] = createSignal<RefinerLogEntry[]>([])
   const [logsLoading, setLogsLoading] = createSignal(false)
   const [sortMode, setSortMode] = createSignal<"kind" | "recent" | "newest">("kind")
-  const [includeArchived, setIncludeArchived] = createSignal(false)
   const [scopeMode, setScopeMode] = createSignal<"all" | "session">("all")
   const [mergeIDs, setMergeIDs] = createSignal<Set<string>>(new Set())
   const [banner, setBanner] = createSignal<string | undefined>()
@@ -5377,7 +5321,6 @@ export default function RefinerPage() {
       directory: sdk.directory,
       sessionID,
       scope: scopeMode(),
-      includeArchived: includeArchived(),
       password: current.http.password,
       username: current.http.username,
       fetcher: platform.fetch,
@@ -5451,13 +5394,11 @@ export default function RefinerPage() {
     if (viewMode() !== "graph") return
     const b = taxonomyArgs()
     if (!b) return
-    return { base: b, includeArchived: includeArchived() }
+    return { base: b }
   }
   const [chainGraph, { refetch: refetchChainGraph }] = createResource(
     chainGraphArgs,
-    stableFetcher((args: { base: ApiBase; includeArchived: boolean }) =>
-      fetchChainGraph(args.base, { includeArchived: args.includeArchived }),
-    ),
+    stableFetcher((args: { base: ApiBase }) => fetchChainGraph(args.base)),
   )
 
   // Hash deeplink only: when the URL has `#<experience_id>` (e.g. linked from
@@ -5609,28 +5550,14 @@ export default function RefinerPage() {
       .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag))
   })
 
-  // How many experiences are archived. Powers the "已归档 (N)" chip in
-  // the substrip — only render the chip when N > 0 so the chrome stays
-  // quiet on a clean library, and the user gets a clear count of how
-  // many items are recoverable when archive accidents do happen.
-  const archivedCount = createMemo(() => {
-    let n = 0
-    for (const e of overview()?.experiences ?? []) {
-      if (e.archived) n++
-    }
-    return n
-  })
-
-  // Filtered experience list (applies kind/category/query/archived filters)
+  // Filtered experience list (applies kind/category/query filters)
   const visibleExperiences = createMemo(() => {
     const all = overview()?.experiences ?? []
-    const archivedOk = includeArchived()
     const cat = activeCategory()
     const kind = activeKind()
     const tag = activeTag()
     const q = query().trim().toLowerCase()
     return all.filter((e) => {
-      if (!archivedOk && e.archived) return false
       if (cat && !(e.categories ?? []).includes(cat)) return false
       if (tag && !(e.categories ?? []).includes(tag)) return false
       if (kind && e.kind !== kind) return false
@@ -5832,12 +5759,6 @@ export default function RefinerPage() {
     refreshAll()
   }
 
-  const handleArchiveToggle = async (id: string, archived: boolean) => {
-    await withBase((b) => apiArchiveExperience(b, id, archived))
-    flash(archived ? "Archived" : "Unarchived")
-    refreshAll()
-  }
-
   const handleReview = async (id: string, status: ReviewStatus) => {
     await withBase((b) => apiReviewExperience(b, id, status))
     flash(
@@ -5956,10 +5877,10 @@ export default function RefinerPage() {
     refreshAll()
   }
 
-  const runSearch = async (q: string, withArchived: boolean) => {
+  const runSearch = async (q: string) => {
     const b = apiBase()
     if (!b) throw new Error("server not ready")
-    return apiSearch(b, q, { limit: 30, includeArchived: withArchived })
+    return apiSearch(b, q, { limit: 30 })
   }
 
   // ── Merge selection helpers
@@ -6207,29 +6128,6 @@ export default function RefinerPage() {
                 {(t) => <option value={t.tag}>#{t.tag} · {t.count}</option>}
               </For>
             </select>
-            {/* Archived filter chip. Discoverable entry into the archived
-              * set so a mis-archived experience can be found and recovered
-              * without diving into the actions menu. Renders a count of
-              * archived items so the user knows whether the chip will
-              * actually surface anything. Clicking toggles the existing
-              * `includeArchived` signal; archived rows then show in the
-              * list (with the "Unarchive" button on the card). */}
-            <Show when={archivedCount() > 0}>
-              <button
-                type="button"
-                class="rune-refiner-archive-chip"
-                data-active={includeArchived() ? "true" : "false"}
-                onClick={() => setIncludeArchived(!includeArchived())}
-                title={
-                  includeArchived()
-                    ? "正在显示已归档项，点击隐藏"
-                    : `显示已归档项 (${archivedCount()} 项可恢复)`
-                }
-              >
-                <span>已归档</span>
-                <span class="rune-refiner-archive-chip-n">{archivedCount()}</span>
-              </button>
-            </Show>
             {/* Per-message auto-precipitate toggle. Override file (if
               * present) wins; otherwise defaults to `true`. Flipping it
               * off makes the refiner stop running on every user message
@@ -6400,15 +6298,6 @@ export default function RefinerPage() {
               label: "Import bundle",
               onPick: () => setAction({ type: "import" }),
             },
-            { type: "sep" },
-            {
-              type: "toggle",
-              key: "archived",
-              icon: "",
-              label: "Show archived",
-              checked: includeArchived(),
-              onToggle: () => setIncludeArchived(!includeArchived()),
-            },
           ]}
         />
 
@@ -6459,7 +6348,6 @@ export default function RefinerPage() {
               activeTag={activeTag()}
               activeEdgeKinds={graphEdgeKinds()}
               toggleEdgeKind={toggleGraphEdgeKind}
-              includeArchived={includeArchived()}
             />
           </div>
         </Show>
@@ -6494,7 +6382,6 @@ export default function RefinerPage() {
         onAction={setAction}
         onReRefine={(id) => handleReRefine(id)}
         onUndo={(id) => handleUndo(id)}
-        onArchiveToggle={(id, archived) => handleArchiveToggle(id, archived)}
         onReview={(id, status) => handleReview(id, status)}
         onToggleMergeSelect={toggleMergeSelect}
         mergeSelected={(id) => mergeIDs().has(id)}

@@ -180,6 +180,7 @@ export type WorkflowCheckpoint = {
   node_id: string
   label: string
   status: string
+  result_json?: Record<string, unknown>
 }
 
 export type WorkflowSnapshot = {
@@ -2964,6 +2965,21 @@ export function WorkflowRuntimePanel(props: {
         pick: pick(),
         nodes: canvas(),
         edges: canvasEdges(),
+        // Forward checkpoints into the canvas as satellite chips on
+        // each owning node. The snapshot already carries them; the
+        // canvas only needs id + nodeId + label + status to render.
+        checkpoints: (props.snapshot.checkpoints ?? []).map((cp) => {
+          const rj = (cp.result_json ?? {}) as Record<string, unknown>
+          const reason = typeof rj.reason === "string" ? rj.reason : undefined
+          const status = (cp.status as "pending" | "passed" | "failed" | "skipped") ?? "pending"
+          return {
+            id: cp.id,
+            nodeId: cp.node_id,
+            label: cp.label,
+            status,
+            reason,
+          }
+        }),
         details: detailsWithPlan(),
         flow: flow(),
         agents: agents(),

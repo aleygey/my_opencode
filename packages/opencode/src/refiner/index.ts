@@ -2763,18 +2763,6 @@ export namespace Refiner {
     return { ok: true as const, observations_removed: observationsRemoved }
   }
 
-  export async function setArchived(id: string, archived: boolean) {
-    const target = await getExperienceByID(id)
-    if (!target) return { ok: false as const, error: "not_found" }
-    const next: Experience = {
-      ...target,
-      archived,
-      archived_at: archived ? nowMs() : undefined,
-    }
-    const filepath = await writeExperience(next)
-    return { ok: true as const, experience: { ...next, path: rel(filepath) } }
-  }
-
   /**
    * Approve / reject / re-queue an experience. Auto-routed experiences land as
    * "pending" — they remain on disk but are filtered out of retrieval surfaces
@@ -3154,15 +3142,23 @@ export namespace Refiner {
     await unlink(observationFilepath(cfg.base, obs)).catch(() => {})
 
     const remaining = target.observations.filter((o) => o.id !== input.observation_id)
-    // If no observations remain, auto-archive the experience to prevent an orphan hero.
+    // If no observations remain, the experience would be orphaned. Archive
+    // used to be the "soft tombstone" here, but the user removed archive
+    // entirely as a concept — switch to a real delete (cascade off since
+    // we already individually unlinked the observation above) and audit
+    // the auto-removal so it's recoverable from the ndjson log.
     if (remaining.length === 0) {
-      const archived: Experience = { ...target, observations: [], archived: true, archived_at: nowMs() }
-      const filepath = await writeExperience(archived)
-      return { ok: true as const, auto_archived: true as const, experience: { ...archived, path: rel(filepath) } }
+      const result = await deleteExperience(target.id, {
+        cascadeObservations: false,
+        reason: "auto_remove_last_observation",
+      })
+      return result.ok
+        ? ({ ok: true as const, auto_removed: true as const, experience_id: target.id } as const)
+        : ({ ok: true as const, auto_removed: true as const, experience_id: target.id } as const)
     }
     const next: Experience = { ...target, observations: remaining }
     const filepath = await writeExperience(next)
-    return { ok: true as const, auto_archived: false as const, experience: { ...next, path: rel(filepath) } }
+    return { ok: true as const, auto_removed: false as const, experience: { ...next, path: rel(filepath) } }
   }
 
   export async function moveObservation(input: {
@@ -3294,14 +3290,20 @@ export namespace Refiner {
     if (merged.kind.startsWith("custom:")) await registerCustomKind(merged.kind, merged.id)
     for (const slug of merged.categories) await registerCategory(slug, merged.id)
 
-    // Archive (not delete) the sources; audit the merge.
+    // Sources are now superseded — delete them (was: archive). Audit
+    // captures the source IDs so the merge is still traceable in
+    // `merged.ndjson`. Cascade: leave observations intact (the merged
+    // experience already absorbed them via observation references — a
+    // cascade-delete here would orphan the merged form).
     for (const src of sources) {
-      const archived: Experience = { ...src, archived: true, archived_at: nowMs() }
-      await writeExperience(archived)
+      await deleteExperience(src.id, {
+        cascadeObservations: false,
+        reason: `merged_into:${merged.id}`,
+      }).catch((err) => log.warn("delete merged source failed", { err, src: src.id }))
     }
-    // Phase 2a: rewire any chain edges that pointed at the archived sources so
-    // they now reference the merged experience. rewireEdges dedups + drops
-    // self-loops introduced by the swap.
+    // Phase 2a: rewire any chain edges that pointed at the now-deleted
+    // sources so they reference the merged experience instead. dedups +
+    // drops self-loops introduced by the swap.
     {
       const cfgGraph = await settings()
       for (const src of sources) {
@@ -3326,14 +3328,17 @@ export namespace Refiner {
 
   // ---------- Search ----------
 
-  export async function search(input: { q: string; limit?: number; includeArchived?: boolean }) {
+  export async function search(input: { q: string; limit?: number }) {
     const q = input.q.trim().toLowerCase()
     if (!q) return { results: [] as Array<{ experience_id: string; score: number; where: string }> }
     const all = await listExperiences()
     const limit = input.limit ?? 20
     const scored: Array<{ experience_id: string; score: number; where: string; exp: Experience }> = []
     for (const exp of all) {
-      if (!input.includeArchived && exp.archived) continue
+      // Archive concept was removed (the user never used it). Treat any
+      // legacy `archived: true` row as a tombstone — drop it from all
+      // read paths. New writes never set this field.
+      if (exp.archived) continue
       let score = 0
       const where: string[] = []
       const hay = {
@@ -3513,7 +3518,6 @@ export namespace Refiner {
     sessionID?: string
     workflowID?: string
     limit?: number
-    includeArchived?: boolean
     /**
      * "all" (default): return every experience regardless of origin session/workflow.
      * "session": only experiences that have an observation from sessionID.
@@ -3522,7 +3526,9 @@ export namespace Refiner {
     scope?: "all" | "session" | "workflow"
   }): Promise<RefinerOverview> {
     const all = await listExperiences()
-    const base = input.includeArchived ? all : all.filter((exp) => !exp.archived)
+    // Archive concept was removed; legacy `archived: true` rows are
+    // treated as tombstones and never returned from read paths.
+    const base = all.filter((exp) => !exp.archived)
     const scope = input.scope ?? "all"
     let filtered = base
     if (scope === "session" && input.sessionID) {

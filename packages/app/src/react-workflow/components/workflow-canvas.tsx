@@ -71,10 +71,24 @@ export interface RootAgent {
   completedCount: number
 }
 
+/** A checkpoint hangs off its owning node and gates that node's
+ *  completion (the runtime blocks `node.status -> completed` while a
+ *  checkpoint is still `pending` or `failed`). Rendered as a small
+ *  satellite chip docked below the node card so the user can see "this
+ *  node has a manual confirmation gate" at a glance. */
+export interface CanvasCheckpoint {
+  id: string
+  nodeId: string
+  label: string
+  status: 'pending' | 'passed' | 'failed' | 'skipped'
+  reason?: string
+}
+
 interface WorkflowCanvasProps {
   root?: RootAgent
   nodes: Node[]
   edges: CanvasEdge[]
+  checkpoints?: CanvasCheckpoint[]
   selectedNodeId: string | null
   onNodeSelect: (id: string) => void
   onNodeOpen?: (id: string) => void
@@ -374,6 +388,7 @@ export function WorkflowCanvas({
   root,
   nodes,
   edges,
+  checkpoints = [],
   selectedNodeId,
   onNodeSelect,
   onNodeOpen,
@@ -396,6 +411,22 @@ export function WorkflowCanvas({
     for (const p of layout.positioned) m.set(p.id, p)
     return m
   }, [layout.positioned])
+
+  // Group checkpoints by their owning node. The runtime model is 1:N
+  // (one node can have multiple gate checkpoints), so we accumulate a
+  // list rather than picking one. Order: pending/failed first so the
+  // user's eye lands on the blockers; passed/skipped pile after.
+  const checkpointsByNode = useMemo(() => {
+    const m = new Map<string, CanvasCheckpoint[]>()
+    for (const cp of checkpoints) {
+      if (!m.has(cp.nodeId)) m.set(cp.nodeId, [])
+      m.get(cp.nodeId)!.push(cp)
+    }
+    const rank = (s: CanvasCheckpoint['status']) =>
+      s === 'failed' ? 0 : s === 'pending' ? 1 : s === 'passed' ? 2 : 3
+    for (const arr of m.values()) arr.sort((a, b) => rank(a.status) - rank(b.status))
+    return m
+  }, [checkpoints])
 
   const zoomPct = Math.round(canvas.zoom * 100)
   const runningCount = nodes.filter((n) => n.status === 'running').length
@@ -542,27 +573,48 @@ export function WorkflowCanvas({
                   )
                 })}
               </svg>
-              {layout.positioned.map((n) => (
-                <div
-                  key={n.id}
-                  className="wf-r2-node-wrap"
-                  style={{
-                    position: 'absolute',
-                    left: n.x,
-                    top: n.y,
-                    width: NODE_W,
-                    height: NODE_H,
-                  }}
-                >
-                  <WorkflowNode
-                    {...n}
-                    isSelected={selectedNodeId === n.id}
-                    onClick={() => onNodeSelect(n.id)}
-                    onDoubleClick={() => onNodeOpen?.(n.id)}
-                    onArrowClick={() => onNodeOpen?.(n.id)}
-                  />
-                </div>
-              ))}
+              {layout.positioned.map((n) => {
+                const cps = checkpointsByNode.get(n.id) ?? []
+                return (
+                  <div
+                    key={n.id}
+                    className="wf-r2-node-wrap"
+                    style={{
+                      position: 'absolute',
+                      left: n.x,
+                      top: n.y,
+                      width: NODE_W,
+                    }}
+                  >
+                    <WorkflowNode
+                      {...n}
+                      isSelected={selectedNodeId === n.id}
+                      onClick={() => onNodeSelect(n.id)}
+                      onDoubleClick={() => onNodeOpen?.(n.id)}
+                      onArrowClick={() => onNodeOpen?.(n.id)}
+                    />
+                    {cps.length > 0 && (
+                      <div className="wf-r2-cp-stack" aria-label="Checkpoints">
+                        {cps.map((cp) => (
+                          <div
+                            key={cp.id}
+                            className="wf-r2-cp-chip"
+                            data-status={cp.status}
+                            title={
+                              (cp.reason ? `${cp.label} — ${cp.reason}` : cp.label) +
+                              ` (${cp.status})`
+                            }
+                          >
+                            <span className="wf-r2-cp-chip-dot" />
+                            <span className="wf-r2-cp-chip-label">{cp.label}</span>
+                            <span className="wf-r2-cp-chip-status">{cp.status}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
             </div>
           ) : (
             <div className="flex h-32 items-center justify-center text-[12px] text-[var(--wf-dim)]">

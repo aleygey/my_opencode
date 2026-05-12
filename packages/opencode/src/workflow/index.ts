@@ -1545,13 +1545,26 @@ export namespace Workflow {
       },
       event: {
         kind: "node.attempt_reported",
+        // Event payload deliberately strips the heavy fields (full `needs`,
+        // `actions[]` with tool evidence, `errors[]` stacks, and the verbose
+        // `summary` body). Each attempt_reported event used to carry 2–3 KB
+        // of duplicate state because slaves can fire 5–10 reports per
+        // attempt, and master saw the same payload twice (once in events,
+        // once in `state_json.attempt_history`). The narrative renderer
+        // pulls from attempt_history for the decision-grade view; the
+        // event feed only needs to know "an attempt happened, what was the
+        // shape." A truncated summary (~120 chars) preserves enough signal
+        // for the orchestrator to spot a recurring failure pattern at the
+        // event-feed level without inflating context.
         payload: {
           attempt: rep.attempt,
           result: rep.result,
-          summary: rep.summary,
-          needs: rep.needs,
-          actions: rep.actions,
-          errors: rep.errors,
+          summary_short:
+            typeof rep.summary === "string" && rep.summary.trim()
+              ? rep.summary.trim().slice(0, 120) + (rep.summary.length > 120 ? "…" : "")
+              : undefined,
+          needs_count: Array.isArray(rep.needs) ? rep.needs.length : 0,
+          errors_count: Array.isArray(rep.errors) ? rep.errors.length : 0,
           message_id: rep.message_id,
         },
       },

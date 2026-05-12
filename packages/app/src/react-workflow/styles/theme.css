@@ -7207,11 +7207,91 @@
   z-index: 2;
 }
 
+/* Checkpoint satellite stack — sits directly under the node card so the
+ * user can see at a glance "this node has a manual gate" without
+ * opening the inspector. Status drives the dot/text colour (pending =
+ * amber waiting, failed = red blocking, passed = green ok, skipped =
+ * muted grey). Multiple checkpoints stack vertically; chips inherit
+ * the node card width so the visual grouping with the card is obvious.
+ * The stack does NOT affect graph layout — node positions are computed
+ * from the regular edge set; checkpoints are pure annotations. */
+.workflow-make .wf-r2-cp-stack {
+  position: absolute;
+  top: calc(70px + 4px); /* NODE_H + small gap */
+  left: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  pointer-events: none; /* tooltip via title attr; chips themselves don't intercept clicks */
+}
+.workflow-make .wf-r2-cp-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  height: 18px;
+  font-size: 9.5px;
+  border-radius: 9px;
+  border: 1px solid var(--wf-line);
+  background: var(--wf-card);
+  color: var(--wf-ink-soft);
+  pointer-events: auto;
+  cursor: default;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.workflow-make .wf-r2-cp-chip-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--wf-line-strong);
+}
+.workflow-make .wf-r2-cp-chip-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+}
+.workflow-make .wf-r2-cp-chip-status {
+  font-family: var(--wf-font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--wf-dim);
+  flex: none;
+}
+/* Status palette. Reuses the existing semantic tokens (wf-warn, wf-err,
+ * wf-ok, wf-dim) so theme switches stay consistent. */
+.workflow-make .wf-r2-cp-chip[data-status="pending"] {
+  border-color: var(--wf-warn, oklch(0.70 0.15 70));
+  color: var(--wf-ink);
+}
+.workflow-make .wf-r2-cp-chip[data-status="pending"] .wf-r2-cp-chip-dot {
+  background: var(--wf-warn, oklch(0.70 0.15 70));
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--wf-warn, oklch(0.70 0.15 70)) 25%, transparent);
+}
+.workflow-make .wf-r2-cp-chip[data-status="failed"] {
+  border-color: var(--wf-err, oklch(0.55 0.18 25));
+  color: var(--wf-ink);
+}
+.workflow-make .wf-r2-cp-chip[data-status="failed"] .wf-r2-cp-chip-dot {
+  background: var(--wf-err, oklch(0.55 0.18 25));
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--wf-err, oklch(0.55 0.18 25)) 25%, transparent);
+}
+.workflow-make .wf-r2-cp-chip[data-status="passed"] .wf-r2-cp-chip-dot {
+  background: var(--wf-ok, oklch(0.60 0.12 150));
+}
+.workflow-make .wf-r2-cp-chip[data-status="skipped"] {
+  opacity: 0.6;
+}
+
 /* Node card — design-spec compact 200×70, state-tinted left bar. */
 .workflow-make .wf-r2-node {
   position: relative;
   width: 100%;
-  height: 100%;
+  height: 70px;
   padding: 0;
   background: var(--wf-card);
   border: 1px solid var(--wf-line);

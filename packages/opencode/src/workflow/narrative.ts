@@ -30,12 +30,17 @@
  */
 import type { Workflow } from "./index"
 
-const MAX_NEEDS = 6
-const MAX_ERRORS = 4
-const MAX_ATTEMPTS_SHOWN = 2
-const MAX_ACTIONS_PER_ATTEMPT = 6
-const MAX_EVENTS_SHOWN = 30
-const SUMMARY_TRUNC = 280
+// Caps tuned for "every workflow_read should cost the master ≤ ~10 KB of
+// context". Previous values (30 events, 2 attempts, 280-char summaries)
+// blew past 25 KB on an active 5-node graph because each attempt_reported
+// event also carried the full attempt payload — see workflow/index.ts
+// where the event payload was trimmed to summary_short + counts.
+const MAX_NEEDS = 5
+const MAX_ERRORS = 3
+const MAX_ATTEMPTS_SHOWN = 1
+const MAX_ACTIONS_PER_ATTEMPT = 4
+const MAX_EVENTS_SHOWN = 12
+const SUMMARY_TRUNC = 160
 
 const truncate = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 
@@ -171,23 +176,32 @@ function renderNode(node: Workflow.Node, now: number): string[] {
 function renderEventLine(ev: Workflow.EventInfo, now: number): string {
   const when = relTime(now, ev.time_created)
   const node = ev.node_id ? ` node:${ev.node_id.slice(0, 8)}` : ""
-  // Compact one-line payload: stringify but cap length and strip noise.
-  const payload = ev.payload as Record<string, unknown>
+  // Compact one-line payload: pull a known small set of decision-relevant
+  // keys, skip everything else. The slave used to bury the full attempt
+  // body (summary + needs[] + actions[] + errors[]) in
+  // `node.attempt_reported` payloads — that's now trimmed at the emit
+  // site to `summary_short` + counts, so this renderer only needs to
+  // surface those compact fields.
+  const payload = ev.payload as Record<string, unknown> | undefined
   const interesting: string[] = []
   for (const k of [
     "status",
     "result_status",
     "fail_reason",
     "reason",
-    "kind",
     "command",
     "from",
     "to",
     "attempt",
     "result",
+    "summary_short",
+    "needs_count",
+    "errors_count",
   ] as const) {
     const v = payload?.[k]
-    if (v !== undefined && v !== null) interesting.push(`${k}=${typeof v === "string" ? truncate(v, 80) : JSON.stringify(v)}`)
+    if (v === undefined || v === null) continue
+    if (typeof v === "number" && v === 0) continue
+    interesting.push(`${k}=${typeof v === "string" ? truncate(v, 100) : JSON.stringify(v)}`)
   }
   const tail = interesting.length ? ` { ${interesting.join(", ")} }` : ""
   return `- #${ev.id} ${ev.kind}${node} (${when})${tail}`
