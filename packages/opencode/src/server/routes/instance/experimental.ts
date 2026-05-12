@@ -951,6 +951,62 @@ export const ExperimentalRoutes = lazy(() =>
         )
       },
     )
+    .get(
+      "/refiner/global-rerefine/plan",
+      describeRoute({
+        summary: "Build a global re-refine plan",
+        description:
+          "Scan the entire experience library and surface candidates for cleanup: mergeable duplicates, dead tags, orphans, stale entries, and explicit conflicts. Deterministic and idempotent — safe to call repeatedly. The user reviews the returned JSON and acts via the existing merge / delete / re-refine endpoints.",
+        operationId: "experimental.refiner.globalReRefinePlan",
+        responses: {
+          200: {
+            description: "Re-refine plan",
+            content: { "application/json": { schema: resolver(z.record(z.string(), z.unknown())) } },
+          },
+        },
+      }),
+      validator(
+        "query",
+        z.object({
+          stale_after_ms: z.coerce.number().int().nonnegative().optional(),
+          merge_threshold: z.coerce.number().min(0).max(1).optional(),
+        }),
+      ),
+      async (c) => {
+        const q = c.req.valid("query")
+        return c.json(
+          await Refiner.globalReRefinePlan({
+            staleAfterMs: q.stale_after_ms,
+            mergeThreshold: q.merge_threshold,
+          }),
+        )
+      },
+    )
+    .post(
+      "/refiner/observe-workflow/:workflow_id",
+      describeRoute({
+        summary: "Sediment a completed workflow into the experience library",
+        description:
+          "Distill a workflow's lifecycle (node sequence, failure signals, final outcome) into a `workflow_pattern` experience. Auto-fires on workflow.finalize; this endpoint is the manual trigger for sediment-after-the-fact or re-runs.",
+        operationId: "experimental.refiner.observeWorkflow",
+        responses: {
+          200: {
+            description: "Observe result",
+            content: { "application/json": { schema: resolver(z.record(z.string(), z.unknown())) } },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      async (c) => {
+        const workflowID = c.req.param("workflow_id")
+        return c.json(
+          await Refiner.observeWorkflowCompletion({
+            workflowID,
+            source: "manual",
+          }),
+        )
+      },
+    )
     .post(
       "/refiner/ingest-session/:session_id",
       describeRoute({

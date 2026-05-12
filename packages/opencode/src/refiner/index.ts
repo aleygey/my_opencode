@@ -45,6 +45,11 @@ const CORE_KINDS = [
   "domain_knowledge",
   "preference_style",
   "pitfall_or_caveat",
+  // Distilled from a completed workflow's lifecycle (node sequence, tool
+  // errors, success path, recovery moves). Surfaced to the orchestrator
+  // when starting a new workflow of similar shape so it can recall
+  // "how a task like this went last time" — see `observeWorkflowCompletion`.
+  "workflow_pattern",
 ] as const
 type CoreKind = (typeof CORE_KINDS)[number]
 type Kind = CoreKind | `custom:${string}`
@@ -100,6 +105,8 @@ function applyKindConstraint<T>(schema: T): T {
 const CORE_KIND_DESCRIPTIONS: Record<CoreKind, string> = {
   workflow_rule: "流程规则（顺序/因果）：一定要先做 A 再做 B；某事必须发生在某事之后",
   workflow_gap: "流程缺口：slave agent 或当前流程缺少的工具/资料/步骤，用户补齐了使其可复用",
+  workflow_pattern:
+    "工作流模式（整段任务的成功/失败套路）：一个完成的工作流的节点序列 + 关键失败信号 + 恢复路径，下次相似任务可作蓝本",
   know_how: "操作性指导（怎么做）：用户告诉 agent 某件事应当如何执行",
   constraint_or_policy: "硬约束/禁令：永远不要做什么；合规、审批、命名等静态规则",
   domain_knowledge: "领域/事实知识：是什么、叫什么、属于什么；业务概念、环境事实",
@@ -420,7 +427,12 @@ const RefineOutputSchema = z.object({
   categories: z
     .array(z.string())
     .optional()
-    .describe("可选。0–4 个 kebab-case 标签 slug，优先复用已存在的"),
+    .describe(
+      "可选。0–4 个 kebab-case 标签 slug，优先复用已存在的。" +
+        "支持两级层次：用单个 `/` 分隔父子，如 `infra/network` 或 `tooling/build-flash`。" +
+        "**最多两级**——多余的 `/` 会被规范化为连字符。父类是粗分类，子类是具体话题。" +
+        "如果不确定子类，只给父类即可。",
+    ),
   conflicts_with: z
     .array(z.string())
     .optional()
@@ -640,13 +652,32 @@ function uniqueStrings(items: Array<string | undefined | null>): string[] {
 }
 
 // Normalize a free-form category label into a stable slug:
-// lowercase, whitespace collapsed, non-[a-z0-9-] stripped.
+// lowercase, whitespace collapsed, non-[a-z0-9-] stripped. Supports the
+// optional two-level form `parent/child` introduced in C4 — the slash is
+// preserved as the hierarchy separator and at most ONE separator is
+// allowed (max two levels). Extra slashes are flattened into hyphens so
+// stray punctuation can never produce e.g. `infra/network/websocket`.
 function slugifyCategory(label: string): string {
-  return compactText(label)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 48)
+  const compact = compactText(label).toLowerCase()
+  // Split at most ONE separator. `slice(0,2)` caps depth at parent/child.
+  const parts = compact
+    .split("/")
+    .map((seg) => seg.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, ""))
+    .filter((seg) => seg.length > 0)
+    .slice(0, 2)
+  return parts.join("/").slice(0, 64)
+}
+
+/**
+ * Parse a (possibly two-level) tag slug into its parent / child halves.
+ * Single-level tags surface only `parent`. Used by both backend
+ * (validation, retrieval grouping) and frontend (substrip tag dropdown
+ * groups by parent so a library with many sub-tags reads as a tree).
+ */
+export function parseTagPath(tag: string): { parent: string; child?: string } {
+  const idx = tag.indexOf("/")
+  if (idx === -1) return { parent: tag }
+  return { parent: tag.slice(0, idx), child: tag.slice(idx + 1) }
 }
 
 function rel(filepath: string) {
@@ -2649,10 +2680,296 @@ export namespace Refiner {
     return judgePreviousTurnUsage({ sessionID: input.sessionID, asOf: input.asOf ?? Date.now() })
   }
 
+  /**
+   * Per-workflow sediment hook. When a workflow finalizes (or the user
+   * clicks "Sediment workflow" manually), distill its outcome into an
+   * experience tagged `workflow_pattern` so future workflows of similar
+   * shape can pull the lesson via retrieval.
+   *
+   * Input synthesis (kept compact so the LLM doesn't drown in transcript):
+   * - workflow title + objective + final status + outcome reason
+   * - node sequence with agent + final status + summary excerpt
+   * - any node.budget_exceeded / failed / blocked events as failure signals
+   * - top-level usage rollup (cost, tokens, tool calls)
+   *
+   * Routed through the same `observeObservation` pipeline so all the
+   * existing refinement / dedup / merging machinery applies. The
+   * resulting experience is auto-routed as `pending` unless the user has
+   * disabled the review gate.
+   */
+  export async function observeWorkflowCompletion(input: {
+    workflowID: string
+    source?: "auto" | "manual"
+  }) {
+    const cfg = await settings()
+    if (!cfg.enabled) return { ok: false as const, reason: "refiner_disabled" }
+    // Auto-trigger respects `auto_enabled` (the same per-project switch
+    // that gates per-message refining); manual triggers always run.
+    const source = input.source ?? "auto"
+    if (source === "auto" && !cfg.auto_enabled) {
+      return { ok: false as const, reason: "auto_disabled" }
+    }
+
+    const snapshot = await Workflow.get(input.workflowID).catch(() => undefined)
+    if (!snapshot) return { ok: false as const, reason: "workflow_not_found" }
+
+    // Compact human-readable description of the run. We keep this terse
+    // because the refiner LLM will receive it as the `user_text` of a
+    // synthetic observation; long verbatim transcripts blow the prompt.
+    const wf = snapshot.workflow
+    const nodes = snapshot.nodes ?? []
+    const events = snapshot.events ?? []
+    const failureKinds = new Set([
+      "node.failed",
+      "node.blocked",
+      "node.budget_exceeded",
+      "node.attempt_limit_reached",
+      "checkpoint.failed",
+    ])
+    const failureEvents = events.filter((e) => failureKinds.has(e.kind))
+
+    const lines: string[] = []
+    lines.push(`Workflow ${wf.title} finalized with status ${wf.status}.`)
+    if (wf.summary?.objective) lines.push(`Objective: ${wf.summary.objective}`)
+    if (wf.result_json && typeof wf.result_json === "object") {
+      const r = wf.result_json as Record<string, unknown>
+      if (typeof r.reason === "string") lines.push(`Outcome reason: ${r.reason}`)
+      if (typeof r.summary === "string") lines.push(`Outcome summary: ${r.summary}`)
+    }
+    lines.push("")
+    lines.push("Nodes:")
+    for (const n of nodes) {
+      const sj = (n.state_json ?? {}) as Record<string, unknown>
+      const hist = Array.isArray(sj.attempt_history) ? (sj.attempt_history as unknown[]) : []
+      const last = hist[hist.length - 1] as Record<string, unknown> | undefined
+      const summary = typeof last?.summary === "string" ? last.summary.trim().slice(0, 200) : ""
+      lines.push(
+        `- ${n.title} (@${n.agent}) → ${n.status}/${n.result_status}` +
+          (summary ? `: ${summary}` : ""),
+      )
+    }
+    if (failureEvents.length > 0) {
+      lines.push("")
+      lines.push("Failure signals:")
+      for (const e of failureEvents.slice(-8)) {
+        const p = (e.payload ?? {}) as Record<string, unknown>
+        const reason = typeof p.reason === "string" ? p.reason : ""
+        const fail = typeof p.fail_reason === "string" ? p.fail_reason : ""
+        lines.push(
+          `- ${e.kind}${e.node_id ? ` (${e.node_id.slice(0, 8)})` : ""}` +
+            (reason || fail ? ` — ${(reason || fail).slice(0, 160)}` : ""),
+        )
+      }
+    }
+    if (snapshot.runtime?.usage) {
+      const u = snapshot.runtime.usage
+      lines.push("")
+      lines.push(
+        `Usage: ${u.input_tokens + u.cache_read_tokens + u.cache_write_tokens} in, ` +
+          `${u.output_tokens} out, ${u.tool_calls} tools, $${u.cost_usd.toFixed(4)}`,
+      )
+    }
+
+    const text = lines.join("\n")
+    // Synthetic observation — sessionID = workflow's root, messageID = a
+    // stable derived id so re-runs of `observeWorkflowCompletion` for
+    // the same workflow get deduped via the standard observation hash.
+    const sessionID = wf.session_id ?? `workflow:${wf.id}`
+    const messageID = `workflow-completion:${wf.id}:${wf.status}`
+    const observation: Observation = {
+      id: `${sessionID}:${messageID}:${nowMs()}`,
+      observed_at: nowMs(),
+      session_id: sessionID,
+      message_id: messageID,
+      user_text: text,
+      source: source === "manual" ? "manual_augment" : "session",
+      agent_context: {
+        session_history_excerpt: [],
+        workflow_snapshot: {
+          workflow_id: wf.id,
+          phase: snapshot.runtime?.phase ?? wf.status,
+          recent_events: events.slice(-10).map((e) => ({
+            kind: e.kind,
+            at: e.time_created,
+            summary:
+              (typeof (e.payload as Record<string, unknown> | undefined)?.summary === "string"
+                ? ((e.payload as Record<string, unknown>).summary as string)
+                : "") || e.kind,
+          })),
+        },
+      },
+    }
+
+    await observeObservation(observation).catch((error) => {
+      log.warn("observeWorkflowCompletion: observeObservation failed", {
+        error,
+        workflowID: wf.id,
+      })
+    })
+    return { ok: true as const, observation_id: observation.id }
+  }
+
   /** Read aggregated injection / usage counters for all experiences. */
   export async function usageStats() {
     const { readStats } = await import("./usage")
     return readStats()
+  }
+
+  /**
+   * Global re-refine analysis. Scans the entire experience library and
+   * surfaces candidates for cleanup the user might want to act on:
+   *
+   *   - **mergeable**: experience pairs with high abstract / title overlap
+   *     (string Jaccard ≥ 0.55) but distinct IDs — likely duplicates the
+   *     refiner failed to coalesce on the per-message path.
+   *   - **dead_tag**: tags that appear only on a single experience —
+   *     candidates for renaming into something more general or rolling
+   *     into a parent (paired with the C4 two-level tag rollout).
+   *   - **orphan**: experiences with 0 observations (left over from
+   *     observation moves / cascades) — candidates for delete.
+   *   - **stale**: experiences whose `last_refined_at` is > 90 days ago
+   *     AND have 0 retrieval injections — candidates for archival /
+   *     delete after user review.
+   *   - **conflicts**: pairs explicitly listed in `conflicts_with` —
+   *     the user is reminded these still need resolution.
+   *
+   * Intentionally deterministic for v1 (no LLM) — the analysis is fast
+   * and idempotent so the user can run it any time, review the JSON in
+   * the UI, and act through the existing merge / delete / re-refine
+   * endpoints. A future v2 can layer an LLM pass on top of these
+   * candidates to produce concrete rewrite suggestions, gated by the
+   * `question` tool for per-row confirmation.
+   */
+  export async function globalReRefinePlan(input?: {
+    /** Override the staleness cutoff in ms. Default 90 days. */
+    staleAfterMs?: number
+    /** Override the merge-similarity threshold (Jaccard 0–1). Default 0.55. */
+    mergeThreshold?: number
+  }) {
+    const all = (await listExperiences()).filter((e) => !e.archived)
+    const usage = await (async () => {
+      try {
+        const { readStats } = await import("./usage")
+        return await readStats()
+      } catch {
+        return undefined
+      }
+    })()
+    const staleAfter = input?.staleAfterMs ?? 90 * 24 * 60 * 60 * 1000
+    const mergeThreshold = input?.mergeThreshold ?? 0.55
+    const now = nowMs()
+
+    // ---- mergeable pairs by token-Jaccard on title + abstract ----
+    const tokenize = (s: string): Set<string> => {
+      const out = new Set<string>()
+      const text = s.toLowerCase().normalize("NFKC")
+      // Keep CJK characters whole (each char is one token); split latin on
+      // word boundaries. Stop-words are ignored at length<2 since CJK
+      // characters are length 1 — the threshold lives in the Jaccard.
+      const re = /[\p{Letter}\p{Number}]+|[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/gu
+      let m: RegExpExecArray | null
+      while ((m = re.exec(text)) !== null) {
+        const tok = m[0]
+        if (tok.length >= 2 || /\p{Script=Han}/u.test(tok)) out.add(tok)
+      }
+      return out
+    }
+    const jaccard = (a: Set<string>, b: Set<string>) => {
+      if (a.size === 0 && b.size === 0) return 0
+      let inter = 0
+      for (const t of a) if (b.has(t)) inter++
+      const uni = a.size + b.size - inter
+      return uni === 0 ? 0 : inter / uni
+    }
+    const tokenized = all.map((e) => ({
+      exp: e,
+      tokens: tokenize(`${e.title} ${e.abstract}`),
+    }))
+    const mergeable: Array<{ a_id: string; b_id: string; similarity: number; a_title: string; b_title: string }> = []
+    for (let i = 0; i < tokenized.length; i++) {
+      for (let j = i + 1; j < tokenized.length; j++) {
+        const s = jaccard(tokenized[i].tokens, tokenized[j].tokens)
+        if (s >= mergeThreshold) {
+          mergeable.push({
+            a_id: tokenized[i].exp.id,
+            b_id: tokenized[j].exp.id,
+            similarity: Math.round(s * 100) / 100,
+            a_title: tokenized[i].exp.title,
+            b_title: tokenized[j].exp.title,
+          })
+        }
+      }
+    }
+    mergeable.sort((x, y) => y.similarity - x.similarity)
+
+    // ---- dead tags ----
+    const tagCount = new Map<string, number>()
+    for (const e of all) {
+      for (const c of e.categories ?? []) {
+        tagCount.set(c, (tagCount.get(c) ?? 0) + 1)
+      }
+    }
+    const dead_tag = [...tagCount.entries()]
+      .filter(([, n]) => n === 1)
+      .map(([tag, count]) => ({ tag, count }))
+      .sort((a, b) => a.tag.localeCompare(b.tag))
+
+    // ---- orphans + stale ----
+    const orphan: Array<{ id: string; title: string }> = []
+    const stale: Array<{ id: string; title: string; last_refined_at: number; injection_count: number }> = []
+    for (const e of all) {
+      if ((e.observations ?? []).length === 0) {
+        orphan.push({ id: e.id, title: e.title })
+      }
+      const inj = usage?.[e.id]?.injected?.total ?? 0
+      if (inj === 0 && now - e.last_refined_at > staleAfter) {
+        stale.push({
+          id: e.id,
+          title: e.title,
+          last_refined_at: e.last_refined_at,
+          injection_count: inj,
+        })
+      }
+    }
+
+    // ---- explicit conflicts ----
+    const conflicts: Array<{ a_id: string; b_id: string; a_title: string; b_title: string }> = []
+    const idToExp = new Map(all.map((e) => [e.id, e] as const))
+    for (const e of all) {
+      for (const other of e.conflicts_with ?? []) {
+        // Dedup: only emit (a,b) where a.id < b.id lexicographically.
+        if (e.id >= other) continue
+        const o = idToExp.get(other)
+        if (!o) continue
+        conflicts.push({
+          a_id: e.id,
+          b_id: other,
+          a_title: e.title,
+          b_title: o.title,
+        })
+      }
+    }
+
+    return {
+      ok: true as const,
+      generated_at: now,
+      experience_count: all.length,
+      mergeable,
+      dead_tag,
+      orphan,
+      stale,
+      conflicts,
+      // Counts at the top so a UI can render a one-line summary without
+      // walking each array. Lets the user decide whether the plan is
+      // worth opening at all.
+      summary: {
+        mergeable: mergeable.length,
+        dead_tag: dead_tag.length,
+        orphan: orphan.length,
+        stale: stale.length,
+        conflicts: conflicts.length,
+      },
+    }
   }
 
   export async function experienceByID(id: string) {

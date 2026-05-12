@@ -5550,6 +5550,39 @@ export default function RefinerPage() {
       .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag))
   })
 
+  // C4 — tags grouped by parent for the two-level <optgroup> dropdown.
+  // A tag `infra/network` splits into parent=`infra`, child=`network`.
+  // A flat tag `tooling` has no children. We sort parents by total
+  // count desc (most-used cluster first) and children alphabetically
+  // inside each cluster for predictable navigation.
+  type GroupedTag = {
+    parent: string
+    totalCount: number
+    children: Array<{ child: string; count: number }>
+  }
+  const groupedTags = createMemo<GroupedTag[]>(() => {
+    const parents = new Map<string, GroupedTag>()
+    for (const { tag, count } of allTags()) {
+      const slash = tag.indexOf("/")
+      if (slash === -1) {
+        const g = parents.get(tag) ?? { parent: tag, totalCount: 0, children: [] }
+        g.totalCount += count
+        parents.set(tag, g)
+        continue
+      }
+      const parent = tag.slice(0, slash)
+      const child = tag.slice(slash + 1)
+      const g = parents.get(parent) ?? { parent, totalCount: 0, children: [] }
+      g.totalCount += count
+      g.children.push({ child, count })
+      parents.set(parent, g)
+    }
+    const out = [...parents.values()]
+    for (const g of out) g.children.sort((a, b) => a.child.localeCompare(b.child))
+    out.sort((a, b) => b.totalCount - a.totalCount || a.parent.localeCompare(b.parent))
+    return out
+  })
+
   // Filtered experience list (applies kind/category/query filters)
   const visibleExperiences = createMemo(() => {
     const all = overview()?.experiences ?? []
@@ -5557,9 +5590,19 @@ export default function RefinerPage() {
     const kind = activeKind()
     const tag = activeTag()
     const q = query().trim().toLowerCase()
+    // C4: when the active tag has no `/`, it's a parent — match exact
+    // AND any child `parent/anything` so picking "infra" surfaces both
+    // bare `infra` items and everything under it. With a slash, it's a
+    // leaf — match exact only.
+    const tagMatches = (cats: string[] | undefined) => {
+      if (!tag) return true
+      const list = cats ?? []
+      if (tag.includes("/")) return list.includes(tag)
+      return list.some((c) => c === tag || c.startsWith(`${tag}/`))
+    }
     return all.filter((e) => {
       if (cat && !(e.categories ?? []).includes(cat)) return false
-      if (tag && !(e.categories ?? []).includes(tag)) return false
+      if (!tagMatches(e.categories)) return false
       if (kind && e.kind !== kind) return false
       if (q) {
         const hay = [
@@ -6113,7 +6156,10 @@ export default function RefinerPage() {
             {/* Tag dropdown — picks a single #tag from the library's
               * full set, ranked by frequency. Selecting a tag drives
               * `activeTag` (same signal that inline chip clicks set),
-              * so list + graph both react. */}
+              * so list + graph both react. C4: tags can be two-level
+              * (`parent/child`); we group children under their parent
+              * via <optgroup> so a tag-heavy library reads as a tree
+              * instead of a flat alphabetical list. */}
             <select
               class="rune-tag-select"
               value={activeTag() ?? ""}
@@ -6121,11 +6167,26 @@ export default function RefinerPage() {
                 const v = e.currentTarget.value
                 setActiveTag(v ? v : undefined)
               }}
-              title="按 tag 过滤"
+              title="按 tag 过滤（支持 parent/child 两级）"
             >
               <option value="">所有 tag</option>
-              <For each={allTags()}>
-                {(t) => <option value={t.tag}>#{t.tag} · {t.count}</option>}
+              <For each={groupedTags()}>
+                {(grp) =>
+                  grp.children.length === 0 ? (
+                    <option value={grp.parent}>#{grp.parent} · {grp.totalCount}</option>
+                  ) : (
+                    <optgroup label={`#${grp.parent} · ${grp.totalCount}`}>
+                      <option value={grp.parent}>#{grp.parent}（全部）</option>
+                      <For each={grp.children}>
+                        {(c) => (
+                          <option value={`${grp.parent}/${c.child}`}>
+                            ↳ {c.child} · {c.count}
+                          </option>
+                        )}
+                      </For>
+                    </optgroup>
+                  )
+                }
               </For>
             </select>
             {/* Per-message auto-precipitate toggle. Override file (if

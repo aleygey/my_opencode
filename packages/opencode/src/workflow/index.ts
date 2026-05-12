@@ -4793,6 +4793,24 @@ export namespace Workflow {
         })
       })
 
+      // Fire-and-forget workflow-level sediment hook. The refiner builds a
+      // `workflow_pattern` experience from this run's outcome so future
+      // workflows of similar shape can pull the lesson on retrieval.
+      // Lazy-imported to dodge the obvious refiner → workflow → refiner
+      // module-cycle; gated internally by the refiner's `auto_enabled`
+      // flag so the user can opt out of background LLM calls.
+      Database.effect(async () => {
+        try {
+          const { Refiner } = await import("@/refiner")
+          await Refiner.observeWorkflowCompletion({
+            workflowID: input.workflowID,
+            source: "auto",
+          }).catch(() => undefined)
+        } catch {
+          // Refiner not wired up in this build — no-op.
+        }
+      })
+
       return { workflow: info, finalized_status: input.status, fail_reason: input.fail_reason }
     },
   )

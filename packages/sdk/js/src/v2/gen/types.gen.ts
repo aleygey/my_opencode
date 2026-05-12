@@ -330,6 +330,53 @@ export type EventTodoUpdated = {
   }
 }
 
+export type Serial = {
+  id: string
+  title: string
+  path: string
+  baudRate: number
+  dataBits?: number
+  stopBits?: number
+  parity?: "none" | "even" | "odd" | "mark" | "space"
+  status: "connected" | "disconnected" | "error"
+}
+
+export type EventSerialCreated = {
+  type: "serial.created"
+  properties: {
+    info: Serial
+  }
+}
+
+export type EventSerialUpdated = {
+  type: "serial.updated"
+  properties: {
+    info: Serial
+  }
+}
+
+export type EventSerialData = {
+  type: "serial.data"
+  properties: {
+    id: string
+    data: string
+  }
+}
+
+export type EventSerialDisconnected = {
+  type: "serial.disconnected"
+  properties: {
+    id: string
+  }
+}
+
+export type EventSerialDeleted = {
+  type: "serial.deleted"
+  properties: {
+    id: string
+  }
+}
+
 export type SessionStatus =
   | {
       type: "idle"
@@ -451,62 +498,6 @@ export type EventCommandExecuted = {
     sessionID: string
     arguments: string
     messageID: string
-  }
-}
-
-export type EventSandtableMessage = {
-  type: "sandtable.message"
-  properties: {
-    discussionID: string
-    role: string
-    round: number
-  }
-}
-
-export type Serial = {
-  id: string
-  title: string
-  path: string
-  baudRate: number
-  dataBits?: number
-  stopBits?: number
-  parity?: "none" | "even" | "odd" | "mark" | "space"
-  status: "connected" | "disconnected" | "error"
-}
-
-export type EventSerialCreated = {
-  type: "serial.created"
-  properties: {
-    info: Serial
-  }
-}
-
-export type EventSerialUpdated = {
-  type: "serial.updated"
-  properties: {
-    info: Serial
-  }
-}
-
-export type EventSerialData = {
-  type: "serial.data"
-  properties: {
-    id: string
-    data: string
-  }
-}
-
-export type EventSerialDisconnected = {
-  type: "serial.disconnected"
-  properties: {
-    id: string
-  }
-}
-
-export type EventSerialDeleted = {
-  type: "serial.deleted"
-  properties: {
-    id: string
   }
 }
 
@@ -1401,6 +1392,11 @@ export type GlobalEvent = {
     | EventQuestionReplied
     | EventQuestionRejected
     | EventTodoUpdated
+    | EventSerialCreated
+    | EventSerialUpdated
+    | EventSerialData
+    | EventSerialDisconnected
+    | EventSerialDeleted
     | EventSessionStatus
     | EventSessionIdle
     | EventSessionCompacted
@@ -1412,12 +1408,6 @@ export type GlobalEvent = {
     | EventMcpToolsChanged
     | EventMcpBrowserOpenFailed
     | EventCommandExecuted
-    | EventSandtableMessage
-    | EventSerialCreated
-    | EventSerialUpdated
-    | EventSerialData
-    | EventSerialDisconnected
-    | EventSerialDeleted
     | EventWorkflowCreated
     | EventWorkflowUpdated
     | EventWorkflowNodeCreated
@@ -1962,32 +1952,6 @@ export type Config = {
        */
       directory?: string
     }
-    sand_table?: {
-      planner_model?: {
-        providerID: string
-        modelID: string
-      }
-      evaluator_model?: {
-        providerID: string
-        modelID: string
-      }
-      /**
-       * Agent name to use for the planner role (default: sandtable).
-       */
-      planner_agent?: string
-      /**
-       * Agent name to use for the evaluator role (default: sandtable).
-       */
-      evaluator_agent?: string
-      /**
-       * Default maximum discussion rounds (1–5). Tool args override.
-       */
-      max_rounds?: number
-      /**
-       * When true, every sand_table tool call pauses with status='awaiting_start' until the user confirms the planner/evaluator agent + model in the inspector. The orchestrator's tool call still blocks during the wait, so the agent picks up the final plan only after the user starts the round.
-       */
-      confirm_before_start?: boolean
-    }
     /**
      * Enable OpenTelemetry spans for AI SDK calls (using the 'experimental_telemetry' flag)
      */
@@ -2381,6 +2345,11 @@ export type Event =
   | EventQuestionReplied
   | EventQuestionRejected
   | EventTodoUpdated
+  | EventSerialCreated
+  | EventSerialUpdated
+  | EventSerialData
+  | EventSerialDisconnected
+  | EventSerialDeleted
   | EventSessionStatus
   | EventSessionIdle
   | EventSessionCompacted
@@ -2392,12 +2361,6 @@ export type Event =
   | EventMcpToolsChanged
   | EventMcpBrowserOpenFailed
   | EventCommandExecuted
-  | EventSandtableMessage
-  | EventSerialCreated
-  | EventSerialUpdated
-  | EventSerialData
-  | EventSerialDisconnected
-  | EventSerialDeleted
   | EventWorkflowCreated
   | EventWorkflowUpdated
   | EventWorkflowNodeCreated
@@ -3788,7 +3751,6 @@ export type ExperimentalRefinerOverviewGetData = {
     session_id?: string
     workflow_id?: string
     limit?: number
-    include_archived?: boolean
     scope?: "all" | "session" | "workflow"
   }
   url: "/experimental/refiner/overview"
@@ -4180,73 +4142,6 @@ export type ExperimentalRefinerConfigUpdateResponses = {
 export type ExperimentalRefinerConfigUpdateResponse =
   ExperimentalRefinerConfigUpdateResponses[keyof ExperimentalRefinerConfigUpdateResponses]
 
-export type ExperimentalSandTableConfigGetData = {
-  body?: never
-  path?: never
-  query?: {
-    directory?: string
-    workspace?: string
-  }
-  url: "/experimental/sand_table/config"
-}
-
-export type ExperimentalSandTableConfigGetResponses = {
-  /**
-   * Sand-table config
-   */
-  200: {
-    [key: string]: unknown
-  }
-}
-
-export type ExperimentalSandTableConfigGetResponse =
-  ExperimentalSandTableConfigGetResponses[keyof ExperimentalSandTableConfigGetResponses]
-
-export type ExperimentalSandTableConfigUpdateData = {
-  body?: {
-    planner_model?: {
-      providerID: string
-      modelID: string
-    } | null
-    evaluator_model?: {
-      providerID: string
-      modelID: string
-    } | null
-    planner_agent?: string | null
-    evaluator_agent?: string | null
-    max_rounds?: number | null
-    confirm_before_start?: boolean | null
-  }
-  path?: never
-  query?: {
-    directory?: string
-    workspace?: string
-  }
-  url: "/experimental/sand_table/config"
-}
-
-export type ExperimentalSandTableConfigUpdateErrors = {
-  /**
-   * Bad request
-   */
-  400: BadRequestError
-}
-
-export type ExperimentalSandTableConfigUpdateError =
-  ExperimentalSandTableConfigUpdateErrors[keyof ExperimentalSandTableConfigUpdateErrors]
-
-export type ExperimentalSandTableConfigUpdateResponses = {
-  /**
-   * Updated sand-table config
-   */
-  200: {
-    [key: string]: unknown
-  }
-}
-
-export type ExperimentalSandTableConfigUpdateResponse =
-  ExperimentalSandTableConfigUpdateResponses[keyof ExperimentalSandTableConfigUpdateResponses]
-
 export type ExperimentalRefinerCategoriesListData = {
   body?: never
   path?: never
@@ -4268,42 +4163,6 @@ export type ExperimentalRefinerCategoriesListResponses = {
 
 export type ExperimentalRefinerCategoriesListResponse =
   ExperimentalRefinerCategoriesListResponses[keyof ExperimentalRefinerCategoriesListResponses]
-
-export type ExperimentalRefinerExperienceArchiveData = {
-  body?: {
-    archived: boolean
-  }
-  path: {
-    id: string
-  }
-  query?: {
-    directory?: string
-    workspace?: string
-  }
-  url: "/experimental/refiner/experience/{id}/archive"
-}
-
-export type ExperimentalRefinerExperienceArchiveErrors = {
-  /**
-   * Bad request
-   */
-  400: BadRequestError
-}
-
-export type ExperimentalRefinerExperienceArchiveError =
-  ExperimentalRefinerExperienceArchiveErrors[keyof ExperimentalRefinerExperienceArchiveErrors]
-
-export type ExperimentalRefinerExperienceArchiveResponses = {
-  /**
-   * Archive result
-   */
-  200: {
-    [key: string]: unknown
-  }
-}
-
-export type ExperimentalRefinerExperienceArchiveResponse =
-  ExperimentalRefinerExperienceArchiveResponses[keyof ExperimentalRefinerExperienceArchiveResponses]
 
 export type ExperimentalRefinerExperienceReviewData = {
   body?: {
@@ -4596,7 +4455,6 @@ export type ExperimentalRefinerGraphGetData = {
   query?: {
     directory?: string
     workspace?: string
-    include_archived?: boolean
   }
   url: "/experimental/refiner/graph"
 }
@@ -4730,7 +4588,6 @@ export type ExperimentalRefinerSearchData = {
     workspace?: string
     q: string
     limit?: number
-    include_archived?: boolean
   }
   url: "/experimental/refiner/search"
 }
@@ -4746,6 +4603,68 @@ export type ExperimentalRefinerSearchResponses = {
 
 export type ExperimentalRefinerSearchResponse =
   ExperimentalRefinerSearchResponses[keyof ExperimentalRefinerSearchResponses]
+
+export type ExperimentalRefinerGlobalReRefinePlanData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+    stale_after_ms?: number
+    merge_threshold?: number
+  }
+  url: "/experimental/refiner/global-rerefine/plan"
+}
+
+export type ExperimentalRefinerGlobalReRefinePlanResponses = {
+  /**
+   * Re-refine plan
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRefinerGlobalReRefinePlanResponse =
+  ExperimentalRefinerGlobalReRefinePlanResponses[keyof ExperimentalRefinerGlobalReRefinePlanResponses]
+
+export type ExperimentalRefinerObserveWorkflowData = {
+  body?: never
+  path: {
+    workflow_id: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/refiner/observe-workflow/{workflow_id}"
+}
+
+export type ExperimentalRefinerObserveWorkflowErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type ExperimentalRefinerObserveWorkflowError =
+  ExperimentalRefinerObserveWorkflowErrors[keyof ExperimentalRefinerObserveWorkflowErrors]
+
+export type ExperimentalRefinerObserveWorkflowResponses = {
+  /**
+   * Observe result
+   */
+  200: {
+    [key: string]: unknown
+  }
+}
+
+export type ExperimentalRefinerObserveWorkflowResponse =
+  ExperimentalRefinerObserveWorkflowResponses[keyof ExperimentalRefinerObserveWorkflowResponses]
 
 export type ExperimentalRefinerIngestSessionData = {
   body?: {
@@ -7173,193 +7092,6 @@ export type TuiControlResponseResponses = {
 
 export type TuiControlResponseResponse = TuiControlResponseResponses[keyof TuiControlResponseResponses]
 
-export type WorkflowSandTableGetData = {
-  body?: never
-  path: {
-    discussionID: string
-  }
-  query?: {
-    directory?: string
-    workspace?: string
-  }
-  url: "/workflow/sand_table/{discussionID}"
-}
-
-export type WorkflowSandTableGetErrors = {
-  /**
-   * Not found
-   */
-  404: NotFoundError
-}
-
-export type WorkflowSandTableGetError = WorkflowSandTableGetErrors[keyof WorkflowSandTableGetErrors]
-
-export type WorkflowSandTableGetResponses = {
-  /**
-   * Sand table discussion
-   */
-  200: {
-    id: string
-    topic: string
-    context: string
-    round: number
-    max_rounds: number
-    status: "awaiting_start" | "running" | "approved" | "completed" | "failed"
-    participants: Array<{
-      role: "planner" | "evaluator"
-      sessionID: string
-      model: {
-        providerID: string
-        modelID: string
-      }
-    }>
-    current_plan?: string
-    last_evaluation?: string
-    messages: Array<{
-      role: "planner" | "evaluator" | "orchestrator"
-      model: string
-      content: string
-      round: number
-      timestamp: number
-    }>
-    resolved_planner_agent?: string
-    resolved_evaluator_agent?: string
-  }
-}
-
-export type WorkflowSandTableGetResponse = WorkflowSandTableGetResponses[keyof WorkflowSandTableGetResponses]
-
-export type WorkflowSandTableStartData = {
-  body?: {
-    planner_model?: {
-      providerID: string
-      modelID: string
-    }
-    evaluator_model?: {
-      providerID: string
-      modelID: string
-    }
-    planner_agent?: string
-    evaluator_agent?: string
-  }
-  path: {
-    discussionID: string
-  }
-  query?: {
-    directory?: string
-    workspace?: string
-  }
-  url: "/workflow/sand_table/{discussionID}/start"
-}
-
-export type WorkflowSandTableStartErrors = {
-  /**
-   * Not found
-   */
-  404: NotFoundError
-}
-
-export type WorkflowSandTableStartError = WorkflowSandTableStartErrors[keyof WorkflowSandTableStartErrors]
-
-export type WorkflowSandTableStartResponses = {
-  /**
-   * Started sand table discussion
-   */
-  200: {
-    id: string
-    topic: string
-    context: string
-    round: number
-    max_rounds: number
-    status: "awaiting_start" | "running" | "approved" | "completed" | "failed"
-    participants: Array<{
-      role: "planner" | "evaluator"
-      sessionID: string
-      model: {
-        providerID: string
-        modelID: string
-      }
-    }>
-    current_plan?: string
-    last_evaluation?: string
-    messages: Array<{
-      role: "planner" | "evaluator" | "orchestrator"
-      model: string
-      content: string
-      round: number
-      timestamp: number
-    }>
-    resolved_planner_agent?: string
-    resolved_evaluator_agent?: string
-  }
-}
-
-export type WorkflowSandTableStartResponse = WorkflowSandTableStartResponses[keyof WorkflowSandTableStartResponses]
-
-export type WorkflowSandTableMessageData = {
-  body?: {
-    content: string
-    role?: "planner" | "evaluator" | "orchestrator"
-  }
-  path: {
-    discussionID: string
-  }
-  query?: {
-    directory?: string
-    workspace?: string
-  }
-  url: "/workflow/sand_table/{discussionID}/message"
-}
-
-export type WorkflowSandTableMessageErrors = {
-  /**
-   * Bad request
-   */
-  400: BadRequestError
-  /**
-   * Not found
-   */
-  404: NotFoundError
-}
-
-export type WorkflowSandTableMessageError = WorkflowSandTableMessageErrors[keyof WorkflowSandTableMessageErrors]
-
-export type WorkflowSandTableMessageResponses = {
-  /**
-   * Updated sand table discussion
-   */
-  200: {
-    id: string
-    topic: string
-    context: string
-    round: number
-    max_rounds: number
-    status: "awaiting_start" | "running" | "approved" | "completed" | "failed"
-    participants: Array<{
-      role: "planner" | "evaluator"
-      sessionID: string
-      model: {
-        providerID: string
-        modelID: string
-      }
-    }>
-    current_plan?: string
-    last_evaluation?: string
-    messages: Array<{
-      role: "planner" | "evaluator" | "orchestrator"
-      model: string
-      content: string
-      round: number
-      timestamp: number
-    }>
-    resolved_planner_agent?: string
-    resolved_evaluator_agent?: string
-  }
-}
-
-export type WorkflowSandTableMessageResponse =
-  WorkflowSandTableMessageResponses[keyof WorkflowSandTableMessageResponses]
-
 export type WorkflowDeleteSessionData = {
   body?: never
   path: {
@@ -8259,6 +7991,42 @@ export type WorkflowNodeAbortResponses = {
 }
 
 export type WorkflowNodeAbortResponse = WorkflowNodeAbortResponses[keyof WorkflowNodeAbortResponses]
+
+export type WorkflowNodeUncancelData = {
+  body?: {
+    reason?: string
+  }
+  path: {
+    nodeID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/workflow/node/{nodeID}/uncancel"
+}
+
+export type WorkflowNodeUncancelErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type WorkflowNodeUncancelError = WorkflowNodeUncancelErrors[keyof WorkflowNodeUncancelErrors]
+
+export type WorkflowNodeUncancelResponses = {
+  /**
+   * Uncancelled workflow node
+   */
+  200: WorkflowNode
+}
+
+export type WorkflowNodeUncancelResponse = WorkflowNodeUncancelResponses[keyof WorkflowNodeUncancelResponses]
 
 export type WorkflowNodePullData = {
   body?: never

@@ -14,7 +14,7 @@ import type {
   AuthSetErrors,
   AuthSetResponses,
   CommandListResponses,
-  Config as Config6,
+  Config as Config5,
   ConfigGetResponses,
   ConfigProvidersResponses,
   ConfigUpdateErrors,
@@ -35,8 +35,6 @@ import type {
   ExperimentalRefinerEdgeCreateResponses,
   ExperimentalRefinerEdgeDeleteErrors,
   ExperimentalRefinerEdgeDeleteResponses,
-  ExperimentalRefinerExperienceArchiveErrors,
-  ExperimentalRefinerExperienceArchiveResponses,
   ExperimentalRefinerExperienceAugmentErrors,
   ExperimentalRefinerExperienceAugmentResponses,
   ExperimentalRefinerExperienceCreateErrors,
@@ -58,6 +56,7 @@ import type {
   ExperimentalRefinerExperienceUndoRefinementErrors,
   ExperimentalRefinerExperienceUndoRefinementResponses,
   ExperimentalRefinerExportResponses,
+  ExperimentalRefinerGlobalReRefinePlanResponses,
   ExperimentalRefinerGraphGetResponses,
   ExperimentalRefinerImportErrors,
   ExperimentalRefinerImportResponses,
@@ -69,6 +68,8 @@ import type {
   ExperimentalRefinerObservationDeleteResponses,
   ExperimentalRefinerObservationMoveErrors,
   ExperimentalRefinerObservationMoveResponses,
+  ExperimentalRefinerObserveWorkflowErrors,
+  ExperimentalRefinerObserveWorkflowResponses,
   ExperimentalRefinerOverviewGetResponses,
   ExperimentalRefinerSearchResponses,
   ExperimentalRefinerStatsGetResponses,
@@ -79,9 +80,6 @@ import type {
   ExperimentalRetrieveConfigUpdateResponses,
   ExperimentalRetrieveLogListResponses,
   ExperimentalRetrievePreviewResponses,
-  ExperimentalSandTableConfigGetResponses,
-  ExperimentalSandTableConfigUpdateErrors,
-  ExperimentalSandTableConfigUpdateResponses,
   ExperimentalSessionListResponses,
   ExperimentalWorkspaceAdaptorListResponses,
   ExperimentalWorkspaceCreateErrors,
@@ -289,6 +287,8 @@ import type {
   WorkflowNodePauseResponses,
   WorkflowNodePullErrors,
   WorkflowNodePullResponses,
+  WorkflowNodeUncancelErrors,
+  WorkflowNodeUncancelResponses,
   WorkflowNodeUpdateErrors,
   WorkflowNodeUpdateResponses,
   WorkflowOutputPort,
@@ -296,12 +296,6 @@ import type {
   WorkflowReadResponses,
   WorkflowResourcesUpdateErrors,
   WorkflowResourcesUpdateResponses,
-  WorkflowSandTableGetErrors,
-  WorkflowSandTableGetResponses,
-  WorkflowSandTableMessageErrors,
-  WorkflowSandTableMessageResponses,
-  WorkflowSandTableStartErrors,
-  WorkflowSandTableStartResponses,
   WorkflowScanReadyErrors,
   WorkflowScanReadyResponses,
   WorkflowSessionErrors,
@@ -382,7 +376,7 @@ export class Config extends HeyApiClient {
    */
   public update<ThrowOnError extends boolean = false>(
     parameters?: {
-      config?: Config6
+      config?: Config5
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -969,7 +963,6 @@ export class Overview extends HeyApiClient {
       session_id?: string
       workflow_id?: string
       limit?: number
-      include_archived?: boolean
       scope?: "all" | "session" | "workflow"
     },
     options?: Options<never, ThrowOnError>,
@@ -984,7 +977,6 @@ export class Overview extends HeyApiClient {
             { in: "query", key: "session_id" },
             { in: "query", key: "workflow_id" },
             { in: "query", key: "limit" },
-            { in: "query", key: "include_archived" },
             { in: "query", key: "scope" },
           ],
         },
@@ -1120,49 +1112,6 @@ export class Experience extends HeyApiClient {
       ThrowOnError
     >({
       url: "/experimental/refiner/experience/{id}",
-      ...options,
-      ...params,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-        ...params.headers,
-      },
-    })
-  }
-
-  /**
-   * Archive experience
-   *
-   * Flag an experience as archived; overview hides archived experiences by default.
-   */
-  public archive<ThrowOnError extends boolean = false>(
-    parameters: {
-      id: string
-      directory?: string
-      workspace?: string
-      archived?: boolean
-    },
-    options?: Options<never, ThrowOnError>,
-  ) {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "id" },
-            { in: "query", key: "directory" },
-            { in: "query", key: "workspace" },
-            { in: "body", key: "archived" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<
-      ExperimentalRefinerExperienceArchiveResponses,
-      ExperimentalRefinerExperienceArchiveErrors,
-      ThrowOnError
-    >({
-      url: "/experimental/refiner/experience/{id}/archive",
       ...options,
       ...params,
       headers: {
@@ -1771,7 +1720,6 @@ export class Graph extends HeyApiClient {
     parameters?: {
       directory?: string
       workspace?: string
-      include_archived?: boolean
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -1782,7 +1730,6 @@ export class Graph extends HeyApiClient {
           args: [
             { in: "query", key: "directory" },
             { in: "query", key: "workspace" },
-            { in: "query", key: "include_archived" },
           ],
         },
       ],
@@ -1894,7 +1841,6 @@ export class Refiner extends HeyApiClient {
       workspace?: string
       q: string
       limit?: number
-      include_archived?: boolean
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -1907,13 +1853,82 @@ export class Refiner extends HeyApiClient {
             { in: "query", key: "workspace" },
             { in: "query", key: "q" },
             { in: "query", key: "limit" },
-            { in: "query", key: "include_archived" },
           ],
         },
       ],
     )
     return (options?.client ?? this.client).get<ExperimentalRefinerSearchResponses, unknown, ThrowOnError>({
       url: "/experimental/refiner/search",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Build a global re-refine plan
+   *
+   * Scan the entire experience library and surface candidates for cleanup: mergeable duplicates, dead tags, orphans, stale entries, and explicit conflicts. Deterministic and idempotent — safe to call repeatedly. The user reviews the returned JSON and acts via the existing merge / delete / re-refine endpoints.
+   */
+  public globalReRefinePlan<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      stale_after_ms?: number
+      merge_threshold?: number
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "stale_after_ms" },
+            { in: "query", key: "merge_threshold" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<ExperimentalRefinerGlobalReRefinePlanResponses, unknown, ThrowOnError>({
+      url: "/experimental/refiner/global-rerefine/plan",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Sediment a completed workflow into the experience library
+   *
+   * Distill a workflow's lifecycle (node sequence, failure signals, final outcome) into a `workflow_pattern` experience. Auto-fires on workflow.finalize; this endpoint is the manual trigger for sediment-after-the-fact or re-runs.
+   */
+  public observeWorkflow<ThrowOnError extends boolean = false>(
+    parameters: {
+      workflow_id: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "workflow_id" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ExperimentalRefinerObserveWorkflowResponses,
+      ExperimentalRefinerObserveWorkflowErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/refiner/observe-workflow/{workflow_id}",
       ...options,
       ...params,
     })
@@ -2291,102 +2306,6 @@ export class Retrieve extends HeyApiClient {
   }
 }
 
-export class Config4 extends HeyApiClient {
-  /**
-   * Get sand-table config
-   *
-   * Read the persisted sand-table planner/evaluator model + agent assignments for the current project. Empty object means defaults.
-   */
-  public get<ThrowOnError extends boolean = false>(
-    parameters?: {
-      directory?: string
-      workspace?: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ) {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "query", key: "directory" },
-            { in: "query", key: "workspace" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).get<ExperimentalSandTableConfigGetResponses, unknown, ThrowOnError>({
-      url: "/experimental/sand_table/config",
-      ...options,
-      ...params,
-    })
-  }
-
-  /**
-   * Update sand-table config
-   *
-   * Persist a partial sand-table config override into `experimental.sand_table.*`. Pass `<field>: null` to clear.
-   */
-  public update<ThrowOnError extends boolean = false>(
-    parameters?: {
-      directory?: string
-      workspace?: string
-      planner_model?: {
-        providerID: string
-        modelID: string
-      } | null
-      evaluator_model?: {
-        providerID: string
-        modelID: string
-      } | null
-      planner_agent?: string | null
-      evaluator_agent?: string | null
-      max_rounds?: number | null
-      confirm_before_start?: boolean | null
-    },
-    options?: Options<never, ThrowOnError>,
-  ) {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "query", key: "directory" },
-            { in: "query", key: "workspace" },
-            { in: "body", key: "planner_model" },
-            { in: "body", key: "evaluator_model" },
-            { in: "body", key: "planner_agent" },
-            { in: "body", key: "evaluator_agent" },
-            { in: "body", key: "max_rounds" },
-            { in: "body", key: "confirm_before_start" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).put<
-      ExperimentalSandTableConfigUpdateResponses,
-      ExperimentalSandTableConfigUpdateErrors,
-      ThrowOnError
-    >({
-      url: "/experimental/sand_table/config",
-      ...options,
-      ...params,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-        ...params.headers,
-      },
-    })
-  }
-}
-
-export class SandTable extends HeyApiClient {
-  private _config?: Config4
-  get config(): Config4 {
-    return (this._config ??= new Config4({ client: this.client }))
-  }
-}
-
 export class Session extends HeyApiClient {
   /**
    * List sessions
@@ -2482,11 +2401,6 @@ export class Experimental extends HeyApiClient {
   private _retrieve?: Retrieve
   get retrieve(): Retrieve {
     return (this._retrieve ??= new Retrieve({ client: this.client }))
-  }
-
-  private _sandTable?: SandTable
-  get sandTable(): SandTable {
-    return (this._sandTable ??= new SandTable({ client: this.client }))
   }
 
   private _session?: Session
@@ -3148,7 +3062,7 @@ export class Serial extends HeyApiClient {
   }
 }
 
-export class Config5 extends HeyApiClient {
+export class Config4 extends HeyApiClient {
   /**
    * Get configuration
    *
@@ -3188,7 +3102,7 @@ export class Config5 extends HeyApiClient {
     parameters?: {
       directory?: string
       workspace?: string
-      config?: Config6
+      config?: Config5
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -5948,140 +5862,6 @@ export class Tui extends HeyApiClient {
   }
 }
 
-export class SandTable2 extends HeyApiClient {
-  /**
-   * Get sand table discussion
-   */
-  public get<ThrowOnError extends boolean = false>(
-    parameters: {
-      discussionID: string
-      directory?: string
-      workspace?: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ) {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "discussionID" },
-            { in: "query", key: "directory" },
-            { in: "query", key: "workspace" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).get<
-      WorkflowSandTableGetResponses,
-      WorkflowSandTableGetErrors,
-      ThrowOnError
-    >({
-      url: "/workflow/sand_table/{discussionID}",
-      ...options,
-      ...params,
-    })
-  }
-
-  /**
-   * Confirm and start a paused sand table discussion
-   *
-   * Releases a discussion stuck in `awaiting_start` (i.e. when `experimental.sand_table.confirm_before_start` is enabled). The request body may override planner / evaluator agent + model — anything left unset keeps the previously-resolved value from config. Returns the updated state. 404 if the discussion ID is unknown; idempotent no-op (returns the live state) if the discussion has already started.
-   */
-  public start<ThrowOnError extends boolean = false>(
-    parameters: {
-      discussionID: string
-      directory?: string
-      workspace?: string
-      planner_model?: {
-        providerID: string
-        modelID: string
-      }
-      evaluator_model?: {
-        providerID: string
-        modelID: string
-      }
-      planner_agent?: string
-      evaluator_agent?: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ) {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "discussionID" },
-            { in: "query", key: "directory" },
-            { in: "query", key: "workspace" },
-            { in: "body", key: "planner_model" },
-            { in: "body", key: "evaluator_model" },
-            { in: "body", key: "planner_agent" },
-            { in: "body", key: "evaluator_agent" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<
-      WorkflowSandTableStartResponses,
-      WorkflowSandTableStartErrors,
-      ThrowOnError
-    >({
-      url: "/workflow/sand_table/{discussionID}/start",
-      ...options,
-      ...params,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-        ...params.headers,
-      },
-    })
-  }
-
-  /**
-   * Write sand table discussion message
-   */
-  public message<ThrowOnError extends boolean = false>(
-    parameters: {
-      discussionID: string
-      directory?: string
-      workspace?: string
-      content?: string
-      role?: "planner" | "evaluator" | "orchestrator"
-    },
-    options?: Options<never, ThrowOnError>,
-  ) {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "discussionID" },
-            { in: "query", key: "directory" },
-            { in: "query", key: "workspace" },
-            { in: "body", key: "content" },
-            { in: "body", key: "role" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<
-      WorkflowSandTableMessageResponses,
-      WorkflowSandTableMessageErrors,
-      ThrowOnError
-    >({
-      url: "/workflow/sand_table/{discussionID}/message",
-      ...options,
-      ...params,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-        ...params.headers,
-      },
-    })
-  }
-}
-
 export class Node extends HeyApiClient {
   /**
    * Create workflow node
@@ -6302,6 +6082,49 @@ export class Node extends HeyApiClient {
     )
     return (options?.client ?? this.client).post<WorkflowNodeAbortResponses, WorkflowNodeAbortErrors, ThrowOnError>({
       url: "/workflow/node/{nodeID}/abort",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Uncancel workflow node
+   *
+   * Flip a cancelled node back to `pending` so it can be re-started. Preserves the bound child session so a subsequent start resumes from accumulated transcript. Use when adding follow-up context to the SAME task; for genuinely different work, use INSERT_NODE via workflow_graph_propose instead.
+   */
+  public uncancel<ThrowOnError extends boolean = false>(
+    parameters: {
+      nodeID: string
+      directory?: string
+      workspace?: string
+      reason?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "nodeID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "reason" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      WorkflowNodeUncancelResponses,
+      WorkflowNodeUncancelErrors,
+      ThrowOnError
+    >({
+      url: "/workflow/node/{nodeID}/uncancel",
       ...options,
       ...params,
       headers: {
@@ -7136,11 +6959,6 @@ export class Workflow extends HeyApiClient {
     })
   }
 
-  private _sandTable?: SandTable2
-  get sandTable(): SandTable2 {
-    return (this._sandTable ??= new SandTable2({ client: this.client }))
-  }
-
   private _node?: Node
   get node(): Node {
     return (this._node ??= new Node({ client: this.client }))
@@ -7434,9 +7252,9 @@ export class OpencodeClient extends HeyApiClient {
     return (this._serial ??= new Serial({ client: this.client }))
   }
 
-  private _config?: Config5
-  get config(): Config5 {
-    return (this._config ??= new Config5({ client: this.client }))
+  private _config?: Config4
+  get config(): Config4 {
+    return (this._config ??= new Config4({ client: this.client }))
   }
 
   private _tool?: Tool
