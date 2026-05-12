@@ -1066,6 +1066,17 @@ async function writeObservation(observation: Observation) {
   return filepath
 }
 
+/**
+ * Agents whose user messages should NOT be observed. The orchestrator
+ * is the workflow master — its "user" turns are typically meta-commands
+ * (start node, configure model, propose graph edit), not domain queries
+ * worth precipitating as experiences. The user explicitly asked: only
+ * refine the user's own query, not the orchestrator layer's prompts.
+ *
+ * If you add more meta/orchestration agents later, gate them here too.
+ */
+const NON_REFINABLE_AGENTS = new Set(["orchestrator"])
+
 async function extractUserMessage(sessionID: SessionID, messageID: MessageID) {
   let message: MessageV2.WithParts
   try {
@@ -1075,6 +1086,19 @@ async function extractUserMessage(sessionID: SessionID, messageID: MessageID) {
     return
   }
   if (message.info.role !== "user") return
+  // Skip user messages addressed to an orchestration-layer agent. These
+  // are typically "create workflow X", "start node n2", "approve plan"
+  // — operational commands, not generalisable user intent. Refining
+  // them just inflates the experience library with noise.
+  const agentName = (message.info as { agent?: string }).agent
+  if (agentName && NON_REFINABLE_AGENTS.has(agentName)) {
+    log.debug("refiner.observe: skipping orchestrator-bound user message", {
+      sessionID,
+      messageID,
+      agent: agentName,
+    })
+    return
+  }
   const text = message.parts
     .flatMap((part) => (part.type === "text" && !part.synthetic && !part.ignored ? [part.text.trim()] : []))
     .filter(Boolean)

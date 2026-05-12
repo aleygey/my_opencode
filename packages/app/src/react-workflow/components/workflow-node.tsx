@@ -101,12 +101,26 @@ export function WorkflowNode({
   // props because the workflow data layer keys on it.
   void id
   return (
-    <button
+    // The card was a <button> wrapping an inner drill-in <button> — invalid
+    // HTML (button cannot nest button) that React surfaces as production
+    // error #409 ("hydration / DOM invariant"), which the user reported as
+    // a one-off frontend crash in the workflow canvas. Switch the outer to
+    // a div + role="button" so the inner drill-in button stays focusable
+    // and the nesting violation goes away; visual styling is unchanged.
+    <div
+      role="button"
+      tabIndex={0}
       data-wf-card=""
       data-status={status}
       className={`wf-r2-node${isSelected ? ' is-on' : ''}${run ? ' is-running' : ''}`}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onClick?.()
+        }
+      }}
     >
       {run && <span className="wf-r2-node-runbar" aria-hidden />}
       <div className="wf-r2-node-hd">
@@ -162,6 +176,6 @@ export function WorkflowNode({
           stale
         </span>
       )}
-    </button>
+    </div>
   )
 }

@@ -5609,6 +5609,18 @@ export default function RefinerPage() {
       .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag))
   })
 
+  // How many experiences are archived. Powers the "已归档 (N)" chip in
+  // the substrip — only render the chip when N > 0 so the chrome stays
+  // quiet on a clean library, and the user gets a clear count of how
+  // many items are recoverable when archive accidents do happen.
+  const archivedCount = createMemo(() => {
+    let n = 0
+    for (const e of overview()?.experiences ?? []) {
+      if (e.archived) n++
+    }
+    return n
+  })
+
   // Filtered experience list (applies kind/category/query/archived filters)
   const visibleExperiences = createMemo(() => {
     const all = overview()?.experiences ?? []
@@ -6195,6 +6207,29 @@ export default function RefinerPage() {
                 {(t) => <option value={t.tag}>#{t.tag} · {t.count}</option>}
               </For>
             </select>
+            {/* Archived filter chip. Discoverable entry into the archived
+              * set so a mis-archived experience can be found and recovered
+              * without diving into the actions menu. Renders a count of
+              * archived items so the user knows whether the chip will
+              * actually surface anything. Clicking toggles the existing
+              * `includeArchived` signal; archived rows then show in the
+              * list (with the "Unarchive" button on the card). */}
+            <Show when={archivedCount() > 0}>
+              <button
+                type="button"
+                class="rune-refiner-archive-chip"
+                data-active={includeArchived() ? "true" : "false"}
+                onClick={() => setIncludeArchived(!includeArchived())}
+                title={
+                  includeArchived()
+                    ? "正在显示已归档项，点击隐藏"
+                    : `显示已归档项 (${archivedCount()} 项可恢复)`
+                }
+              >
+                <span>已归档</span>
+                <span class="rune-refiner-archive-chip-n">{archivedCount()}</span>
+              </button>
+            </Show>
             {/* Per-message auto-precipitate toggle. Override file (if
               * present) wins; otherwise defaults to `true`. Flipping it
               * off makes the refiner stop running on every user message

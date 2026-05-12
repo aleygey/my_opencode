@@ -6934,7 +6934,20 @@
   font-size: 11.5px;
 }
 
-.workflow-make .wf-canvas-host { position: relative; }
+.workflow-make .wf-canvas-host {
+  position: relative;
+  /* The host is `flex-1 min-h-0` inside its parent flex column, but
+   * itself was not a flex container — so its child `.wf-r2-canvas`
+   * with `flex: 1` had no flex parent to grow into. Result: the
+   * canvas collapsed to whatever intrinsic height the SVG layer
+   * computed, leaving the bottom half of the host blank and the
+   * graph clipped after the visible upper section. Make the host a
+   * flex column so the canvas actually fills its allotted height. */
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
 .workflow-make .wf-canvas-hud {
   position: absolute;
   top: 16px;

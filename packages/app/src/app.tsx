@@ -413,9 +413,13 @@ function WorkflowScreen() {
         directory: dir,
         throwOnError: true,
       })
-      .session.create({
-        title: title || "Workflow",
-      })
+      // Only pin the session title when the caller explicitly supplied one
+      // (e.g. they typed something into the new-workflow form). Without an
+      // explicit title, leave the session with its default ISO placeholder
+      // so the backend's title agent kicks in on the first user message —
+      // otherwise every workflow root session ends up named "Workflow"
+      // and the rail's task list reads as identical rows (user's #7).
+      .session.create(title ? { title } : {})
       .then((res) => res.data)
       .then(async (session) => {
         if (!session?.id) throw new Error("Failed to create root session")
@@ -425,7 +429,9 @@ function WorkflowScreen() {
         })
         await sdk.workflow.create({
           session_id: session.id,
-          title: title || session.title || "Workflow",
+          // Workflow object's title is separate from session.title — a
+          // sensible default is fine here (canvas header reads it).
+          title: title || "Workflow",
         })
         const snap = await sdk.workflow.session({
           sessionID: session.id,

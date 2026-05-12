@@ -14,7 +14,6 @@
  *   │     │                                         │
  *   └─────┴─────────────────────────────────────────┘
  *   + TasksDrawer  (overlays from right edge)
- *   + TweaksPanel  (popover anchored to top-right gear)
  *
  * The `.rune-shell` element drives `display: grid` with the rail as the
  * left column and the rest stacked. Width of the rail collapses by data
@@ -353,6 +352,25 @@
   padding: 2px 0 var(--rune-u2) 18px;
   margin-left: 26px;
   border-left: 1px solid var(--rune-line-faint);
+  /* Cap visible task rows so a long task list scrolls inside its own
+   * module instead of pushing other modules / the brand block off
+   * screen. ~8 rows (each row = 26px min-height + 2px gap) reads as
+   * a comfortable preview before the scroll kicks in. The parent
+   * `.rune-rail-group` still scrolls separately when all modules are
+   * expanded at once. */
+  max-height: calc(8 * 30px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* Slim scrollbar so it doesn't dominate the narrow rail column. */
+  scrollbar-width: thin;
+  scrollbar-gutter: stable;
+}
+.rune-shell .rune-rail-subs::-webkit-scrollbar {
+  width: 6px;
+}
+.rune-shell .rune-rail-subs::-webkit-scrollbar-thumb {
+  background: var(--rune-line);
+  border-radius: 3px;
 }
 .rune-shell[data-rail="collapsed"] .rune-rail-subs { display: none; }
 
@@ -892,80 +910,6 @@
   height: 100%;
   background: var(--rune-ac);
   transition: width var(--rune-t-base);
-}
-
-/* ─── Tweaks Panel ─── */
-/* The trigger now sits inline inside `.rune-head-actions` (same row as
- * Tasks). Previous design floated it `position: fixed` at 12/12 with a
- * 32px square — which placed it beside the 28px Tasks button but
- * couldn't share its height/baseline, so the two read as "stuck
- * together" with mismatched sizes. Inline + 28px height = proper
- * grouping. */
-.rune-shell .rune-tweaks-trigger {
-  position: relative;
-  width: 28px;
-  height: 28px;
-  display: grid;
-  place-items: center;
-  border: 1px solid var(--rune-line);
-  border-radius: var(--rune-r);
-  background: var(--rune-bg-raised);
-  color: var(--rune-fg-mute);
-  transition: background var(--rune-t-fast), color var(--rune-t-fast), border-color var(--rune-t-fast);
-}
-.rune-shell .rune-tweaks-trigger:hover {
-  background: var(--rune-bg-surface);
-  border-color: var(--rune-line-strong);
-  color: var(--rune-fg);
-}
-.rune-shell .rune-tweaks-pop {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  width: 280px;
-  background: var(--rune-bg-raised);
-  border: 1px solid var(--rune-line);
-  border-radius: var(--rune-r-lg);
-  box-shadow: var(--rune-shadow-lg);
-  padding: var(--rune-u4);
-  z-index: 75;
-  display: flex;
-  flex-direction: column;
-  gap: var(--rune-u3);
-  animation: rune-fade-up var(--rune-t-base) ease;
-}
-.rune-shell .rune-tweaks-row {
-  display: flex;
-  align-items: center;
-  gap: var(--rune-u2);
-}
-.rune-shell .rune-tweaks-label {
-  font-size: var(--rune-fs-sm);
-  font-weight: 500;
-  color: var(--rune-fg);
-  flex: 1;
-}
-.rune-shell .rune-tweaks-segment {
-  display: inline-flex;
-  border: 1px solid var(--rune-line-faint);
-  border-radius: var(--rune-r-sm);
-  background: var(--rune-bg-inset);
-  padding: 2px;
-  height: 26px;
-}
-.rune-shell .rune-tweaks-segment-btn {
-  padding: 0 10px;
-  height: 22px;
-  font-size: var(--rune-fs-xs);
-  font-weight: 500;
-  color: var(--rune-fg-mute);
-  border-radius: 3px;
-  transition: background var(--rune-t-fast), color var(--rune-t-fast);
-}
-.rune-shell .rune-tweaks-segment-btn.is-on {
-  background: var(--rune-bg-raised);
-  color: var(--rune-fg);
-  box-shadow: var(--rune-shadow-sm);
 }
 
 /* ─── Substrip search input — design-spec 200px field with leading icon. */

@@ -11,7 +11,6 @@
  *   └──────┴──────────────────────────────────────────────────────────┘
  *
  *   + TasksDrawer (right-edge overlay, click ⏃ in header to open)
- *   + TweaksPanel (top-right gear, theme + rail collapse)
  *
  * The shell is route-agnostic: it accepts a `module` prop ("workflow" /
  * "knowledge" / "trace") and the page renders its own body via the
@@ -709,92 +708,6 @@ function TasksDrawer(props: {
 }
 
 /* ──────────────────────────────────────────────────────
-   Tweaks Panel
-   ────────────────────────────────────────────────────── */
-
-function TweaksPanel(props: {
-  theme: ShellTheme
-  collapsed: boolean
-  onTheme: (t: ShellTheme) => void
-  onCollapse: (v: boolean) => void
-}) {
-  const [open, setOpen] = createSignal(false)
-  let root: HTMLDivElement | undefined
-
-  onMount(() => {
-    const handler = (e: MouseEvent) => {
-      if (!root) return
-      if (!root.contains(e.target as Node)) setOpen(false)
-    }
-    document.addEventListener("mousedown", handler)
-    onCleanup(() => document.removeEventListener("mousedown", handler))
-  })
-
-  return (
-    <div ref={(el) => (root = el)}>
-      <button
-        type="button"
-        class="rune-tweaks-trigger"
-        onClick={() => setOpen((v) => !v)}
-        title="Tweaks"
-        aria-expanded={open() ? "true" : "false"}
-      >
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
-          <circle cx="8" cy="8" r="2.4" />
-          <path d="M8 1v2.5M8 12.5V15M1 8h2.5M12.5 8H15M3 3l1.8 1.8M11.2 11.2L13 13M3 13l1.8-1.8M11.2 4.8L13 3" />
-        </svg>
-      </button>
-      <Show when={open()}>
-        <div class="rune-tweaks-pop" role="dialog" aria-label="Tweaks">
-          <div class="rune-tweaks-row">
-            <span class="rune-tweaks-label">Theme</span>
-            <div class="rune-tweaks-segment">
-              <button
-                type="button"
-                class="rune-tweaks-segment-btn"
-                classList={{ "is-on": props.theme === "light" }}
-                onClick={() => props.onTheme("light")}
-              >
-                Light
-              </button>
-              <button
-                type="button"
-                class="rune-tweaks-segment-btn"
-                classList={{ "is-on": props.theme === "dark" }}
-                onClick={() => props.onTheme("dark")}
-              >
-                Dark
-              </button>
-            </div>
-          </div>
-          <div class="rune-tweaks-row">
-            <span class="rune-tweaks-label">Collapse rail</span>
-            <div class="rune-tweaks-segment">
-              <button
-                type="button"
-                class="rune-tweaks-segment-btn"
-                classList={{ "is-on": !props.collapsed }}
-                onClick={() => props.onCollapse(false)}
-              >
-                Off
-              </button>
-              <button
-                type="button"
-                class="rune-tweaks-segment-btn"
-                classList={{ "is-on": props.collapsed }}
-                onClick={() => props.onCollapse(true)}
-              >
-                On
-              </button>
-            </div>
-          </div>
-        </div>
-      </Show>
-    </div>
-  )
-}
-
-/* ──────────────────────────────────────────────────────
    StatusBar — bottom 28px row (design-spec)
    ────────────────────────────────────────────────────── */
 
@@ -869,14 +782,15 @@ export function UnifiedShell(props: ShellProps) {
   const navigate = useNavigate()
   const params = useParams<{ dir: string; id: string }>()
 
-  const [theme, setTheme] = createSignal<ShellTheme>(readPref<ShellTheme>(THEME_KEY, "light"))
+  // Theme + rail collapse: saved preference is still honoured, but the
+  // manual toggles (formerly in a gear-icon "Tweaks" popover) were removed
+  // — the popover had no clear use and added chrome. Theme defaults to
+  // saved pref → "light"; rail collapse toggles via the chevron button
+  // on the rail itself (no external trigger needed).
+  const [theme] = createSignal<ShellTheme>(readPref<ShellTheme>(THEME_KEY, "light"))
   const [collapsed, setCollapsed] = createSignal<boolean>(readPref<string>(RAIL_KEY, "false") === "true")
   const [tasksOpen, setTasksOpen] = createSignal(false)
 
-  const updateTheme = (t: ShellTheme) => {
-    setTheme(t)
-    writePref(THEME_KEY, t)
-  }
   const updateCollapsed = (v: boolean) => {
     setCollapsed(v)
     writePref(RAIL_KEY, v ? "true" : "false")
@@ -947,13 +861,6 @@ export function UnifiedShell(props: ShellProps) {
         onClose={() => setTasksOpen(false)}
         onPick={props.onPickTask}
         onCreate={props.onCreateTask}
-      />
-
-      <TweaksPanel
-        theme={theme()}
-        collapsed={collapsed()}
-        onTheme={updateTheme}
-        onCollapse={updateCollapsed}
       />
     </div>
   )

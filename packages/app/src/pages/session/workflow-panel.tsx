@@ -2230,19 +2230,35 @@ export function WorkflowRuntimePanel(props: {
     if (pendingRouteTargets) {
       const m = local.model.current()
       savedModelKey = m ? { providerID: m.provider.id, modelID: m.id } : undefined
+      // Critical: clear `local.model` BEFORE opening the dialog. The route-
+      // pending effect (below) keys off `local.model.current()` changes, so
+      // if the user picks the SAME model as the master/session already had,
+      // the key never changes and the effect never fires — meaning the PATCH
+      // never lands and the user's pick appears to "not stick". By clearing
+      // first, any subsequent pick (even of the same model) registers as a
+      // change `null → M`, the effect fires, the slave gets routed, and the
+      // `.finally()` branch restores the master model.
+      local.model.set(undefined, { recent: false })
     } else {
       savedModelKey = null
     }
-    // Clear pending targets AFTER the reactive effect for `local.model` has a chance to
-    // consume them. Without this, a later non-node-scoped model change (e.g. chat panel
-    // picker) would accidentally re-route stale targets.
-    // Deferred via double-microtask/setTimeout so it runs after SolidJS's effect queue.
     const onClose = () => {
       setTimeout(() => {
-        pendingRouteTargets = null
-        // If the user closed the dialog without picking a different model, the effect
-        // never fired — drop the saved snapshot to avoid restoring on a later pick.
-        savedModelKey = null
+        // Cancel path: pending targets are still set because no pick fired
+        // → no model.set, no effect, nothing routed. Restore the master
+        // model so the chat input isn't left blank, and clear targets so
+        // the next pick is fresh. Disarm `pendingRouteTargets` BEFORE the
+        // restore so the restoring `model.set(...)` doesn't trip the effect
+        // into routing the slave to the master model.
+        if (pendingRouteTargets) {
+          const restore = savedModelKey
+          pendingRouteTargets = null
+          savedModelKey = null
+          // savedModelKey was set to `undefined` when the master had no
+          // model selected — that's distinct from `null`, which is our
+          // sentinel for "no node-scoped pick in flight". Always restore.
+          local.model.set(restore ?? undefined, { recent: false })
+        }
       }, 0)
     }
     if (providers.connected().length > 0) {
@@ -2297,8 +2313,14 @@ export function WorkflowRuntimePanel(props: {
       },
       (_key, prev) => {
         if (prev === undefined) return // skip initial run
+        if (!pendingRouteTargets) return
+        // Skip the "cleared to undefined" transition that `pickModel` fires
+        // before opening the dialog — current() is null here, forceRouteNodes
+        // would early-return anyway and we MUST keep pending targets armed
+        // for the real pick that follows.
+        const current = local.model.current()
+        if (!current) return
         const targets = pendingRouteTargets
-        if (!targets) return
         pendingRouteTargets = null
         const restoreKey = savedModelKey
         savedModelKey = null

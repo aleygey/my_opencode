@@ -71,6 +71,16 @@ import { extractPromptFromParts } from "@/utils/prompt"
 import { same } from "@/utils/same"
 import { formatServerError } from "@/utils/server-errors"
 
+// Mirror of `Session.isDefaultTitle` in packages/opencode/src/session/session.ts:41
+// — fresh sessions get titled "Parent session - <ISO>" or "Child session - <ISO>"
+// before the title-agent fires. Treat those as "no real title yet" so callers
+// can fall back to a more useful display name.
+const DEFAULT_SESSION_TITLE_RE =
+  /^(Parent session - |Child session - )\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
+function isDefaultSessionTitle(title: string | undefined | null): boolean {
+  return !!title && DEFAULT_SESSION_TITLE_RE.test(title)
+}
+
 const emptyUserMessages: UserMessage[] = []
 type FollowupItem = FollowupDraft & { id: string }
 type FollowupEdit = Pick<FollowupItem, "id" | "prompt" | "context">
@@ -645,11 +655,22 @@ export default function Page() {
 
   const newWorkflowTask = async () => {
     try {
-      const session = await sdk.client.session.create({ title: "Workflow" }).then((res) => res.data)
+      // Do NOT pass an explicit title here. The backend's title agent
+      // (`SessionPrompt.ensureTitle`) only generates a title when the
+      // current title matches the default `"Parent session - <ISO>"`
+      // format — passing `"Workflow"` permanently locks every task to
+      // that literal name (the user's #7 complaint: "全是同名task").
+      // Leaving title unset lets the auto-title flow run on the first
+      // user message, and the user can still rename via the session
+      // settings if they want.
+      const session = await sdk.client.session.create({}).then((res) => res.data)
       if (!session?.id) throw new Error("Failed to create root session")
       await sdk.client.workflow.create({
         session_id: session.id,
-        title: session.title || "Workflow",
+        // Workflow object's title is separate from session.title — keep
+        // a sensible default here since it shows in the canvas header
+        // until the orchestrator emits a real plan title.
+        title: "Workflow",
       })
       const slug = params.dir ?? base64Encode(sdk.directory)
       setStore("workflow", "graph")
@@ -674,11 +695,14 @@ export default function Page() {
             void (async () => {
               try {
                 const next = sdk.createClient({ directory: result, throwOnError: true })
-                const session = await next.session.create({ title: "Workflow" }).then((res) => res.data)
+                // See `newWorkflowTask` above — do NOT pre-set session.title,
+                // it would block the title agent from auto-generating a per-task
+                // title and lock every task to the same literal name.
+                const session = await next.session.create({}).then((res) => res.data)
                 if (!session?.id) throw new Error("Failed to create root session")
                 await next.workflow.create({
                   session_id: session.id,
-                  title: session.title || "Workflow",
+                  title: "Workflow",
                 })
                 setStore("workflow", "graph")
                 local.agent.set("orchestrator")
@@ -2156,10 +2180,23 @@ export default function Page() {
           ...(snap ? [{ id: "events", name: "Events", count: snap?.events?.length }] : []),
           ...((params.id && store.workflowOpenTabs[params.id]) || []).map((t) => ({
             id: `${t.kind}:${t.id}`,
-            // Distill the planner-emitted title before truncation so
-            // the substrip tab shows a clean task name instead of a
-            // raw "Plan · ## Goal …" prefix.
-            name: distillTitle(t.title, 18),
+            // Resolve the tab title from the bound child session whenever
+            // possible — `session.title` is auto-generated from the first
+            // user message and the user can rename it from the chat view,
+            // so following it makes opened-node tabs distinguishable. The
+            // planner-emitted node title is the fallback when the node
+            // hasn't been started yet (no session_id) or when the session
+            // is still on its default ISO-timestamp title.
+            name: (() => {
+              const snap = workflowSnapshot()
+              const node = snap?.nodes?.find((n) => n.id === t.id)
+              const sid = node?.session_id
+              const sess = sid
+                ? (sync.data.session ?? []).find((s) => s.id === sid)
+                : undefined
+              const title = sess?.title && !isDefaultSessionTitle(sess.title) ? sess.title : t.title
+              return distillTitle(title || t.title, 18)
+            })(),
             onClose: () => {
               const sid = params.id
               if (!sid) return
@@ -2234,7 +2271,12 @@ export default function Page() {
       // "all tasks at a glance" overlay.
       railSubs: rootSessions().map((s) => ({
         id: s.id,
-        title: s.title || "Untitled",
+        // Show the real (auto-generated or user-renamed) title. Sessions
+        // start with a default "Parent session - <ISO>" placeholder
+        // until the title agent fires on the first user message; render
+        // those as "Untitled" so the rail isn't a wall of identical
+        // timestamps when several tasks are still warming up.
+        title: isDefaultSessionTitle(s.title) ? "Untitled" : (s.title || "Untitled"),
         onDelete: () => void deleteWorkflowTask(s.id),
       })),
       activeSubId: params.id,
@@ -2244,7 +2286,7 @@ export default function Page() {
       },
       tasks: rootSessions().map((s) => ({
         id: s.id,
-        title: s.title || "Untitled",
+        title: isDefaultSessionTitle(s.title) ? "Untitled" : (s.title || "Untitled"),
         state: "idle" as const,
         time: s.time?.updated
           ? new Date(s.time.updated).toLocaleTimeString([], {
