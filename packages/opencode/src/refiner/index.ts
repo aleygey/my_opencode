@@ -1098,15 +1098,18 @@ async function writeObservation(observation: Observation) {
 }
 
 /**
- * Agents whose user messages should NOT be observed. The orchestrator
- * is the workflow master — its "user" turns are typically meta-commands
- * (start node, configure model, propose graph edit), not domain queries
- * worth precipitating as experiences. The user explicitly asked: only
- * refine the user's own query, not the orchestrator layer's prompts.
- *
- * If you add more meta/orchestration agents later, gate them here too.
+ * Pattern that flags a user message as pure workflow meta-command —
+ * "create workflow", "start node n2", "approve plan", "go ahead". These
+ * are operational instructions to the orchestrator, not generalisable
+ * intent worth precipitating as an experience. The earlier blanket
+ * "skip any orchestrator-bound user message" was too aggressive: a
+ * fresh workflow task is BOUND to the orchestrator agent, but its first
+ * user message ("fix the bug where X happens in Y module") IS the
+ * domain query the user wants refined. We now skip the message ONLY
+ * when it's nothing but command-style text.
  */
-const NON_REFINABLE_AGENTS = new Set(["orchestrator"])
+const META_COMMAND_PATTERN =
+  /^\s*(go|run|execute|start|approve|confirm|continue|retry|resume|abort|cancel|开始|执行|继续|确认|批准|同意|取消|中止|重试|恢复|\/[\w-]+)\s*$/i
 
 async function extractUserMessage(sessionID: SessionID, messageID: MessageID) {
   let message: MessageV2.WithParts
@@ -1117,25 +1120,24 @@ async function extractUserMessage(sessionID: SessionID, messageID: MessageID) {
     return
   }
   if (message.info.role !== "user") return
-  // Skip user messages addressed to an orchestration-layer agent. These
-  // are typically "create workflow X", "start node n2", "approve plan"
-  // — operational commands, not generalisable user intent. Refining
-  // them just inflates the experience library with noise.
-  const agentName = (message.info as { agent?: string }).agent
-  if (agentName && NON_REFINABLE_AGENTS.has(agentName)) {
-    log.debug("refiner.observe: skipping orchestrator-bound user message", {
-      sessionID,
-      messageID,
-      agent: agentName,
-    })
-    return
-  }
   const text = message.parts
     .flatMap((part) => (part.type === "text" && !part.synthetic && !part.ignored ? [part.text.trim()] : []))
     .filter(Boolean)
     .join("\n")
     .trim()
   if (!text) return
+  // Skip pure command-style messages (e.g. "go", "执行吧", "/compact").
+  // Short-phrase commands at the orchestrator are noise; full domain
+  // queries pass through. The pattern is intentionally tight — anything
+  // longer than a single command verb is preserved.
+  if (text.length < 80 && META_COMMAND_PATTERN.test(text)) {
+    log.debug("refiner.observe: skipping meta-command user message", {
+      sessionID,
+      messageID,
+      text: text.slice(0, 60),
+    })
+    return
+  }
   const signature = Hash.fast(text)
   const current = state()
   if (current.userSeen[messageID] === signature) return

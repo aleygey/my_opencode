@@ -5661,6 +5661,27 @@
   line-height: 1.55;
   word-break: break-word;
 }
+
+/* Per-attempt slave reports + workflow lifecycle events are the user's
+ * primary signal — bump font weight + slight background tint so they
+ * pop out from the surrounding tool/update chatter. Workflow-scope
+ * events get a left ribbon so "task-level" vs "node-level" reads at
+ * a glance. */
+.workflow-make .wf-timeline-row[data-primary="true"] .wf-timeline-summary {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--rune-fg);
+}
+.workflow-make .wf-timeline-row[data-primary="true"] .wf-timeline-dot {
+  box-shadow: 0 0 0 2px color-mix(in oklab, currentColor 25%, transparent);
+}
+.workflow-make .wf-timeline-row[data-scope="workflow"] {
+  border-left: 2px solid var(--rune-ac, oklch(0.65 0.18 250));
+  padding-left: 6px;
+  margin-left: -8px;
+  background: color-mix(in oklab, var(--rune-ac, oklch(0.65 0.18 250)) 4%, transparent);
+}
+
 .workflow-make .wf-events-row {
   display: grid;
   grid-template-columns: 32px 1fr;

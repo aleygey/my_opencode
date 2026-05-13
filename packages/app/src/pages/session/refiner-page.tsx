@@ -23,6 +23,7 @@ import { RuneModelPicker } from "@/components/unified-shell/model-picker"
 import { usePlatform } from "@/context/platform"
 import { useSDK } from "@/context/sdk"
 import { useServer } from "@/context/server"
+import { useSync } from "@/context/sync"
 import { stableFetcher } from "@/utils/stable-fetch"
 import "./refiner-page.css"
 
@@ -4256,6 +4257,25 @@ function RefinerLogsModal(props: {
   onClose: () => void
   onReload: () => void
 }) {
+  // Resolve session ID → user-facing title (auto-generated or rename).
+  // Refiner log entries reference sessions by ID; the user reported that
+  // raw "ses_2..." prefixes are illegible when many sessions show up,
+  // so we join against `sync.data.session` to surface the human title
+  // wherever the row label was previously truncating the ID.
+  const sync = useSync()
+  const sessionTitleByID = createMemo(() => {
+    const map = new Map<string, string>()
+    for (const s of sync.data.session ?? []) {
+      if (s.id && s.title) map.set(s.id, s.title)
+    }
+    return map
+  })
+  const labelForSessionID = (sid: string) => {
+    if (sid === "manual") return "manual / 手动新建"
+    const title = sessionTitleByID().get(sid)
+    if (title && title.trim()) return title
+    return sid.slice(0, 12)
+  }
   const [selectedSession, setSelectedSession] = createSignal<string | undefined>()
   const [selectedRunId, setSelectedRunId] = createSignal<string | undefined>()
   const [filterMode, setFilterMode] = createSignal<"all" | "no_exp">("all")
@@ -4451,7 +4471,7 @@ function RefinerLogsModal(props: {
                     >
                       <div class="rf-logs-session-row-l">
                         <div class="rf-logs-session-id">
-                          {s.id === "manual" ? "manual / 手动新建" : s.id.slice(0, 12)}
+                          {labelForSessionID(s.id)}
                         </div>
                         <div class="rf-logs-session-meta">
                           {s.runs.length} runs · {fmtTime(s.latest)}

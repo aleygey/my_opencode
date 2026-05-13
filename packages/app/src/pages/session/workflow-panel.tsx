@@ -2404,9 +2404,22 @@ export function WorkflowRuntimePanel(props: {
     const rid = rootID()
     const rootMsgs = [...(base[rid] ?? [])]
 
+    // Collect the set of session IDs that belong to THIS task — the master
+    // root plus every workflow node's bound session. Pending questions /
+    // permissions from any other task must not bleed into this view. Backend
+    // `/question` and `/permission` return pending requests across ALL
+    // sessions (not just the current task); without this filter the user
+    // sees task A's prompt while sitting on task B.
+    const ownedSessionIDs = new Set<string>([rid])
+    for (const n of props.snapshot.nodes ?? []) {
+      if (n.session_id) ownedSessionIDs.add(n.session_id)
+    }
+
     // Append pending questions as virtual messages
     for (const q of pendingQuestions) {
       if (!q?.id) continue
+      const owner = q.sessionID ?? rid
+      if (!ownedSessionIDs.has(owner)) continue
       rootMsgs.push({
         id: `question:${q.id}`,
         role: "assistant" as const,
@@ -2414,7 +2427,7 @@ export function WorkflowRuntimePanel(props: {
         timestamp: fmt(Date.now()),
         question: {
           id: q.id,
-          sessionID: q.sessionID ?? rid,
+          sessionID: owner,
           questions: q.questions ?? [],
         },
       })
@@ -2423,6 +2436,8 @@ export function WorkflowRuntimePanel(props: {
     // Append pending permissions as virtual messages
     for (const p of pendingPermissions) {
       if (!p?.id) continue
+      const owner = p.sessionID ?? rid
+      if (!ownedSessionIDs.has(owner)) continue
       rootMsgs.push({
         id: `permission:${p.id}`,
         role: "assistant" as const,
@@ -2430,7 +2445,7 @@ export function WorkflowRuntimePanel(props: {
         timestamp: fmt(Date.now()),
         permission: {
           id: p.id,
-          sessionID: p.sessionID ?? rid,
+          sessionID: owner,
           permission: p.permission ?? "",
           patterns: p.patterns ?? [],
           metadata: p.metadata ?? {},
@@ -2630,11 +2645,19 @@ export function WorkflowRuntimePanel(props: {
           // summary describing what it just did — surface THAT as
           // the row's primary text so users see "Implemented timer
           // schema, added cron column" instead of a generic
-          // "node.attempt_reported · result=success". Falls back to
-          // the older status/reason/message/result/error projection
-          // for kinds without an explicit summary field.
+          // "node.attempt_reported · result=success".
+          //
+          // The event payload now carries `summary_short` (trimmed at the
+          // emit site to ~120 chars to keep the master's `workflow_read`
+          // context lean — see workflow/index.ts around the patchRun
+          // event). We accept either field so older logs still render
+          // sensibly. Falls back to status/reason/message/result/error
+          // bits for kinds without any summary field.
           const p = (ev.payload ?? {}) as Record<string, unknown>
-          const summary = typeof p["summary"] === "string" ? (p["summary"] as string).trim() : ""
+          const summary =
+            (typeof p["summary"] === "string" && (p["summary"] as string).trim()) ||
+            (typeof p["summary_short"] === "string" && (p["summary_short"] as string).trim()) ||
+            ""
           let display: string
           if (summary) {
             const result = typeof p["result"] === "string" ? (p["result"] as string) : ""

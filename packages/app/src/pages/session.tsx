@@ -674,6 +674,12 @@ export default function Page() {
       const slug = params.dir ?? base64Encode(sdk.directory)
       setStore("workflow", "graph")
       local.agent.set("orchestrator")
+      // Force a fresh session+workflow sync BEFORE navigating so the
+      // inspector lands on a populated snapshot. Without this the
+      // inspector first renders against a stale (or absent) workflow
+      // record — model/agent fields look empty until the user manually
+      // switches tabs and back (the user's #2a complaint).
+      await sync.session.sync(session.id, { force: true }).catch(() => undefined)
       navigate(`/${slug}/session/${session.id}`)
     } catch (err) {
       console.error("create workflow task failed", err)

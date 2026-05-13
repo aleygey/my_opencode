@@ -244,15 +244,15 @@ function AgentCard({
             <span className="truncate text-[10.5px] text-[var(--wf-dim)]">{item.role}</span>
             {inherited && (
               <span
-                className="ml-auto flex-shrink-0 rounded-full border px-1.5 py-px text-[9px] font-bold uppercase tracking-[0.06em]"
+                className="ml-auto flex-shrink-0 rounded-[4px] border px-1.5 py-px text-[9.5px] font-bold uppercase tracking-[0.08em]"
                 style={{
-                  borderColor: 'var(--wf-line)',
-                  background: 'var(--wf-chip)',
-                  color: 'var(--wf-dim)',
+                  borderColor: 'var(--wf-warn, oklch(0.70 0.15 70))',
+                  background: 'color-mix(in oklch, var(--wf-warn, oklch(0.70 0.15 70)) 12%, transparent)',
+                  color: 'var(--wf-warn, oklch(0.60 0.18 70))',
                 }}
-                title="Inherits from session — runtime auto-routes this node to the orchestrator's current model. Click the model pill below to override per-node."
+                title="此节点没有自己的模型，运行时会临时使用 orchestrator session 的当前模型。点下面的模型 pill 给本节点设置独立的模型，避免和 master 共用。"
               >
-                inherits
+                继承 master
               </span>
             )}
           </div>
@@ -270,16 +270,27 @@ function AgentCard({
               unset
                 ? 'No model assigned — pick one to route this agent'
                 : inherited
-                  ? 'Inherits the orchestrator session model. Click to set explicitly.'
+                  ? '当前没有独立模型，运行时继承 master session — 点击设置本节点专属模型'
                   : 'Click to change model'
             }
           >
             <Cpu className="h-3 w-3 flex-shrink-0 text-[var(--wf-dim)]" strokeWidth={1.8} />
             <span
               className="min-w-0 flex-1 truncate font-mono font-medium"
-              style={{ color: labelColor }}
+              style={{
+                color: labelColor,
+                // When inherited, italicise + mute so the user can see at a
+                // glance "this isn't this slave's own model, it's piggybacking
+                // on master's session model". Without this, picking a new
+                // master model makes every inheriting slave card display the
+                // new value and the user thought "all agents changed when I
+                // changed one" — when really only master changed and the
+                // slaves were inheriting the whole time.
+                fontStyle: inherited ? 'italic' : 'normal',
+                opacity: inherited ? 0.65 : 1,
+              }}
             >
-              {label}
+              {inherited ? `${label}（继承）` : label}
             </span>
             <Pencil className="h-3 w-3 flex-shrink-0 text-[var(--wf-dim)]" strokeWidth={1.8} />
           </div>

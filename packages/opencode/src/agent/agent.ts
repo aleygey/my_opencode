@@ -127,6 +127,12 @@ export const layer = Layer.effect(
           workflow_read: "allow" as const,
           workflow_need_fulfill: "allow" as const,
           workflow_checkpoint_create: "allow" as const,
+          // Slaves MUST NOT spin up sub-subagents via the generic `task`
+          // tool — that bypasses the workflow graph (the same reason the
+          // orchestrator prompt forbids `task` at the master level).
+          // User reported slaves silently calling `task` and bringing in
+          // off-canvas helpers; explicit deny here closes the gap.
+          task: { "*": "deny" as const },
         }
 
         const agents: Record<string, Info> = {

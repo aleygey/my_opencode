@@ -1237,12 +1237,21 @@ export namespace Workflow {
     if (event.kind === "node.completed") return { kind: "node.completed", reason: "node completed" }
     if (event.kind === "node.failed") return { kind: "node.failed", reason: "node failed" }
     if (event.kind === "node.interrupted") return { kind: "node.interrupted", reason: "node interrupted" }
-    if (
-      event.kind === "node.attempt_reported" &&
-      typeof event.payload.result === "string" &&
-      event.payload.result !== "success"
-    ) {
-      return { kind: "node.attempt_reported", reason: `attempt reported ${event.payload.result}` }
+    if (event.kind === "node.attempt_reported") {
+      const result = typeof event.payload.result === "string" ? event.payload.result : ""
+      // Previously this skipped result="success" on the theory that a
+      // `node.completed` would follow shortly and wake the master then.
+      // But slaves don't always transition their node to `completed` —
+      // sometimes they just update state_json + attempt_history with a
+      // success summary and stay `running`/`waiting` for the master to
+      // decide what to do next. With the old gate the master never got
+      // woken in that case (user's #3 complaint: "子节点 complete 并
+      // update，仍然出现 master 未被正确唤醒"). Fire on every reported
+      // attempt; master can no-op if status already completed.
+      return {
+        kind: "node.attempt_reported",
+        reason: result ? `attempt reported ${result}` : "attempt reported",
+      }
     }
     if (event.kind === "node.attempt_limit_reached") return { kind: "node.limit_reached", reason: "attempt limit reached" }
     if (event.kind === "node.stalled") return { kind: "node.stalled", reason: "node stalled without recent pull or update" }

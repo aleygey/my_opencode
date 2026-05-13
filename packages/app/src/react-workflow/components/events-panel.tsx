@@ -415,8 +415,23 @@ function FlatTimeline({
     <ol className="wf-timeline">
       {sorted.map((ev) => {
         const tone = eventTone(ev.kind)
+        // `node.attempt_reported` is the slave's "here's what I did this
+        // turn" headline — bump its visual weight via a data-attr so the
+        // CSS can render a thicker dot + bolder summary. Per-attempt
+        // updates are the user's primary signal; tool/update events
+        // stay as background. Workflow lifecycle (`workflow.*`) also
+        // gets the "primary" tier so the user sees task-level milestones
+        // stand out from the noise.
+        const isPrimary =
+          ev.kind === "node.attempt_reported" || ev.kind.startsWith("workflow.")
+        const isWorkflowLevel = ev.kind.startsWith("workflow.")
         return (
-          <li key={String(ev.id)} className="wf-timeline-row">
+          <li
+            key={String(ev.id)}
+            className="wf-timeline-row"
+            data-primary={isPrimary ? "true" : "false"}
+            data-scope={isWorkflowLevel ? "workflow" : "node"}
+          >
             <span className="wf-timeline-time">{fmtTime(ev.time)}</span>
             <span className="wf-timeline-spine" aria-hidden>
               <span className={`wf-timeline-dot wf-timeline-dot--${tone}`} />
