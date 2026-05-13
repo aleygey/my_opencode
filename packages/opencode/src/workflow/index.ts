@@ -1222,13 +1222,6 @@ export namespace Workflow {
                 `Trigger event ID: ${wake.eventID}`,
                 "",
                 `Call workflow_read with workflow_id="${wake.workflowID}" and cursor=${Math.max(0, wake.eventID - 1)} first.`,
-                // Hard guard against the orchestrator's habit of misreading a
-                // mid-flight failure (especially `checkpoint.failed`) as
-                // "user wants a new task" and calling workflow_create. The
-                // workflow_id you need is RIGHT THERE in this wake message;
-                // every recovery path goes through editing THIS graph, not
-                // starting a fresh one.
-                `DO NOT call workflow_create. This wake is INSIDE workflow ${wake.workflowID}; recovery happens via workflow_graph_propose / workflow_control / workflow_node_start scoped to that id.`,
                 hint,
               ]
                 .filter(Boolean)
