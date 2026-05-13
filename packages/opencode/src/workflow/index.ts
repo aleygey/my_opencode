@@ -1882,6 +1882,34 @@ export namespace Workflow {
         reason: wake.reason,
         time: Date.now(),
       })
+
+      // Fire-and-forget refiner sediment on terminal failure events too —
+      // not just on workflow.finalize. The user wants tool errors /
+      // timeouts / budget breaches captured AS exp the moment they
+      // happen, so the same failure doesn't repeat next workflow. We
+      // limit to the terminal "this attempt is dead" signals (failed /
+      // attempt_limit / budget / checkpoint failed) to avoid spamming
+      // refine calls on every transient tool error. observeWorkflow-
+      // Completion's dedup + auto_enabled gate handles the rest.
+      const failureKinds = [
+        "node.failed",
+        "node.attempt_limit_reached",
+        "node.budget_exceeded",
+        "checkpoint.failed",
+      ]
+      if (failureKinds.includes(info.kind)) {
+        void (async () => {
+          try {
+            const { Refiner } = await import("@/refiner")
+            await Refiner.observeWorkflowCompletion({
+              workflowID: info.workflow_id,
+              source: "auto",
+            }).catch(() => undefined)
+          } catch {
+            /* refiner not wired up — no-op */
+          }
+        })()
+      }
     })
     const unsubStatus = Bus.subscribe(SessionStatus.Event.Status, async (event) => {
       if (event.properties.status.type !== "idle") return

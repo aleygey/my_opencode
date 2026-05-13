@@ -4245,6 +4245,315 @@ function computeGraphLayoutForce(
   return out
 }
 
+/* Global re-refine plan viewer. The backend produces a deterministic
+ * scan of the experience library (mergeable pairs, dead tags, orphans,
+ * stale entries, conflicts). This modal renders each candidate with an
+ * Accept / Dismiss action — Accept routes through the existing merge /
+ * delete endpoints; Dismiss just hides the row for this session so the
+ * user can work through the list without re-seeing rejected ones. */
+type ReRefinePlanShape = {
+  ok: boolean
+  summary?: { mergeable: number; dead_tag: number; orphan: number; stale: number; conflicts: number }
+  mergeable?: Array<{ a_id: string; b_id: string; similarity: number; a_title: string; b_title: string }>
+  dead_tag?: Array<{ tag: string; count: number }>
+  orphan?: Array<{ id: string; title: string }>
+  stale?: Array<{ id: string; title: string; last_refined_at: number; injection_count: number }>
+  conflicts?: Array<{ a_id: string; b_id: string; a_title: string; b_title: string }>
+}
+function ReRefineModal(props: {
+  plan: ReRefinePlanShape | undefined
+  loading: boolean
+  dismissed: Set<string>
+  experienceByID: (id: string) => Experience | undefined
+  onDismiss: (key: string) => void
+  onMerge: (ids: string[]) => Promise<void> | void
+  onDelete: (id: string, reason: string) => Promise<void> | void
+  onReload: () => void
+  onClose: () => void
+}) {
+  // ESC closes — same UX contract as the logs modal.
+  onMount(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation()
+        props.onClose()
+      }
+    }
+    window.addEventListener("keydown", onKey, true)
+    onCleanup(() => window.removeEventListener("keydown", onKey, true))
+  })
+
+  const dismissedKey = (kind: string, payload: string) => `${kind}:${payload}`
+
+  const mergeable = createMemo(() =>
+    (props.plan?.mergeable ?? []).filter(
+      (m) => !props.dismissed.has(dismissedKey("merge", `${m.a_id}|${m.b_id}`)),
+    ),
+  )
+  const orphan = createMemo(() =>
+    (props.plan?.orphan ?? []).filter(
+      (o) => !props.dismissed.has(dismissedKey("orphan", o.id)),
+    ),
+  )
+  const stale = createMemo(() =>
+    (props.plan?.stale ?? []).filter(
+      (s) => !props.dismissed.has(dismissedKey("stale", s.id)),
+    ),
+  )
+  const conflicts = createMemo(() =>
+    (props.plan?.conflicts ?? []).filter(
+      (c) => !props.dismissed.has(dismissedKey("conflict", `${c.a_id}|${c.b_id}`)),
+    ),
+  )
+  const deadTag = createMemo(() =>
+    (props.plan?.dead_tag ?? []).filter(
+      (t) => !props.dismissed.has(dismissedKey("tag", t.tag)),
+    ),
+  )
+
+  return (
+    <Portal>
+      <div class="rf-logs-scrim" onClick={props.onClose} role="presentation">
+        <div
+          class="rf-logs-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Re-refine library"
+          onClick={(ev) => ev.stopPropagation()}
+        >
+          <div class="rf-logs-hd">
+            <span class="rf-logs-title">全局整理 · re-refine plan</span>
+            <Show when={props.plan?.summary}>
+              <span class="rf-logs-meta">
+                {mergeable().length} 合并 · {deadTag().length} 死 tag ·{" "}
+                {orphan().length} 孤儿 · {stale().length} 长期未用 ·{" "}
+                {conflicts().length} 冲突
+              </span>
+            </Show>
+            <span style={{ flex: 1 }} />
+            <button
+              type="button"
+              class="rune-btn"
+              data-size="xs"
+              onClick={() => props.onReload()}
+              disabled={props.loading}
+            >
+              {props.loading ? "刷新中…" : "↻ 刷新"}
+            </button>
+            <button
+              type="button"
+              class="rf-logs-close"
+              aria-label="Close"
+              onClick={props.onClose}
+            >
+              ×
+            </button>
+          </div>
+
+          <div class="rf-logs-body" style={{ display: "block", padding: "16px 24px", overflow: "auto" }}>
+            <Show
+              when={!props.loading && props.plan?.ok !== false}
+              fallback={
+                <div class="rf-logs-empty">
+                  {props.loading ? "扫描中…" : "未能加载 plan。"}
+                </div>
+              }
+            >
+              {/* mergeable */}
+              <Show when={mergeable().length > 0}>
+                <h3 class="rf-rerefine-h3">疑似重复（{mergeable().length}）</h3>
+                <p class="rf-rerefine-hint">
+                  title + abstract 字符重合度 ≥ 55%。合并保留较新的一条；点击 Dismiss 跳过此对。
+                </p>
+                <For each={mergeable()}>
+                  {(m) => (
+                    <div class="rf-rerefine-row">
+                      <div class="rf-rerefine-row-body">
+                        <div class="rf-rerefine-row-title">
+                          {m.a_title} <span class="rf-rerefine-vs">↔</span> {m.b_title}
+                        </div>
+                        <div class="rf-rerefine-row-meta">
+                          similarity {Math.round(m.similarity * 100)}% · {m.a_id.slice(-8)} / {m.b_id.slice(-8)}
+                        </div>
+                      </div>
+                      <div class="rf-rerefine-row-actions">
+                        <button
+                          type="button"
+                          class="rune-btn"
+                          data-size="xs"
+                          data-variant="primary"
+                          onClick={() => void props.onMerge([m.a_id, m.b_id])}
+                        >
+                          ⇒ 合并
+                        </button>
+                        <button
+                          type="button"
+                          class="rune-btn"
+                          data-size="xs"
+                          onClick={() =>
+                            props.onDismiss(dismissedKey("merge", `${m.a_id}|${m.b_id}`))
+                          }
+                        >
+                          忽略
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </For>
+              </Show>
+
+              {/* orphan */}
+              <Show when={orphan().length > 0}>
+                <h3 class="rf-rerefine-h3">孤儿 experience（{orphan().length}）</h3>
+                <p class="rf-rerefine-hint">没有任何 observation 在引用。可删除。</p>
+                <For each={orphan()}>
+                  {(o) => (
+                    <div class="rf-rerefine-row">
+                      <div class="rf-rerefine-row-body">
+                        <div class="rf-rerefine-row-title">{o.title}</div>
+                        <div class="rf-rerefine-row-meta">{o.id.slice(-12)}</div>
+                      </div>
+                      <div class="rf-rerefine-row-actions">
+                        <button
+                          type="button"
+                          class="rune-btn"
+                          data-size="xs"
+                          data-variant="primary"
+                          onClick={() => void props.onDelete(o.id, "orphan_no_observations")}
+                        >
+                          删除
+                        </button>
+                        <button
+                          type="button"
+                          class="rune-btn"
+                          data-size="xs"
+                          onClick={() => props.onDismiss(dismissedKey("orphan", o.id))}
+                        >
+                          忽略
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </For>
+              </Show>
+
+              {/* stale */}
+              <Show when={stale().length > 0}>
+                <h3 class="rf-rerefine-h3">长期未用（{stale().length}）</h3>
+                <p class="rf-rerefine-hint">
+                  90+ 天未 refine 且 retrieve 也没有引用过。可考虑删除或者手动 re-refine。
+                </p>
+                <For each={stale()}>
+                  {(s) => (
+                    <div class="rf-rerefine-row">
+                      <div class="rf-rerefine-row-body">
+                        <div class="rf-rerefine-row-title">{s.title}</div>
+                        <div class="rf-rerefine-row-meta">
+                          last refined {new Date(s.last_refined_at).toISOString().slice(0, 10)} ·
+                          0 injections
+                        </div>
+                      </div>
+                      <div class="rf-rerefine-row-actions">
+                        <button
+                          type="button"
+                          class="rune-btn"
+                          data-size="xs"
+                          data-variant="primary"
+                          onClick={() => void props.onDelete(s.id, "stale_unused_90d")}
+                        >
+                          删除
+                        </button>
+                        <button
+                          type="button"
+                          class="rune-btn"
+                          data-size="xs"
+                          onClick={() => props.onDismiss(dismissedKey("stale", s.id))}
+                        >
+                          忽略
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </For>
+              </Show>
+
+              {/* conflicts */}
+              <Show when={conflicts().length > 0}>
+                <h3 class="rf-rerefine-h3">显式冲突（{conflicts().length}）</h3>
+                <p class="rf-rerefine-hint">
+                  这些对被 refiner 标记为 conflicts_with；请人工确认保留哪一条。
+                </p>
+                <For each={conflicts()}>
+                  {(c) => (
+                    <div class="rf-rerefine-row">
+                      <div class="rf-rerefine-row-body">
+                        <div class="rf-rerefine-row-title">
+                          {c.a_title} <span class="rf-rerefine-vs">⚡</span> {c.b_title}
+                        </div>
+                        <div class="rf-rerefine-row-meta">
+                          {c.a_id.slice(-8)} / {c.b_id.slice(-8)}
+                        </div>
+                      </div>
+                      <div class="rf-rerefine-row-actions">
+                        <button
+                          type="button"
+                          class="rune-btn"
+                          data-size="xs"
+                          onClick={() =>
+                            props.onDismiss(dismissedKey("conflict", `${c.a_id}|${c.b_id}`))
+                          }
+                        >
+                          已处理
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </For>
+              </Show>
+
+              {/* dead tags */}
+              <Show when={deadTag().length > 0}>
+                <h3 class="rf-rerefine-h3">只出现一次的 tag（{deadTag().length}）</h3>
+                <p class="rf-rerefine-hint">这些 tag 只挂在一条 experience 上，可以考虑改成更通用的父类。</p>
+                <div class="rf-rerefine-tags">
+                  <For each={deadTag()}>
+                    {(t) => (
+                      <span class="rune-chip">
+                        #{t.tag}
+                        <button
+                          type="button"
+                          class="rf-rerefine-tag-dismiss"
+                          aria-label={`忽略 ${t.tag}`}
+                          onClick={() => props.onDismiss(dismissedKey("tag", t.tag))}
+                        >
+                          ×
+                        </button>
+                      </span>
+                    )}
+                  </For>
+                </div>
+              </Show>
+
+              {/* all clean */}
+              <Show
+                when={
+                  mergeable().length === 0 &&
+                  orphan().length === 0 &&
+                  stale().length === 0 &&
+                  conflicts().length === 0 &&
+                  deadTag().length === 0
+                }
+              >
+                <div class="rf-logs-empty">没有发现需要处理的候选。库很干净！</div>
+              </Show>
+            </Show>
+          </div>
+        </div>
+      </div>
+    </Portal>
+  )
+}
+
 /* Refiner activity log browser. Shows every refiner run grouped by
  * session — including queries that the refiner classed as noise or
  * dropped (those that DIDN'T crystallise into an experience), so the
@@ -5309,6 +5618,23 @@ export default function RefinerPage() {
   const [showLogs, setShowLogs] = createSignal(false)
   const [logEntries, setLogEntries] = createSignal<RefinerLogEntry[]>([])
   const [logsLoading, setLogsLoading] = createSignal(false)
+  // Global re-refine plan — populated when the user opens the "全局整理"
+  // modal. Backend returns a deterministic scan of mergeable / dead_tag /
+  // orphan / stale / conflicts; UI lets the user act on each candidate
+  // through existing merge / delete endpoints, then refreshes.
+  type ReRefinePlan = {
+    ok: boolean
+    summary?: { mergeable: number; dead_tag: number; orphan: number; stale: number; conflicts: number }
+    mergeable?: Array<{ a_id: string; b_id: string; similarity: number; a_title: string; b_title: string }>
+    dead_tag?: Array<{ tag: string; count: number }>
+    orphan?: Array<{ id: string; title: string }>
+    stale?: Array<{ id: string; title: string; last_refined_at: number; injection_count: number }>
+    conflicts?: Array<{ a_id: string; b_id: string; a_title: string; b_title: string }>
+  }
+  const [showReRefine, setShowReRefine] = createSignal(false)
+  const [reRefinePlan, setReRefinePlan] = createSignal<ReRefinePlan | undefined>()
+  const [reRefineLoading, setReRefineLoading] = createSignal(false)
+  const [reRefineDismissed, setReRefineDismissed] = createSignal<Set<string>>(new Set())
   const [sortMode, setSortMode] = createSignal<"kind" | "recent" | "newest">("kind")
   const [scopeMode, setScopeMode] = createSignal<"all" | "session">("all")
   const [mergeIDs, setMergeIDs] = createSignal<Set<string>>(new Set())
@@ -5385,6 +5711,32 @@ export default function RefinerPage() {
   const openLogs = () => {
     setShowLogs(true)
     void reloadLogs()
+  }
+
+  // Re-fetch + open the global re-refine plan modal. The plan is purely
+  // a read; user-driven Accept on each row calls the same merge / delete
+  // endpoints that the existing UI uses. We re-fetch every open so the
+  // user always sees current state (no caching).
+  const reloadReRefine = async () => {
+    const b = apiBase()
+    if (!b) return
+    setReRefineLoading(true)
+    try {
+      const res = await apiRequest<ReRefinePlan>(b, "/experimental/refiner/global-rerefine/plan", {
+        query: { stale_after_ms: 90 * 24 * 60 * 60 * 1000 },
+      })
+      setReRefinePlan(res)
+    } catch (err) {
+      console.warn("re-refine plan load failed", err)
+      setReRefinePlan({ ok: false })
+    } finally {
+      setReRefineLoading(false)
+    }
+  }
+  const openReRefine = async () => {
+    setShowReRefine(true)
+    setReRefineDismissed(new Set<string>())
+    await reloadReRefine()
   }
 
   // Each resource is wrapped in `stableFetcher` so polling refetches don't
@@ -6113,6 +6465,15 @@ export default function RefinerPage() {
               type="button"
               class="rune-btn"
               data-size="sm"
+              onClick={() => void openReRefine()}
+              title="扫描整库，列出疑似重复 / 死 tag / 孤儿 / 长期未用 / 显式冲突等候选，逐项选择合并或删除"
+            >
+              ⇄ 全局整理
+            </button>
+            <button
+              type="button"
+              class="rune-btn"
+              data-size="sm"
               data-variant="primary"
               onClick={() => setAction({ type: "create" })}
               title="手动新建 experience"
@@ -6479,6 +6840,50 @@ export default function RefinerPage() {
           loading={logsLoading()}
           onClose={() => setShowLogs(false)}
           onReload={() => void reloadLogs()}
+        />
+      </Show>
+
+      <Show when={showReRefine()}>
+        <ReRefineModal
+          plan={reRefinePlan()}
+          loading={reRefineLoading()}
+          dismissed={reRefineDismissed()}
+          experienceByID={(id) =>
+            (overview()?.experiences ?? []).find((e) => e.id === id)
+          }
+          onDismiss={(key) => {
+            setReRefineDismissed((prev) => {
+              const next = new Set(prev)
+              next.add(key)
+              return next
+            })
+          }}
+          onMerge={async (ids) => {
+            const b = apiBase()
+            if (!b) return
+            try {
+              await apiMergeExperiences(b, ids, "global-rerefine")
+              flash(`Merged ${ids.length} → 1`)
+              refreshAll()
+              await reloadReRefine()
+            } catch (err) {
+              console.warn("merge failed", err)
+            }
+          }}
+          onDelete={async (id, reason) => {
+            const b = apiBase()
+            if (!b) return
+            try {
+              await apiDeleteExperience(b, id, { cascade: true, reason })
+              flash("Deleted")
+              refreshAll()
+              await reloadReRefine()
+            } catch (err) {
+              console.warn("delete failed", err)
+            }
+          }}
+          onReload={() => void reloadReRefine()}
+          onClose={() => setShowReRefine(false)}
         />
       </Show>
 

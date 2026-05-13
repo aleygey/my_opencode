@@ -207,6 +207,26 @@ export const layer: Layer.Layer<
           yield* fs.writeFileString(target, text ? `${text}\n` : "").pipe(Effect.orDie)
         })
 
+        // KNOWN LIMITATION (#8 — multi-git workspaces):
+        //
+        // The shadow git here treats nested `.git` directories inside the
+        // worktree as gitlinks (mode 160000 submodule pointers), so file
+        // changes UNDERNEATH a nested git repo never show up in the
+        // snapshot diff — only the nested repo's HEAD pointer would
+        // change, and even that only when the user commits in the nested
+        // repo. Symptom: "code change page is blank" when the user's
+        // edit lives inside a sub-package that has its own .git (build
+        // workspace at parent level, source repo at child level).
+        //
+        // Fixing this safely requires temporarily renaming nested .git
+        // dirs before `git add --all` and restoring after (atomic, with
+        // crash-recovery for "process died mid-rename"). That work is
+        // tracked as a follow-up; the rename approach has enough failure
+        // modes (orphaned .git on crash, cross-FS rename failures) that
+        // shipping it half-finished would be worse than the current
+        // silent gap. Workaround until fix lands: commit changes in the
+        // nested repo and snapshot will then pick up the HEAD-pointer
+        // diff for the gitlink.
         const add = Effect.fnUntraced(function* () {
           yield* sync()
           const [diff, other] = yield* Effect.all(

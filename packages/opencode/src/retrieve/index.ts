@@ -76,11 +76,19 @@ const PickSource = z.enum([
 type PickSource = z.infer<typeof PickSource>
 
 /** Kinds eligible for Tier A baseline injection. Stable workspace rules
- * that don't depend on what the user just asked. */
+ * that don't depend on what the user just asked.
+ *
+ * `workflow_pattern` was added when the workflow-level refiner sediment
+ * hook landed (kind: "this is how a similar task ran last time"). These
+ * are session-agnostic shaping signals — surface them as baseline so
+ * the master/slave on a NEW workflow has a chance to recall the prior
+ * pattern even before the user types anything specific. The retrieval
+ * pipeline still sorts + caps so this won't run away. */
 const BASELINE_KINDS = new Set([
   "constraint_or_policy",
   "preference_style",
   "workflow_rule",
+  "workflow_pattern",
 ])
 
 const PickedExperienceSchema = z.object({

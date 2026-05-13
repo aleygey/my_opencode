@@ -3642,3 +3642,76 @@
 }
 .rune-refiner-auto-toggle:has(input:checked) { color: var(--rune-fg); }
 
+
+/* ── Re-refine plan modal (global library cleanup) ─────────── */
+.rf-rerefine-h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--rune-fg);
+  margin: 18px 0 4px;
+  letter-spacing: -0.01em;
+}
+.rf-rerefine-h3:first-child {
+  margin-top: 0;
+}
+.rf-rerefine-hint {
+  font-size: 11.5px;
+  color: var(--rune-fg-faint);
+  margin: 0 0 8px;
+}
+.rf-rerefine-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--rune-line-faint);
+  border-radius: var(--rune-r-sm);
+  margin-bottom: 6px;
+  background: var(--rune-bg-base);
+}
+.rf-rerefine-row-body {
+  flex: 1;
+  min-width: 0;
+}
+.rf-rerefine-row-title {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--rune-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rf-rerefine-row-meta {
+  font-family: var(--rune-font-mono);
+  font-size: 10.5px;
+  color: var(--rune-fg-faint);
+  margin-top: 2px;
+}
+.rf-rerefine-vs {
+  color: var(--rune-fg-faint);
+  font-weight: 400;
+  margin: 0 4px;
+}
+.rf-rerefine-row-actions {
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+.rf-rerefine-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 0;
+}
+.rf-rerefine-tag-dismiss {
+  border: 0;
+  background: transparent;
+  color: var(--rune-fg-faint);
+  cursor: pointer;
+  font-size: 12px;
+  margin-left: 4px;
+  padding: 0 2px;
+}
+.rf-rerefine-tag-dismiss:hover {
+  color: var(--rune-fg);
+}
