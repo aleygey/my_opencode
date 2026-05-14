@@ -17,6 +17,7 @@ import PROMPT_DEPLOY from "./prompt/deploy.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
 import PROMPT_ORCHESTRATOR from "./prompt/orchestrator.txt"
 import PROMPT_REFINER from "./prompt/refiner.txt"
+import PROMPT_REFINER_CURATOR from "./prompt/refiner-curator.txt"
 import PROMPT_RETRIEVE from "./prompt/retrieve.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
@@ -420,6 +421,39 @@ export const layer = Layer.effect(
               user,
             ),
             prompt: PROMPT_REFINER,
+          },
+          "refiner-curator": {
+            name: "refiner-curator",
+            description:
+              "经验库管理员：跟用户互动式清理 experience 库——合并 / 删除 / 调标签 / 修 scope。每一步都用 question 卡片送审。",
+            mode: "primary",
+            options: {},
+            native: true,
+            // Hide from the rooting / agent-picker UI by default; the
+            // refiner page spawns it directly via the curator/start
+            // endpoint, so the user never picks it from a dropdown.
+            hidden: true,
+            // Only allow the precise toolset this agent needs. Refusing
+            // everything else (file edits, bash, workflow tools, etc.)
+            // keeps the curator from accidentally drifting into
+            // unrelated work — its only job is to drive the question
+            // → mutate-refiner loop.
+            permission: Permission.merge(
+              defaults,
+              Permission.fromConfig({
+                "*": "deny",
+                question: "allow",
+                refiner_list_experiences: "allow",
+                refiner_merge: "allow",
+                refiner_delete: "allow",
+                refiner_update_categories: "allow",
+                refiner_update_scope: "allow",
+                refiner_re_refine: "allow",
+              }),
+              user,
+            ),
+            prompt: PROMPT_REFINER_CURATOR,
+            color: "#7C3AED",
           },
           retrieve: {
             name: "retrieve",

@@ -13,6 +13,14 @@ import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
 import { SkillTool } from "./skill"
 import { RecallExperienceTool } from "./recall-experience"
+import {
+  RefinerListExperiencesTool,
+  RefinerMergeTool,
+  RefinerDeleteTool,
+  RefinerUpdateCategoriesTool,
+  RefinerUpdateScopeTool,
+  RefinerReRefineTool,
+} from "./refiner-curator"
 import * as Tool from "./tool"
 import { Config } from "../config"
 import { type ToolContext as PluginToolContext, type ToolDefinition } from "@opencode-ai/plugin"
@@ -150,6 +158,12 @@ export const layer: Layer.Layer<
     const patchtool = yield* ApplyPatchTool
     const skilltool = yield* SkillTool
     const recalltool = yield* RecallExperienceTool
+    const refinerList = yield* RefinerListExperiencesTool
+    const refinerMerge = yield* RefinerMergeTool
+    const refinerDelete = yield* RefinerDeleteTool
+    const refinerUpdateCategories = yield* RefinerUpdateCategoriesTool
+    const refinerUpdateScope = yield* RefinerUpdateScopeTool
+    const refinerReRefine = yield* RefinerReRefineTool
     const serialListPorts = yield* SerialListPortsTool
     const serialList = yield* SerialListTool
     const serialCreate = yield* SerialCreateTool
@@ -257,6 +271,12 @@ export const layer: Layer.Layer<
           code: Tool.init(codesearch),
           skill: Tool.init(skilltool),
           recall: Tool.init(recalltool),
+          refinerList: Tool.init(refinerList),
+          refinerMerge: Tool.init(refinerMerge),
+          refinerDelete: Tool.init(refinerDelete),
+          refinerUpdateCategories: Tool.init(refinerUpdateCategories),
+          refinerUpdateScope: Tool.init(refinerUpdateScope),
+          refinerReRefine: Tool.init(refinerReRefine),
           patch: Tool.init(patchtool),
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
@@ -310,6 +330,12 @@ export const layer: Layer.Layer<
             tool.code,
             tool.skill,
             tool.recall,
+            tool.refinerList,
+            tool.refinerMerge,
+            tool.refinerDelete,
+            tool.refinerUpdateCategories,
+            tool.refinerUpdateScope,
+            tool.refinerReRefine,
             tool.patch,
             tool.serialListPorts,
             tool.serialList,

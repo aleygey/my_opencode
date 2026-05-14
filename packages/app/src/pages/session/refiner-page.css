@@ -2084,6 +2084,59 @@
 }
 
 /* ──────────────────────────────────────────────────────
+   Curator modal — fullscreen overlay that iframes the
+   standard session page for the curator session. Lets
+   us reuse the full chat + question-dialog UI without
+   duplicating any of it inside refiner-page.
+   ────────────────────────────────────────────────────── */
+
+.refiner-page .rf-curator-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.refiner-page .rf-curator-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(1100px, 100%);
+  height: 100%;
+  max-height: calc(100vh - 48px);
+  background: var(--rf-card);
+  border: 1px solid var(--rf-border, color-mix(in oklch, var(--rf-fg) 18%, transparent));
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+}
+
+.refiner-page .rf-curator-hd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--rf-border, color-mix(in oklch, var(--rf-fg) 18%, transparent));
+  background: var(--rf-card-soft, color-mix(in oklch, var(--rf-card) 95%, transparent));
+}
+
+.refiner-page .rf-curator-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--rf-fg);
+}
+
+.refiner-page .rf-curator-frame {
+  flex: 1;
+  width: 100%;
+  border: none;
+  background: var(--rf-card);
+}
+
+/* ──────────────────────────────────────────────────────
    Merge hint banner — shows above the list when no exp is
    multi-selected, so the user discovers the modifier-click
    gesture. Hides automatically once anything is selected

@@ -8,6 +8,8 @@ import { Instance } from "@/project/instance"
 import { Project } from "@/project"
 import { MCP } from "@/mcp"
 import { Session } from "@/session"
+import { SessionPrompt } from "@/session/prompt"
+import { SessionID } from "@/session/schema"
 import { Config } from "@/config"
 import { ConsoleState } from "@/config/console-state"
 import { Account } from "@/account/account"
@@ -1084,6 +1086,74 @@ export const ExperimentalRoutes = lazy(() =>
             overall_summary: body.overall_summary ?? "",
           }),
         )
+      },
+    )
+    .post(
+      "/refiner/curator/start",
+      describeRoute({
+        summary: "Start an interactive experience-library curator session",
+        description:
+          "Spin up a fresh session with the `refiner-curator` agent and fire the initial trigger prompt. The agent's permission ruleset gives it exactly the refiner_* tools + question; the system prompt drives the workflow (ask user which dimensions to cover → list experiences → ask user about each merge / delete / category / scope decision via question cards → apply). Returns the new sessionID so the frontend can open a modal that subscribes to its messages and renders question dialogs.",
+        operationId: "experimental.refiner.curatorStart",
+        responses: {
+          200: {
+            description: "New curator session",
+            content: { "application/json": { schema: resolver(z.record(z.string(), z.unknown())) } },
+          },
+        },
+      }),
+      validator(
+        "json",
+        z.object({
+          /** Optional model override. Default = the agent's configured model. */
+          model: z
+            .object({
+              providerID: z.string(),
+              modelID: z.string(),
+              variant: z.string().optional(),
+            })
+            .optional(),
+        }),
+      ),
+      async (c) => {
+        const body = c.req.valid("json")
+        const session = await AppRuntime.runPromise(
+          Effect.gen(function* () {
+            const svc = yield* Session.Service
+            return yield* svc.create({})
+          }),
+        )
+        // Fire the initial trigger as a user message. The agent's prompt
+        // takes over from here and walks the user through the library.
+        void AppRuntime.runPromise(
+          Effect.gen(function* () {
+            const sp = yield* SessionPrompt.Service
+            yield* sp.prompt({
+              sessionID: SessionID.make(session.id),
+              agent: "refiner-curator",
+              model: body.model
+                ? {
+                    providerID: ProviderID.make(body.model.providerID),
+                    modelID: ModelID.make(body.model.modelID),
+                  }
+                : undefined,
+              variant: body.model?.variant,
+              parts: [
+                {
+                  type: "text",
+                  text: "开始整理 experience 库。按你的 system prompt 走启动序列：先 question 问我本轮要覆盖哪些维度，再拉清单，再逐项问我决策。",
+                },
+              ],
+            })
+          }),
+        ).catch((err) => {
+          console.error("[refiner/curator/start] initial prompt failed", err)
+        })
+        return c.json({
+          ok: true,
+          sessionID: session.id,
+          agent: "refiner-curator",
+        })
       },
     )
     .post(

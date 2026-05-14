@@ -5809,61 +5809,50 @@ export default function RefinerPage() {
     }
   }
 
-  // ── Global LLM refine: 1 LLM call over the entire active library →
-  // structured plan → user confirms → apply via existing merge/delete
-  // paths. Two-step (plan + apply) so the user can sanity-check before
-  // anything mutates.
-  type LLMPlanShape = {
-    ok: boolean
-    generated_at?: number
-    experience_count?: number
-    reason?: string
-    plan?: {
-      merges: Array<{ ids: string[]; keep: string; reason: string }>
-      deletions: Array<{ id: string; reason: string }>
-      conflicts: Array<{ a_id: string; b_id: string; resolution: string; reason: string }>
-      keeps_as_is: string[]
-      overall_summary: string
-    }
-  }
+  // ── Interactive curator session: the LLM walks the user through the
+  // entire experience library via question cards. We spawn a fresh
+  // session with the `refiner-curator` agent, then open a modal that
+  // iframes the regular session page for that id — full chat,
+  // question dialogs, composer, the whole thing — without rebuilding
+  // any of it for this modal. Closing the modal leaves the session on
+  // disk so the user can re-open it later from the sessions list.
   const [llmBusy, setLLMBusy] = createSignal(false)
+  const [curatorSessionID, setCuratorSessionID] = createSignal<string | undefined>()
   const onLLMRefineRun = async () => {
     const b = apiBase()
     if (!b) return
     setLLMBusy(true)
     try {
-      const res = await apiRequest<LLMPlanShape>(b, "/experimental/refiner/global-rerefine/llm/plan", {
-        method: "POST",
-        json: {},
-      })
-      if (!res.ok || !res.plan) {
-        flash(`LLM 审视失败：${res.reason ?? "unknown"}`)
-        return
-      }
-      const summary = `${res.plan.overall_summary}\n\n· 合并 ${res.plan.merges.length} 组 · 删除 ${res.plan.deletions.length} 条 · 冲突 ${res.plan.conflicts.length} 对`
-      const confirmed = window.confirm(`LLM 提出的整理方案：\n\n${summary}\n\n点 OK 应用，点 Cancel 放弃。`)
-      if (!confirmed) {
-        flash("已取消 LLM 整理")
-        return
-      }
-      const applyRes = await apiRequest<{
-        applied: { merges: number; deletions: number }
-        skipped: Array<{ kind: string; ids: string[]; reason: string }>
-      }>(b, "/experimental/refiner/global-rerefine/llm/apply", {
-        method: "POST",
-        json: res.plan,
-      })
-      flash(
-        `已应用：合并 ${applyRes.applied.merges} 组 / 删除 ${applyRes.applied.deletions} 条 · 跳过 ${applyRes.skipped.length}`,
+      const res = await apiRequest<{ ok: boolean; sessionID?: string; agent?: string }>(
+        b,
+        "/experimental/refiner/curator/start",
+        { method: "POST", json: {} },
       )
-      refreshAll()
-      await reloadReRefine()
+      if (!res.ok || !res.sessionID) {
+        flash("无法启动整理会话")
+        return
+      }
+      setCuratorSessionID(res.sessionID)
     } catch (err) {
-      console.warn("global LLM refine failed", err)
-      flash("LLM 整理失败：详见 console")
+      console.warn("curator start failed", err)
+      flash("启动整理会话失败：详见 console")
     } finally {
       setLLMBusy(false)
     }
+  }
+  const onCuratorClose = () => {
+    const id = curatorSessionID()
+    setCuratorSessionID(undefined)
+    if (!id) return
+    // Best-effort abort so the curator stops mid-reasoning. Refresh the
+    // page state because the session may have already mutated things.
+    const b = apiBase()
+    if (!b) {
+      refreshAll()
+      return
+    }
+    void apiRequest(b, `/session/${encodeURIComponent(id)}/abort`, { method: "POST" }).catch(() => {})
+    refreshAll()
   }
 
   // Each resource is wrapped in `stableFetcher` so polling refetches don't
@@ -7057,6 +7046,59 @@ export default function RefinerPage() {
           })
         }
       />
+
+      {/* Interactive curator modal — iframes the standard session
+       *  view so we get the full chat + question dialog UI for free.
+       *  Closing the modal aborts the in-flight curator turn so the
+       *  LLM stops mid-reasoning; the session itself is preserved on
+       *  disk and can be re-opened from the sessions list. */}
+      <Show when={curatorSessionID()}>
+        {(id) => (
+          <div
+            class="rf-curator-scrim"
+            role="presentation"
+            onClick={onCuratorClose}
+          >
+            <div
+              class="rf-curator-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-label="经验库整理会话"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div class="rf-curator-hd">
+                <span class="rf-curator-title">🪄 经验库整理 · 会话 {id().slice(-8)}</span>
+                <span style={{ flex: 1 }} />
+                <button
+                  type="button"
+                  class="rune-btn"
+                  data-size="xs"
+                  onClick={() => {
+                    const dir = params.dir
+                    navigate(`/${dir}/session/${id()}`)
+                  }}
+                  title="在完整 session 视图中继续（关闭 modal）"
+                >
+                  ↗ 在 session 页打开
+                </button>
+                <button
+                  type="button"
+                  class="rf-logs-close"
+                  aria-label="Close"
+                  onClick={onCuratorClose}
+                >
+                  ×
+                </button>
+              </div>
+              <iframe
+                class="rf-curator-frame"
+                src={`/${params.dir}/session/${id()}`}
+                title="curator session"
+              />
+            </div>
+          </div>
+        )}
+      </Show>
 
       {/* Modals */}
       <Show when={action()?.type === "create"}>
