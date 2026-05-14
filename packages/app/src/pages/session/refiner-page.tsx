@@ -6225,15 +6225,17 @@ export default function RefinerPage() {
 
   const pickExperienceByID = (id: string, modifiers?: { shift?: boolean; meta?: boolean }) => {
     // Shift / Cmd / Ctrl-click → toggle multi-select for Merge.
+    // Previously this wrote to a separate `selectedIds` signal that
+    // wasn't wired to MergeTray, so the modifier-click selected
+    // visually but the Merge… button never lit up. Now it routes
+    // straight to mergeIDs (the same set MergeTray consumes) so the
+    // tray slides in immediately as soon as the user multi-selects.
     if (modifiers?.shift || modifiers?.meta) {
-      setSelectedIds((prev) => {
-        if (prev.includes(id)) return prev.filter((x) => x !== id)
-        return [...prev, id]
-      })
+      toggleMergeSelect(id)
       return
     }
     // Plain click → clear multi-select and open detail.
-    setSelectedIds([])
+    clearMergeSelection()
     setSelection({ kind: "experience", id: `experience:${id}` })
   }
 
@@ -6944,9 +6946,14 @@ export default function RefinerPage() {
         </Show>
         <Show when={viewMode() === "list"}>
           <div class="rf-main">
+            <Show when={mergeIDs().size === 0}>
+              <div class="rf-merge-hint">
+                提示：按住 <kbd>Shift</kbd> 或 <kbd>⌘/Ctrl</kbd> 点击两条以上 experience，底部会出现 Merge 操作条。
+              </div>
+            </Show>
             <RuneKnowledgeList
               experiences={runeExperiences()}
-              selectedIds={new Set(selectedIds())}
+              selectedIds={mergeIDs()}
               activeTag={activeTag()}
               onPickTag={(t) => setActiveTag(activeTag() === t ? undefined : t)}
               pickedId={(() => {
