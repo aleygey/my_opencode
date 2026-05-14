@@ -1122,7 +1122,8 @@ export const WorkflowUpdateTool = Tool.define(
   Effect.gen(function* () {
     return {
       description:
-        "Update the current workflow node state from inside a subagent session. Only changed fields need to be sent. Pass `ack` to acknowledge runtime command_ids surfaced by workflow_pull. Pass `open_need` to structurally raise a blocker that the orchestrator must fulfill.",
+        "Update the current workflow node state from inside a subagent session. Only changed fields need to be sent. Pass `ack` to acknowledge runtime command_ids surfaced by workflow_pull. Pass `open_need` to structurally raise a blocker that the orchestrator must fulfill. " +
+        "重要：任何写入 `patch.state_json.value.summary` / `patch.result_json.value.summary` / 以及 attempt_history 末尾的 `summary` 字段，都必须用**简体中文**单句陈述「这一轮我做了什么、产物是什么、是否成功」。前端时间线会直接展示该 summary，让用户在不展开节点的情况下就能看到 agent 在干什么。禁止英文 / 代码片段 / 占位符。",
       parameters: WorkflowUpdateParameters,
       execute: (input: z.infer<typeof WorkflowUpdateParameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {

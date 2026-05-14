@@ -983,6 +983,31 @@ export const ExperimentalRoutes = lazy(() =>
       },
     )
     .post(
+      "/refiner/global-rerefine/undo",
+      describeRoute({
+        summary: "Reverse refinement actions within a time window",
+        description:
+          "For every experience whose last `refinement_history` entry is newer than `since_ms`, reverse-apply via the single-exp undo path. Used by the UI '撤销最近整理' button to recover from a global re-refine batch the user regrets. Merge / delete actions are NOT reversed (no history entry on the survivor); the response surfaces what was reverted vs skipped so the user can decide whether to manually re-create.",
+        operationId: "experimental.refiner.undoRefinementsSince",
+        responses: {
+          200: {
+            description: "Batch undo result",
+            content: { "application/json": { schema: resolver(z.record(z.string(), z.unknown())) } },
+          },
+        },
+      }),
+      validator(
+        "json",
+        z.object({
+          since_ms: z.number().int().nonnegative(),
+        }),
+      ),
+      async (c) => {
+        const body = c.req.valid("json")
+        return c.json(await Refiner.undoRefinementsSince(body.since_ms))
+      },
+    )
+    .post(
       "/refiner/observe-workflow/:workflow_id",
       describeRoute({
         summary: "Sediment a completed workflow into the experience library",

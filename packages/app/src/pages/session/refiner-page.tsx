@@ -34,6 +34,7 @@ import "./refiner-page.css"
 const CORE_KINDS = [
   "workflow_rule",
   "workflow_gap",
+  "workflow_pattern",
   "know_how",
   "constraint_or_policy",
   "domain_knowledge",
@@ -268,6 +269,7 @@ type PaletteName =
 const KIND_PALETTE: Record<CoreKind, PaletteName> = {
   workflow_rule: "cobalt",
   workflow_gap: "amber",
+  workflow_pattern: "blue",
   know_how: "mint",
   constraint_or_policy: "ember",
   domain_knowledge: "blue",
@@ -291,6 +293,7 @@ const PALETTE_HUE: Record<PaletteName, number> = {
 const KIND_LABEL: Record<CoreKind, string> = {
   workflow_rule: "流程规则",
   workflow_gap: "流程缺口",
+  workflow_pattern: "工作流套路",
   know_how: "操作指导",
   constraint_or_policy: "硬约束",
   domain_knowledge: "领域知识",
@@ -4269,6 +4272,8 @@ function ReRefineModal(props: {
   onMerge: (ids: string[]) => Promise<void> | void
   onDelete: (id: string, reason: string) => Promise<void> | void
   onReload: () => void
+  onUndoRecent: () => Promise<void> | void
+  undoBusy: boolean
   onClose: () => void
 }) {
   // ESC closes — same UX contract as the logs modal.
@@ -4339,6 +4344,17 @@ function ReRefineModal(props: {
               disabled={props.loading}
             >
               {props.loading ? "刷新中…" : "↻ 刷新"}
+            </button>
+            <button
+              type="button"
+              class="rune-btn"
+              data-size="xs"
+              data-variant="danger"
+              onClick={() => props.onUndoRecent()}
+              disabled={props.undoBusy}
+              title="撤销最近的整理动作（按时间窗口反向逐条 refine_history）"
+            >
+              {props.undoBusy ? "回退中…" : "↩ 撤销最近整理"}
             </button>
             <button
               type="button"
@@ -5739,6 +5755,48 @@ export default function RefinerPage() {
     await reloadReRefine()
   }
 
+  // Time-windowed batch undo. The user picks a window (5 / 15 / 60 min)
+  // via the native prompt; we then walk every experience whose last
+  // refinement happened within that window and reverse-apply it. Merge /
+  // delete actions can't be undone via this path (they leave no history
+  // entry on the survivor) — the response summarises what was reverted
+  // vs skipped so the user knows what's still in flight.
+  const [undoBusy, setUndoBusy] = createSignal(false)
+  const onUndoRecentRefine = async () => {
+    const b = apiBase()
+    if (!b) return
+    const choice = window.prompt(
+      "撤销最近多少分钟内的整理动作？\n(merge/delete 不会被回退，只回退 refine。)",
+      "15",
+    )
+    if (choice === null) return
+    const minutes = Number.parseInt(choice, 10)
+    if (!Number.isFinite(minutes) || minutes <= 0) {
+      flash("无效输入")
+      return
+    }
+    setUndoBusy(true)
+    try {
+      const res = await apiRequest<{
+        ok: boolean
+        reverted: Array<{ id: string; title: string }>
+        skipped: Array<{ id: string; title: string; reason: string }>
+        total_examined: number
+      }>(b, "/experimental/refiner/global-rerefine/undo", {
+        method: "POST",
+        json: { since_ms: Date.now() - minutes * 60_000 },
+      })
+      flash(`已回退 ${res.reverted.length} 条 · 跳过 ${res.skipped.length}`)
+      refreshAll()
+      await reloadReRefine()
+    } catch (err) {
+      console.warn("undo recent refine failed", err)
+      flash("回退失败：详见 console")
+    } finally {
+      setUndoBusy(false)
+    }
+  }
+
   // Each resource is wrapped in `stableFetcher` so polling refetches don't
   // produce new object references when the server returned an identical
   // payload — that would otherwise re-key every <For> row and re-run every
@@ -6883,6 +6941,8 @@ export default function RefinerPage() {
             }
           }}
           onReload={() => void reloadReRefine()}
+          onUndoRecent={() => onUndoRecentRefine()}
+          undoBusy={undoBusy()}
           onClose={() => setShowReRefine(false)}
         />
       </Show>

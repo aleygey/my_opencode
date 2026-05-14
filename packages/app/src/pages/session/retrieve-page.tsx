@@ -257,6 +257,7 @@ const TRIGGER_HUE: Record<TriggerRole, number> = {
 const KIND_HUE: Record<string, number> = {
   workflow_rule: 250,
   workflow_gap: 35,
+  workflow_pattern: 200,
   know_how: 155,
   constraint_or_policy: 295,
   domain_knowledge: 200,
@@ -267,6 +268,7 @@ const KIND_HUE: Record<string, number> = {
 const KIND_NAME: Record<string, string> = {
   workflow_rule: "流程",
   workflow_gap: "缺口",
+  workflow_pattern: "套路",
   know_how: "操作",
   constraint_or_policy: "约束",
   domain_knowledge: "领域",

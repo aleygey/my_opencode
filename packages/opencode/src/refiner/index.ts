@@ -437,6 +437,14 @@ const RefineOutputSchema = z.object({
     .array(z.string())
     .optional()
     .describe("可选。直接冲突的 experience id 列表；无冲突请省略或给空数组"),
+  reject_reason: z
+    .string()
+    .optional()
+    .describe(
+      "可选。如果本组 observation 不应沉淀（例：单一陈述事实、公共知识、复述原文、仅适用一次性上下文），" +
+        "请填写**简体中文**拒绝理由（< 50 字），并把 kind / title / abstract 仍按 schema 要求填好用于审计——" +
+        "上层会根据本字段把记录归入 rejected 流，不会写入活跃 experience 库。",
+    ),
 })
 type RefineOutput = z.infer<typeof RefineOutputSchema>
 
@@ -1271,7 +1279,7 @@ async function appendRejected(entry: {
   session_id: string
   message_id: string
   excerpt: string
-  stage: "route" | "abstract_guard"
+  stage: "route" | "abstract_guard" | "llm_reject"
 }) {
   const cfg = await settings()
   const filepath = path.join(cfg.base, "rejected.ndjson")
@@ -1727,6 +1735,20 @@ async function refineExperience(input: {
     "必须调用 StructuredOutput 工具，并且输出对象要**完整填写** kind / title / abstract / scope；" +
     "不确定的 optional 字段（statement / trigger_condition / task_type / categories / conflicts_with）请**省略**，不要提交空串或占位符。\n" +
     "abstract 必须是简体中文对 observations 的归纳，绝不能输出诸如 'not used' / 'ignore' / 'placeholder' 这类英文说明。\n" +
+    "\n" +
+    "[分类硬规则] kind 选择：\n" +
+    "- 若 observation 涉及「节点顺序 / 因果 / 必须先做 A 再做 B」→ workflow_rule\n" +
+    "- 若涉及「子节点缺工具 / 缺资料 / 流程缺步骤，用户补齐了」→ workflow_gap\n" +
+    "- 若是「一个完整工作流的节点序列 + 关键失败信号 + 恢复路径」→ workflow_pattern\n" +
+    "- 用户直接告诉 orchestrator 的关于工作流编排/拆分/重试策略的指导 → 必须归入上述三类 workflow_* 之一，**不要**用 know_how。\n" +
+    "- 风格/排版/语言偏好 → preference_style，绝不能写成 know_how\n" +
+    "\n" +
+    "[沉淀拒绝规则] 如果 observation 同时满足以下任一条件，**禁止**沉淀（仍按 schema 填好 kind/title/abstract，但额外填 `reject_reason` 字段说明原因——上层会据此归入 rejected 流）：\n" +
+    "- 单一陈述事实/公共知识（例如「ping 通不代表 conntrack 有条目」「TCP 三次握手」），任何懂行的工程师默认知道。\n" +
+    "- 仅仅复述了 observation 原文，没有抽象出可复用规则。\n" +
+    "- 仅适用于一次性的具体上下文（如「这个特定 IP 的某次抓包」），无法推广到下次任务。\n" +
+    "保留的标准：可在**未来类似任务中作为约束/规则/模式被复用**。\n" +
+    "\n" +
     "以下 JSON 是 refine 任务的输入（注意顶层 task 字段）：\n"
 
   const messages: ModelMessage[] = [
@@ -1897,6 +1919,25 @@ async function attachAndRefine(input: {
       experience_id: snapshotExp.id,
     })
     return { attached: false as const, reason: "refine_failed" }
+  }
+
+  // Refuse to sediment when the LLM explicitly judged the observation as
+  // a single statement of fact / public knowledge / one-shot context. We
+  // still log the attempt to rejected.ndjson so the user can audit which
+  // observations the model is filtering out and tune the prompt if it
+  // gets too aggressive.
+  const rejectReasonText = blankToUndefined(refined.reject_reason)
+  if (rejectReasonText) {
+    await appendRejected({
+      at: nowMs(),
+      reason: `llm_refused:${rejectReasonText.slice(0, 80)}`,
+      observation_id: input.observation.id,
+      session_id: input.observation.session_id,
+      message_id: input.observation.message_id,
+      excerpt: clipText(input.observation.user_text, 200),
+      stage: "llm_reject",
+    })
+    return { attached: false as const, reason: "llm_refused_to_sediment" }
   }
 
   // Originality guard: retry once if abstract is essentially raw text OR
@@ -3448,6 +3489,42 @@ export namespace Refiner {
     }
     const filepath = await writeExperience(restored)
     return { ok: true as const, experience: { ...restored, path: rel(filepath) } }
+  }
+
+  // ---------- Global batch undo ----------
+  //
+  // Time-windowed batch rollback: find every experience whose most recent
+  // refinement_history entry is newer than `sinceMs`, and reverse it via
+  // the existing single-exp `undoRefinement`. Used by the refiner-page
+  // "撤销最近的整理动作" button so a user can recover from a global
+  // re-refine batch they regret. We only reverse the *last* entry per
+  // experience — deeper undo requires multiple invocations, by design,
+  // so each click stays predictable.
+  //
+  // Returns per-experience result so the UI can render a summary like
+  // "12 reverted, 3 skipped (no history)". Merge/delete actions are
+  // **not** reversed here — those leave no refinement_history entry on
+  // the surviving experience. The UI surfaces that caveat.
+  export async function undoRefinementsSince(sinceMs: number) {
+    const all = await listExperiences()
+    const candidates = all.filter((e) => {
+      const last = e.refinement_history[e.refinement_history.length - 1]
+      return !!last && last.at >= sinceMs && !!last.prev_snapshot
+    })
+    const reverted: Array<{ id: string; title: string }> = []
+    const skipped: Array<{ id: string; title: string; reason: string }> = []
+    for (const exp of candidates) {
+      const result = await undoRefinement(exp.id)
+      if (result.ok) reverted.push({ id: exp.id, title: exp.title })
+      else skipped.push({ id: exp.id, title: exp.title, reason: result.error })
+    }
+    return {
+      ok: true as const,
+      since_ms: sinceMs,
+      reverted,
+      skipped,
+      total_examined: candidates.length,
+    }
   }
 
   // ---------- Observation-level ops ----------
