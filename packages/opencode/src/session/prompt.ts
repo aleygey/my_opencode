@@ -1486,10 +1486,19 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             const system = [...env, ...(skills ? [skills] : []), ...instructions]
             // Phase 2b — retrieve agent: inject relevant experiences into the
             // system prompt. The Retrieve service swallows all errors and
-            // returns a benign default, so Effect.promise is safe here. Only
-            // runs on step 1 of a user turn so tool-call iterations don't
-            // re-pay latency or duplicate injects.
-            if (step === 1) {
+            // returns a benign default, so Effect.promise is safe here.
+            //
+            // Two trigger points:
+            //   1. Step 1 of a user turn — the standard cold-start injection.
+            //   2. Every Nth tool-call iteration after that (REINJECT_EVERY)
+            //      — long reasoning chains drift away from the originally
+            //      retrieved guidance. The user observed slaves "going off
+            //      script" mid-task and asked for a periodic re-injection.
+            //      We cap the cadence (default every 6 steps) so we don't
+            //      pay the retrieve LLM cost on every iteration.
+            const REINJECT_EVERY = 6
+            const shouldRetrieve = step === 1 || (step > 1 && step % REINJECT_EVERY === 0)
+            if (shouldRetrieve) {
               const userText = lastUserMsg?.parts
                 .filter((p): p is MessageV2.TextPart => p.type === "text" && !p.ignored && !p.synthetic)
                 .map((p) => p.text)

@@ -180,7 +180,7 @@ export type WorkflowAppProps = {
    * the user can cancel a reply mid-thought without nuking the whole
    * workflow. The top-bar Abort remains the "kill everything" path. */
   onStopMaster?: () => void
-  onSend: (text: string, node?: string) => void
+  onSend: (text: string, node?: string, attachments?: import('./components/chat-panel').ChatAttachment[]) => void
   // Slash command callbacks
   onNewSession?: () => void
   onModelPickerOpen?: () => void
@@ -252,7 +252,23 @@ export type WorkflowGraphEdit = {
 
 export function WorkflowApp(props: WorkflowAppProps) {
   const [pick, setPick] = useState<string | null>(props.pick ?? props.nodes[0]?.id ?? null)
-  const [sessionNode, setSessionNode] = useState<string | null>(null)
+  /* `sessionNode` tracks the currently-expanded slave-card overlay. It
+   * needs to survive when the user toggles to the Trace / Knowledge
+   * rails (which unmount WorkflowApp entirely) and comes back — losing
+   * the open card on every rail switch was the #3 user-reported bug.
+   * Persist per-workflow under a `root`-scoped key so unrelated
+   * workflows don't bleed into each other. */
+  const SESSION_NODE_KEY = `wf-session-node:v1:${props.root}`
+  const [sessionNode, setSessionNode] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null
+    try { return window.localStorage.getItem(SESSION_NODE_KEY) || null } catch { return null }
+  })
+  useEffect(() => {
+    try {
+      if (sessionNode) window.localStorage.setItem(SESSION_NODE_KEY, sessionNode)
+      else window.localStorage.removeItem(SESSION_NODE_KEY)
+    } catch {}
+  }, [SESSION_NODE_KEY, sessionNode])
   /* Clear the inline `sessionNode` state whenever the substrip switches
    * to a fixed tab (canvas / chat / events). Without this, the inline
    * fallback overlay (set on node click as a backup) sticks around even
@@ -693,7 +709,7 @@ export function WorkflowApp(props: WorkflowAppProps) {
                 agents={props.rootAgents}
                 onAgentChange={props.onRootAgentChange}
                 workspace={props.workspace}
-                onSendMessage={(text) => props.onSend(text)}
+                onSendMessage={(text, attachments) => props.onSend(text, undefined, attachments)}
                 onModelChange={props.onModelChange}
                 onWorkspaceClick={props.onWorkspaceClick}
                 onNewSession={props.onNewSession}

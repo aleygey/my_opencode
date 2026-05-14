@@ -48,6 +48,100 @@ const nodePatch = z.object({
 
 const format = (value: unknown) => JSON.stringify(value, null, 2)
 
+// SessionPrompt.Service is intentionally NOT pulled at init time to avoid
+// a hard Layer cycle (ToolRegistry ⇄ SessionPrompt). We bridge to it at
+// use time via AppRuntime instead.
+//
+// Two flavours of slave-session prompt:
+//   - `kickoffSlave()` — used once when a node session boots. Sends the
+//     full "you are inside workflow X" framing plus the initial task so
+//     the slave has all the context it needs without ever calling
+//     workflow_pull. workflow_pull stays available as a fault-tolerance
+//     fallback (e.g. after compact restoration), but the happy path is
+//     fully push-driven.
+//   - `pushRuntimeCommand()` — used for every subsequent runtime
+//     command. Contains ONLY the command payload + ack instruction;
+//     framing is not repeated, since the slave already knows it's
+//     inside the workflow. The previous implementation re-sent the
+//     full kickoff preamble on every push, which created the
+//     "context injection + pull duplicate" the user reported.
+const sendSlavePrompt = (input: {
+  agent: string
+  sessionID: string
+  model?: {
+    providerID?: string
+    modelID?: string
+    variant?: string
+  }
+  text: string
+}) =>
+  Effect.promise(() =>
+    AppRuntime.runPromise(
+      Effect.gen(function* () {
+        const sp = yield* SessionPrompt.Service
+        return yield* sp.prompt({
+          sessionID: SessionID.make(input.sessionID),
+          agent: input.agent,
+          model:
+            input.model?.providerID && input.model.modelID
+              ? {
+                  providerID: ProviderID.make(input.model.providerID),
+                  modelID: ModelID.make(input.model.modelID),
+                }
+              : undefined,
+          variant: input.model?.variant,
+          parts: [{ type: "text", text: input.text }],
+        })
+      }),
+    ),
+  )
+
+export const kickoffSlave = (input: {
+  workflowID: string
+  nodeID: string
+  agent: string
+  sessionID: string
+  model?: { providerID?: string; modelID?: string; variant?: string }
+  text: string
+}) =>
+  sendSlavePrompt({
+    agent: input.agent,
+    sessionID: input.sessionID,
+    model: input.model,
+    text: [
+      `You are executing workflow node ${input.nodeID} in workflow ${input.workflowID}.`,
+      "Do the work in this subagent session, not in the root orchestrator session.",
+      "Workflow tools available to you: workflow_pull, workflow_update, workflow_read, workflow_need_fulfill, workflow_checkpoint_create.",
+      "If a tool name is referenced here but does not appear in your function list, retry the action once before giving up — never claim the runtime is missing a workflow_* tool until you have actually attempted to call it.",
+      "Runtime commands are pushed to you as new user messages — you do NOT need to call workflow_pull on every step. Use workflow_pull only as a fault-tolerance fallback (e.g. after compact restoration to recover queued state). Apply each command, report progress with workflow_update, ack the command_id via `workflow_update({ ack: [\"cmd_…\"] })`, and continue until you complete or block.",
+      "",
+      input.text,
+    ].join("\n"),
+  })
+
+export const pushRuntimeCommand = (input: {
+  agent: string
+  sessionID: string
+  model?: { providerID?: string; modelID?: string; variant?: string }
+  command: string
+  commandID: string
+  payload?: Record<string, unknown>
+}) =>
+  sendSlavePrompt({
+    agent: input.agent,
+    sessionID: input.sessionID,
+    model: input.model,
+    text: [
+      `[runtime command] ${input.command} (command_id: ${input.commandID})`,
+      input.payload && Object.keys(input.payload).length > 0
+        ? `payload:\n${JSON.stringify(input.payload, null, 2)}`
+        : "",
+      `Apply this command now. When applied, ack it via \`workflow_update({ ack: ["${input.commandID}"] })\`. Do NOT call workflow_pull — this message already contains everything you would have pulled.`,
+    ]
+      .filter(Boolean)
+      .join("\n\n"),
+  })
+
 const confirm = /(^|\b)(confirm|confirmed|approve|approved|go ahead|proceed|start now|execute now|run it|ship it)(\b|$)|确认执行|确认开始|开始执行|可以执行|开始吧|执行吧|继续执行|请开始/iu
 
 const assertNodeSession = (node: Awaited<ReturnType<typeof Workflow.getNode>>, sessionID: string) => {
@@ -577,55 +671,6 @@ export const WorkflowNodeStartTool = Tool.define(
   Effect.gen(function* () {
     const session = yield* Session.Service
 
-    // SessionPrompt.Service is intentionally NOT pulled at init time to avoid
-    // a hard Layer cycle (ToolRegistry ⇄ SessionPrompt). We bridge to it at
-    // use time via AppRuntime instead.
-    const prompt = (input: {
-      workflowID: string
-      nodeID: string
-      agent: string
-      sessionID: string
-      model?: {
-        providerID?: string
-        modelID?: string
-        variant?: string
-      }
-      text: string
-    }) =>
-      Effect.promise(() =>
-        AppRuntime.runPromise(
-          Effect.gen(function* () {
-            const sp = yield* SessionPrompt.Service
-            return yield* sp.prompt({
-              sessionID: SessionID.make(input.sessionID),
-              agent: input.agent,
-              model:
-                input.model?.providerID && input.model.modelID
-                  ? {
-                      providerID: ProviderID.make(input.model.providerID),
-                      modelID: ModelID.make(input.model.modelID),
-                    }
-                  : undefined,
-              variant: input.model?.variant,
-              parts: [
-                {
-                  type: "text",
-                  text: [
-                    `You are executing workflow node ${input.nodeID} in workflow ${input.workflowID}.`,
-                    "Do the work in this subagent session, not in the root orchestrator session.",
-                    "Workflow tools available to you: workflow_pull, workflow_update, workflow_read, workflow_need_fulfill, workflow_checkpoint_create.",
-                    "If a tool name is referenced here but does not appear in your function list, retry the action once before giving up — never claim the runtime is missing a workflow_* tool until you have actually attempted to call it.",
-                    "Call workflow_pull immediately, follow runtime commands, report progress with workflow_update, and continue until you complete or block.",
-                    "",
-                    input.text,
-                  ].join("\n"),
-                },
-              ],
-            })
-          }),
-        ),
-      )
-
     return {
       description:
         "Start an existing workflow node by creating and attaching its child session, then optionally send the initial prompt. Idempotent — calling on an already-running node returns the current state without re-prompting.",
@@ -774,7 +819,7 @@ export const WorkflowNodeStartTool = Tool.define(
           // return OK + a session_id but the agent never actually
           // ran — the exact "节点创建了但 session 空空" state the
           // user reported.
-          const startedAgent = prompt({
+          const startedAgent = kickoffSlave({
             workflowID,
             nodeID,
             agent: nodeAgent,
@@ -1012,55 +1057,6 @@ export const WorkflowReadTool = Tool.define(
 export const WorkflowControlTool = Tool.define(
   "workflow_control",
   Effect.gen(function* () {
-    // SessionPrompt.Service is intentionally NOT pulled at init time to avoid
-    // a hard Layer cycle (ToolRegistry ⇄ SessionPrompt). We bridge to it at
-    // use time via AppRuntime instead.
-    const prompt = (input: {
-      workflowID: string
-      nodeID: string
-      agent: string
-      sessionID: string
-      model?: {
-        providerID?: string
-        modelID?: string
-        variant?: string
-      }
-      text: string
-    }) =>
-      Effect.promise(() =>
-        AppRuntime.runPromise(
-          Effect.gen(function* () {
-            const sp = yield* SessionPrompt.Service
-            return yield* sp.prompt({
-              sessionID: SessionID.make(input.sessionID),
-              agent: input.agent,
-              model:
-                input.model?.providerID && input.model.modelID
-                  ? {
-                      providerID: ProviderID.make(input.model.providerID),
-                      modelID: ModelID.make(input.model.modelID),
-                    }
-                  : undefined,
-              variant: input.model?.variant,
-              parts: [
-                {
-                  type: "text",
-                  text: [
-                    `You are executing workflow node ${input.nodeID} in workflow ${input.workflowID}.`,
-                    "Do the work in this subagent session, not in the root orchestrator session.",
-                    "Workflow tools available to you: workflow_pull, workflow_update, workflow_read, workflow_need_fulfill, workflow_checkpoint_create.",
-                    "If a tool name is referenced here but does not appear in your function list, retry the action once before giving up — never claim the runtime is missing a workflow_* tool until you have actually attempted to call it.",
-                    "Call workflow_pull immediately, follow runtime commands, report progress with workflow_update, and continue until you complete or block.",
-                    "",
-                    input.text,
-                  ].join("\n"),
-                },
-              ],
-            })
-          }),
-        ),
-      )
-
     return {
       description:
         "Send a soft control command to a workflow node, such as continue, resume, retry, or context injection. Duplicates within a 5s window are silently absorbed.",
@@ -1076,24 +1072,47 @@ export const WorkflowControlTool = Tool.define(
               payload: input.payload,
             }),
           )
+          // Refused (paused / cancelled): surface a structured error so
+          // the orchestrator stops retrying instead of looping.
+          if ("refused" in result && result.refused) {
+            return {
+              title: "workflow control refused",
+              metadata: {
+                workflowID: input.workflow_id,
+                nodeID: input.node_id,
+                commandID: undefined as string | undefined,
+                deduped: false,
+                refused: true,
+                nodeStatus: result.status,
+              },
+              output: format({
+                ok: false,
+                refused: true,
+                reason: result.reason,
+                node_status: result.status,
+                hint:
+                  result.status === "paused"
+                    ? "Node is paused — call workflow_node_start to resume before issuing further commands."
+                    : "Node is cancelled — call workflow_node_uncancel before re-starting.",
+              }),
+            }
+          }
           const node = yield* Effect.promise(() => Workflow.getNode(input.node_id))
           // Only re-prompt the slave if we actually enqueued a new command.
           // Deduped commands already have an in-flight slave round.
+          // Push the FULL command payload — no "call workflow_pull"
+          // boilerplate, no kickoff-preamble repetition. The slave can
+          // act on the message alone; pull stays as a fault-tolerance
+          // fallback only.
           if (!result.deduped && node.session_id) {
             yield* Effect.forkDetach(
-              prompt({
-                workflowID: input.workflow_id,
-                nodeID: input.node_id,
+              pushRuntimeCommand({
                 agent: node.agent,
                 sessionID: node.session_id,
                 model: node.model,
-                text: [
-                  `Runtime command: ${input.command} (command_id: ${result.command_id})`,
-                  input.payload ? JSON.stringify(input.payload, null, 2) : "",
-                  "Call workflow_pull now, apply the command, ack it via workflow_update.patch.ack, and continue execution.",
-                ]
-                  .filter(Boolean)
-                  .join("\n\n"),
+                command: input.command,
+                commandID: result.command_id!,
+                payload: input.payload as Record<string, unknown> | undefined,
               }).pipe(Effect.ignore),
             )
           }
@@ -1102,8 +1121,10 @@ export const WorkflowControlTool = Tool.define(
             metadata: {
               workflowID: input.workflow_id,
               nodeID: input.node_id,
-              commandID: result.command_id,
-              deduped: result.deduped,
+              commandID: result.command_id as string | undefined,
+              deduped: result.deduped as boolean,
+              refused: false,
+              nodeStatus: undefined as "paused" | "cancelled" | undefined,
             },
             output: format({
               ok: true,

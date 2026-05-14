@@ -18,6 +18,20 @@ type Role = 'system' | 'assistant' | 'user' | 'tool'
 
 export type ToolCallStatus = 'running' | 'completed' | 'failed'
 
+/**
+ * Inline image attachment surfaced by paste / drop on the composer.
+ * The `dataUrl` is a fully-formed `data:image/png;base64,…` URI so
+ * the caller can forward it straight to `promptAsync({ parts: […, {
+ * type: "file", mime, url, filename }] })` without a separate upload
+ * round-trip.
+ */
+export interface ChatAttachment {
+  id: string
+  filename: string
+  mime: string
+  dataUrl: string
+}
+
 export interface ToolCall {
   name: string
   status: ToolCallStatus
@@ -73,7 +87,15 @@ interface Props {
   onAgentChange?: (agent: string) => void
   workspace?: string
   waitingForInput?: boolean
-  onSendMessage?: (msg: string) => void
+  /**
+   * Send a chat turn. `attachments` is populated when the user pasted or
+   * dropped images into the composer; each entry carries the data-URL
+   * encoding plus mime/filename so the caller can forward them as
+   * `file` parts to the SDK. Older callers that don't care about images
+   * can still treat this as a string-only callback — the attachments
+   * parameter is always optional.
+   */
+  onSendMessage?: (msg: string, attachments?: ChatAttachment[]) => void
   onModelChange?: (model: string) => void
   onWorkspaceClick?: () => void
   onTaskDetail?: (sessionId: string) => void
@@ -707,6 +729,13 @@ export function ChatPanel(props: Props) {
   // break keyboard-open semantics if both shared one flag.
   const [agentOpen, setAgentOpen] = useState(false)
   const [visibleCount, setVisibleCount] = useState(MSG_PAGE_SIZE)
+  // Image attachments collected via paste / drop on the composer. We
+  // keep them out of the textarea value (which stays plain text) and
+  // surface them as a thumbnail strip above the input. On send, they
+  // flow through `onSendMessage(text, attachments)` so the parent can
+  // forward them as `file` parts to the SDK.
+  const [attachments, setAttachments] = useState<ChatAttachment[]>([])
+  const [dragOver, setDragOver] = useState(false)
   const composingRef = useRef(false)
   const end = useRef<HTMLDivElement>(null)
   const messagesRef = useRef<HTMLDivElement>(null)
@@ -844,12 +873,98 @@ export function ChatPanel(props: Props) {
   }, [agentOpen])
 
   const send = () => {
-    if (!msg.trim()) return
-    props.onSendMessage?.(msg)
+    const body = msg.trim()
+    // Allow attachments-only sends — the user might paste a screenshot
+    // and hit Enter without typing anything.
+    if (!body && attachments.length === 0) return
+    props.onSendMessage?.(body, attachments.length > 0 ? attachments : undefined)
     setMsg('')
+    setAttachments([])
     slash.closePopover()
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
   }
+
+  // Read a File into a `data:image/...;base64,…` string.
+  const fileToDataUrl = useCallback((file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onerror = () => reject(reader.error ?? new Error('FileReader failed'))
+      reader.onload = () => {
+        const value = typeof reader.result === 'string' ? reader.result : ''
+        if (!value) reject(new Error('Empty data URL'))
+        else resolve(value)
+      }
+      reader.readAsDataURL(file)
+    })
+  }, [])
+
+  // Push a single image file into the attachment strip. Silently drops
+  // non-image MIME types — the rest of the runtime expects images only
+  // for inline display (PDF / docs go through @-path mentions instead).
+  const ingestFile = useCallback(
+    async (file: File) => {
+      if (!file.type.startsWith('image/')) return
+      try {
+        const dataUrl = await fileToDataUrl(file)
+        setAttachments((prev) => [
+          ...prev,
+          {
+            id: `att_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            filename: file.name || 'pasted-image',
+            mime: file.type || 'image/png',
+            dataUrl,
+          },
+        ])
+      } catch (err) {
+        console.warn('chat-panel: failed to read pasted/dropped image', err)
+      }
+    },
+    [fileToDataUrl],
+  )
+
+  const handlePaste = useCallback(
+    (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      const items = e.clipboardData?.items
+      if (!items) return
+      const files: File[] = []
+      for (const item of Array.from(items)) {
+        if (item.kind === 'file') {
+          const f = item.getAsFile()
+          if (f && f.type.startsWith('image/')) files.push(f)
+        }
+      }
+      if (files.length === 0) return
+      e.preventDefault()
+      void Promise.all(files.map(ingestFile))
+    },
+    [ingestFile],
+  )
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    if (!e.dataTransfer.types.includes('Files')) return
+    e.preventDefault()
+    setDragOver(true)
+  }, [])
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    if (e.currentTarget === e.target) setDragOver(false)
+  }, [])
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      const files = Array.from(e.dataTransfer.files ?? []).filter((f) => f.type.startsWith('image/'))
+      if (files.length === 0) {
+        setDragOver(false)
+        return
+      }
+      e.preventDefault()
+      setDragOver(false)
+      void Promise.all(files.map(ingestFile))
+    },
+    [ingestFile],
+  )
+
+  const removeAttachment = useCallback((id: string) => {
+    setAttachments((prev) => prev.filter((a) => a.id !== id))
+  }, [])
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.target.value
@@ -1496,7 +1611,13 @@ export function ChatPanel(props: Props) {
             </button>
           ))}
         </div>
-        <div className="wf-chat-input-wrap" style={{ position: 'relative' }}>
+        <div
+          className={`wf-chat-input-wrap${dragOver ? ' wf-chat-input-wrap--drag' : ''}`}
+          style={{ position: 'relative' }}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
           {/* Slash popover — floats above the input bar */}
           <SlashPopover
             open={slash.popoverOpen}
@@ -1518,6 +1639,24 @@ export function ChatPanel(props: Props) {
             onHover={slash.setActiveId}
           />
 
+          {attachments.length > 0 && (
+            <div className="wf-chat-attach-strip" aria-label="Pending attachments">
+              {attachments.map((a) => (
+                <div key={a.id} className="wf-chat-attach-thumb" title={a.filename}>
+                  <img src={a.dataUrl} alt={a.filename} />
+                  <button
+                    type="button"
+                    className="wf-chat-attach-remove"
+                    onClick={() => removeAttachment(a.id)}
+                    aria-label={`Remove ${a.filename}`}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
           <textarea
             ref={textareaRef}
             value={msg}
@@ -1530,11 +1669,12 @@ export function ChatPanel(props: Props) {
               composingRef.current = false
             }}
             onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
             onBlur={() => {
               // Delay so click on slash popover item fires before blur closes it
               setTimeout(() => slash.closePopover(), 150)
             }}
-            placeholder="Message the agent... (/ for commands)"
+            placeholder="Message the agent... (/ for commands · paste 或 拖入 截图作为附件)"
             className="wf-chat-input"
           />
           {props.isRunning && props.onStop ? (
@@ -1555,7 +1695,7 @@ export function ChatPanel(props: Props) {
           ) : (
             <button
               onClick={send}
-              disabled={!msg.trim()}
+              disabled={!msg.trim() && attachments.length === 0}
               className="wf-chat-send"
               aria-label="Send message"
             >

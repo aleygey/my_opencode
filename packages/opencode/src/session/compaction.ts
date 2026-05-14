@@ -455,7 +455,41 @@ export const layer: Layer.Layer<
               agent: userMessage.agent,
               model: userMessage.model,
             })
+            // If this session is a workflow node session, the compact
+            // path just dropped all the kickoff + push messages that
+            // told the slave what node it was executing. Re-inject a
+            // brief framing so the slave doesn't think it's free-form
+            // chat after compact restoration. Pending commands are
+            // also surfaced inline so the slave can apply them without
+            // a workflow_pull round-trip.
+            const workflowFraming = yield* Effect.promise(async () => {
+              try {
+                const { Workflow } = await import("@/workflow")
+                const node = await Workflow.nodeBySession(input.sessionID as string).catch(() => undefined)
+                if (!node) return ""
+                const pending =
+                  (node.state_json as { pending_commands?: Array<{ command_id: string; command: string; payload?: unknown }> } | undefined)?.pending_commands ?? []
+                const pendingLines = pending.length
+                  ? pending
+                      .slice(0, 4)
+                      .map((c) => `  - ${c.command} (${c.command_id})${c.payload ? `: ${JSON.stringify(c.payload).slice(0, 200)}` : ""}`)
+                      .join("\n")
+                  : "  (none)"
+                return [
+                  "[compact-restoration] Your prior context was compacted.",
+                  `You are still executing workflow node ${node.id} (status: ${node.status}, agent: ${node.agent}).`,
+                  "Workflow tools available: workflow_pull, workflow_update, workflow_read, workflow_need_fulfill, workflow_checkpoint_create.",
+                  `Pending runtime commands queued for you:`,
+                  pendingLines,
+                  "If any pending command_id appears above, apply it now and ack via workflow_update.ack. Otherwise continue the task.",
+                  "",
+                ].join("\n")
+              } catch {
+                return ""
+              }
+            })
             const text =
+              workflowFraming +
               (input.overflow
                 ? "The previous request exceeded the provider's size limit due to large media attachments. The conversation was compacted and media files were removed from context. If the user was asking about attached images or files, explain that the attachments were too large to process and suggest they try again with smaller or fewer files.\n\n"
                 : "") +

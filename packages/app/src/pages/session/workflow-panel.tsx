@@ -2094,7 +2094,11 @@ export function WorkflowRuntimePanel(props: {
     navigate(`/${dir}/session/${id}/retrieve`)
   }
 
-  const send = (text: string, node?: string) => {
+  const send = (
+    text: string,
+    node?: string,
+    attachments?: Array<{ id: string; filename: string; mime: string; dataUrl: string }>,
+  ) => {
     const body = text.trim()
     const id = sessionID(node)
     const info = node ? props.snapshot.nodes.find((item) => item.id === node) : undefined
@@ -2147,7 +2151,40 @@ export function WorkflowRuntimePanel(props: {
     }
 
     const msg = Identifier.ascending("message")
-    const part = Identifier.ascending("part")
+    const textPart = Identifier.ascending("part")
+    // Build mixed text + file parts. Optimistic update gets the same
+    // shape so the user sees their image thumbnail in their own bubble
+    // immediately, before the server echoes it back.
+    const optimisticParts: Array<Record<string, unknown>> = []
+    const wireParts: Array<Record<string, unknown>> = []
+    if (body) {
+      optimisticParts.push({
+        id: textPart,
+        type: "text",
+        text: body,
+        sessionID: id,
+        messageID: msg,
+      })
+      wireParts.push({ type: "text", text: body })
+    }
+    for (const att of attachments ?? []) {
+      const pid = Identifier.ascending("part")
+      optimisticParts.push({
+        id: pid,
+        type: "file",
+        mime: att.mime,
+        filename: att.filename,
+        url: att.dataUrl,
+        sessionID: id,
+        messageID: msg,
+      })
+      wireParts.push({
+        type: "file",
+        mime: att.mime,
+        filename: att.filename,
+        url: att.dataUrl,
+      })
+    }
     const run = async () => {
       sync.session.optimistic.add({
         directory: sdk.directory,
@@ -2166,15 +2203,7 @@ export function WorkflowRuntimePanel(props: {
             ...(variant !== undefined ? { variant } : {}),
           },
         },
-        parts: [
-          {
-            id: part,
-            type: "text",
-            text: body,
-            sessionID: id,
-            messageID: msg,
-          },
-        ],
+        parts: optimisticParts as never,
       })
       await sdk.client.session.promptAsync({
         sessionID: id,
@@ -2182,7 +2211,7 @@ export function WorkflowRuntimePanel(props: {
         agent,
         model,
         messageID: msg,
-        parts: [{ type: "text", text: body }],
+        parts: wireParts as never,
         variant,
       })
       void sync.session.sync(id, { force: true })

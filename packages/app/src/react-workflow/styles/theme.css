@@ -1532,6 +1532,7 @@
 
 .workflow-make .wf-chat-input-wrap {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-end;
   gap: 8px;
   border-radius: 12px;
@@ -1546,6 +1547,58 @@
 .workflow-make .wf-chat-input-wrap:focus-within {
   border-color: var(--rune-ac, var(--wf-accent));
   box-shadow: none;
+}
+
+.workflow-make .wf-chat-input-wrap--drag {
+  border-color: var(--rune-ac, var(--wf-accent));
+  background: color-mix(in oklch, var(--wf-card) 92%, var(--wf-accent) 8%);
+}
+
+.workflow-make .wf-chat-attach-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 0 0;
+}
+
+.workflow-make .wf-chat-attach-thumb {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--wf-line);
+  background: var(--wf-chip);
+}
+
+.workflow-make .wf-chat-attach-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.workflow-make .wf-chat-attach-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 12px;
+  line-height: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.workflow-make .wf-chat-attach-remove:hover {
+  background: rgba(0, 0, 0, 0.75);
 }
 
 .workflow-make .wf-chat-input {

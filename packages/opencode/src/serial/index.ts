@@ -398,6 +398,30 @@ export namespace Serial {
 
       const create = Effect.fn("Serial.create")(function* (input: CreateInput) {
         const s = yield* InstanceState.get(state)
+
+        // Port-level multiplex: the OS only allows one process to hold
+        // /dev/ttyS2 (or any device path) at a time. If a session is
+        // already open on this path with matching transport params, we
+        // hand the caller the existing SerialID instead of failing on a
+        // duplicate open(). This lets the Serial Monitor UI and the
+        // debug-node tool coexist without one EBUSY-ing the other —
+        // each subscriber attaches via WebSocket to the same session.
+        for (const existing of s.sessions.values()) {
+          const e = existing.info
+          if (
+            e.path === input.path &&
+            e.baudRate === input.baudRate &&
+            (input.dataBits === undefined || e.dataBits === input.dataBits) &&
+            (input.stopBits === undefined || e.stopBits === input.stopBits) &&
+            (input.parity === undefined || e.parity === input.parity)
+          ) {
+            log.info("Serial.create reusing existing session for same path/params", {
+              id: e.id,
+              path: e.path,
+            })
+            return e
+          }
+        }
         const id = SerialID.ascending()
 
         const { open } = yield* Effect.promise(() => serial())

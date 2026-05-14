@@ -3997,6 +3997,25 @@ export namespace Workflow {
     async (input) => {
       await state()
       const node = await getNode(input.nodeID)
+      // Pause-respecting gate. A paused/cancelled node should be inert
+      // until the orchestrator explicitly uncancels or restarts it —
+      // accepting new commands would race the in-flight stream cancel
+      // and produce the "已 cancel 还在收到通知" symptom the user
+      // reported. The orchestrator can still uncancel and re-issue.
+      if (node.status === "paused" || node.status === "cancelled") {
+        log.info("workflow.control refused — node not running", {
+          workflowID: input.workflowID,
+          nodeID: input.nodeID,
+          status: node.status,
+          command: input.command,
+        })
+        return {
+          ok: false as const,
+          refused: true as const,
+          status: node.status,
+          reason: `node_${node.status}` as const,
+        }
+      }
       const fingerprint = commandFingerprint(input.command, input.payload)
       const now = Date.now()
 
@@ -4315,16 +4334,15 @@ export namespace Workflow {
       await state()
       const node = await getNode(input.nodeID)
       if (node.status === "cancelled") return node
-      if (node.session_id) {
-        const sessionID = SessionID.make(node.session_id)
-        await AppRuntime.runPromise(
-          Effect.gen(function* () {
-            const sp = yield* SessionPrompt.Service
-            yield* sp.cancel(sessionID)
-          }),
-        ).catch(() => undefined)
-      }
-      return patchNode({
+      // Flip status to "paused" FIRST so any tool-call mid-flight sees
+      // the guard before its patch can land. If we cancelled the
+      // session first, a tool call that finished a tick before the
+      // cancel signal could still write a workflow_update that
+      // re-asserts running/completed status. The status-machine guard
+      // at patchNode() refuses to leave "paused" except via legal
+      // transitions, so once we're paused, subsequent slave patches
+      // get rejected with `node.transition_rejected`.
+      const patched = await patchNode({
         nodeID: node.id,
         source: input.source,
         patch: {
@@ -4339,6 +4357,16 @@ export namespace Workflow {
             : undefined,
         },
       })
+      if (node.session_id) {
+        const sessionID = SessionID.make(node.session_id)
+        await AppRuntime.runPromise(
+          Effect.gen(function* () {
+            const sp = yield* SessionPrompt.Service
+            yield* sp.cancel(sessionID)
+          }),
+        ).catch(() => undefined)
+      }
+      return patched
     },
   )
 
