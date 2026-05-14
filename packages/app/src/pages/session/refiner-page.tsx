@@ -4582,6 +4582,183 @@ function ReRefineModal(props: {
   )
 }
 
+/* Pretty-renderer for refiner LLM structured outputs. The previous
+ * implementation dumped raw `JSON.stringify(structured_output, null, 2)`
+ * which produced 40+ line walls of JSON for a 5-decision route output.
+ * This component recognises the known shapes and renders them as
+ * scannable tables / key-value rows:
+ *   - route stage   → table of decisions (action / kind / title / reason)
+ *   - refine stage  → key-value rows (kind, title, abstract, scope,
+ *                      categories, conflicts_with, reject_reason)
+ *   - other / unknown → fallback to JSON inside a collapsed <details>
+ *
+ * exp IDs anywhere in the output become clickable chips that route to
+ * the experience detail via the provided `onPickExperience` callback.
+ */
+function PrettyStructured(props: {
+  stage: string
+  value: unknown
+  onPickExperience?: (id: string) => void
+}) {
+  const v = () => props.value as Record<string, unknown> | undefined
+  // Shape guards. We don't trust the stage label alone — we sniff the
+  // value's keys too because the LLM occasionally returns a refine
+  // shape on a route stage (or vice versa) when retry logic kicks in.
+  const isRoute = () => {
+    const x = v()
+    return !!x && Array.isArray((x as { decisions?: unknown }).decisions)
+  }
+  const isRefine = () => {
+    const x = v()
+    if (!x) return false
+    return (
+      typeof (x as { kind?: unknown }).kind === "string" &&
+      typeof (x as { title?: unknown }).title === "string" &&
+      typeof (x as { abstract?: unknown }).abstract === "string"
+    )
+  }
+  const expChip = (id: string) => (
+    <button
+      type="button"
+      class="rf-logs-exp-chip"
+      title={id}
+      onClick={(e) => {
+        e.stopPropagation()
+        props.onPickExperience?.(id)
+      }}
+    >
+      {id.slice(0, 8)}
+    </button>
+  )
+  return (
+    <Show
+      when={v()}
+      fallback={<div class="rf-logs-empty">（无 structured output）</div>}
+    >
+      {(value) => (
+        <Show
+          when={isRefine()}
+          fallback={
+            <Show
+              when={isRoute()}
+              fallback={
+                <details class="rf-logs-pretty-raw">
+                  <summary>原始 JSON</summary>
+                  <pre class="rf-logs-pre">{JSON.stringify(value(), null, 2)}</pre>
+                </details>
+              }
+            >
+              {/* Route stage: decisions[] as a table */}
+              <table class="rf-logs-table">
+                <thead>
+                  <tr>
+                    <th>action</th>
+                    <th>kind</th>
+                    <th>target</th>
+                    <th>reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <For each={(value() as { decisions: Array<Record<string, unknown>> }).decisions}>
+                    {(d) => (
+                      <tr>
+                        <td>
+                          <span class={`rf-logs-action rf-logs-action-${String(d.action ?? "")}`}>
+                            {String(d.action ?? "—")}
+                          </span>
+                        </td>
+                        <td class="rune-mono">{String(d.kind ?? "—")}</td>
+                        <td>
+                          <Show
+                            when={typeof d.experience_id === "string"}
+                            fallback={<span class="rf-logs-soft">{String(d.title ?? "—")}</span>}
+                          >
+                            {expChip(d.experience_id as string)}
+                          </Show>
+                        </td>
+                        <td class="rf-logs-soft">{String(d.reason ?? "")}</td>
+                      </tr>
+                    )}
+                  </For>
+                </tbody>
+              </table>
+            </Show>
+          }
+        >
+          {/* Refine stage: key-value rows */}
+          <dl class="rf-logs-kv">
+            <Show when={typeof (value() as Record<string, unknown>).reject_reason === "string"}>
+              <div class="rf-logs-kv-row rf-logs-kv-row--reject">
+                <dt>reject_reason</dt>
+                <dd>{(value() as { reject_reason: string }).reject_reason}</dd>
+              </div>
+            </Show>
+            <div class="rf-logs-kv-row">
+              <dt>kind</dt>
+              <dd class="rune-mono">{String((value() as Record<string, unknown>).kind ?? "—")}</dd>
+            </div>
+            <div class="rf-logs-kv-row">
+              <dt>scope</dt>
+              <dd class="rune-mono">{String((value() as Record<string, unknown>).scope ?? "—")}</dd>
+            </div>
+            <div class="rf-logs-kv-row">
+              <dt>title</dt>
+              <dd>{String((value() as Record<string, unknown>).title ?? "—")}</dd>
+            </div>
+            <div class="rf-logs-kv-row">
+              <dt>abstract</dt>
+              <dd>{String((value() as Record<string, unknown>).abstract ?? "—")}</dd>
+            </div>
+            <Show when={typeof (value() as Record<string, unknown>).statement === "string"}>
+              <div class="rf-logs-kv-row">
+                <dt>statement</dt>
+                <dd class="rune-mono">{(value() as { statement: string }).statement}</dd>
+              </div>
+            </Show>
+            <Show when={typeof (value() as Record<string, unknown>).trigger_condition === "string"}>
+              <div class="rf-logs-kv-row">
+                <dt>trigger</dt>
+                <dd>{(value() as { trigger_condition: string }).trigger_condition}</dd>
+              </div>
+            </Show>
+            <Show when={typeof (value() as Record<string, unknown>).task_type === "string"}>
+              <div class="rf-logs-kv-row">
+                <dt>task_type</dt>
+                <dd class="rune-mono">{(value() as { task_type: string }).task_type}</dd>
+              </div>
+            </Show>
+            <Show when={Array.isArray((value() as Record<string, unknown>).categories)}>
+              <div class="rf-logs-kv-row">
+                <dt>categories</dt>
+                <dd>
+                  <For each={(value() as { categories: string[] }).categories}>
+                    {(c) => <span class="rf-logs-tag-chip">#{c}</span>}
+                  </For>
+                </dd>
+              </div>
+            </Show>
+            <Show
+              when={
+                Array.isArray((value() as Record<string, unknown>).conflicts_with) &&
+                ((value() as { conflicts_with: string[] }).conflicts_with?.length ?? 0) > 0
+              }
+            >
+              <div class="rf-logs-kv-row">
+                <dt>conflicts</dt>
+                <dd>
+                  <For each={(value() as { conflicts_with: string[] }).conflicts_with}>
+                    {(id) => expChip(id)}
+                  </For>
+                </dd>
+              </div>
+            </Show>
+          </dl>
+        </Show>
+      )}
+    </Show>
+  )
+}
+
 /* Refiner activity log browser. Shows every refiner run grouped by
  * session — including queries that the refiner classed as noise or
  * dropped (those that DIDN'T crystallise into an experience), so the
@@ -4593,6 +4770,7 @@ function RefinerLogsModal(props: {
   loading: boolean
   onClose: () => void
   onReload: () => void
+  onPickExperience?: (id: string) => void
 }) {
   // Resolve session ID → user-facing title (auto-generated or rename).
   // Refiner log entries reference sessions by ID; the user reported that
@@ -4615,7 +4793,7 @@ function RefinerLogsModal(props: {
   }
   const [selectedSession, setSelectedSession] = createSignal<string | undefined>()
   const [selectedRunId, setSelectedRunId] = createSignal<string | undefined>()
-  const [filterMode, setFilterMode] = createSignal<"all" | "no_exp">("all")
+  const [filterMode, setFilterMode] = createSignal<"all" | "new" | "updated" | "no_exp" | "error">("all")
   const [callOpen, setCallOpen] = createSignal<Set<string>>(new Set())
 
   // Group runs by session — most-recent activity first per session.
@@ -4678,12 +4856,46 @@ function RefinerLogsModal(props: {
     const session = sessions().find((s) => s.id === sid)
     if (!session) return []
     const runs = [...session.runs].sort((a, b) => b.created_at - a.created_at)
-    if (filterMode() === "no_exp") {
+    const mode = filterMode()
+    if (mode === "no_exp") {
       return runs.filter((r) =>
         r.outcome === "noise" || r.outcome === "dropped" || r.outcome === "error",
       )
     }
+    if (mode === "new") return runs.filter((r) => r.outcome === "new_exp")
+    if (mode === "updated") return runs.filter((r) => r.outcome === "update_exp")
+    if (mode === "error") return runs.filter((r) => r.outcome === "error")
     return runs
+  })
+
+  // Hour-bucketed groups for the runs list so the user can scan by
+  // time-of-day instead of staring at a flat wall of 200 rows. Each
+  // bucket header reads "今天 14:00–15:00" or "5月13日 14:00".
+  const visibleRunsByHour = createMemo(() => {
+    const runs = visibleRuns()
+    const groups: Array<{ key: string; label: string; runs: RefinerLogEntry[] }> = []
+    let last: { key: string; label: string; runs: RefinerLogEntry[] } | undefined
+    const now = new Date()
+    const todayKey = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}`
+    for (const r of runs) {
+      const d = new Date(r.created_at)
+      const dayKey = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
+      const hourKey = `${dayKey} ${d.getHours()}`
+      if (!last || last.key !== hourKey) {
+        const dayPrefix =
+          dayKey === todayKey
+            ? "今天"
+            : `${pad2(d.getMonth() + 1)}/${pad2(d.getDate())}`
+        last = {
+          key: hourKey,
+          label: `${dayPrefix} ${pad2(d.getHours())}:00`,
+          runs: [],
+        }
+        groups.push(last)
+      }
+      last.runs.push(r)
+    }
+    return groups
   })
 
   const selectedRun = createMemo(() => {
@@ -4754,11 +4966,35 @@ function RefinerLogsModal(props: {
               </button>
               <button
                 type="button"
+                data-active={filterMode() === "new"}
+                onClick={() => setFilterMode("new")}
+                title="仅显示成功新建为 experience 的 run"
+              >
+                新建
+              </button>
+              <button
+                type="button"
+                data-active={filterMode() === "updated"}
+                onClick={() => setFilterMode("updated")}
+                title="仅显示更新已有 experience 的 run"
+              >
+                更新
+              </button>
+              <button
+                type="button"
                 data-active={filterMode() === "no_exp"}
                 onClick={() => setFilterMode("no_exp")}
                 title="仅显示没有沉淀为 experience 的 query（noise/dropped/error）"
               >
                 未沉淀
+              </button>
+              <button
+                type="button"
+                data-active={filterMode() === "error"}
+                onClick={() => setFilterMode("error")}
+                title="仅显示 LLM 调用失败的 run"
+              >
+                error
               </button>
             </div>
             <button
@@ -4840,30 +5076,40 @@ function RefinerLogsModal(props: {
                     <div class="rf-logs-empty">该 session 没有匹配筛选条件的 run。</div>
                   }
                 >
-                  <For each={visibleRuns()}>
-                    {(r) => (
-                      <button
-                        type="button"
-                        class="rf-logs-run-row"
-                        data-active={r.id === selectedRun()?.id}
-                        data-outcome={r.outcome}
-                        onClick={() => setSelectedRunId(r.id)}
-                      >
-                        <div class="rf-logs-run-row-head">
-                          <span class="rf-logs-run-time">{fmtTime(r.created_at)}</span>
-                          <span class="rf-logs-run-trigger">{r.trigger}</span>
-                          <span style={{ flex: 1 }} />
-                          <span class={`rf-logs-outcome rf-logs-outcome-${r.outcome}`}>
-                            {outcomeLabel(r.outcome)}
-                          </span>
-                          <span class="rf-logs-run-ms">{r.duration_ms}ms</span>
+                  <For each={visibleRunsByHour()}>
+                    {(bucket) => (
+                      <>
+                        <div class="rf-logs-bucket-hd">
+                          <span>{bucket.label}</span>
+                          <span class="rf-logs-bucket-count">{bucket.runs.length}</span>
                         </div>
-                        <div class="rf-logs-run-text">
-                          {r.user_text.length > 140
-                            ? r.user_text.slice(0, 140) + "…"
-                            : r.user_text}
-                        </div>
-                      </button>
+                        <For each={bucket.runs}>
+                          {(r) => (
+                            <button
+                              type="button"
+                              class="rf-logs-run-row"
+                              data-active={r.id === selectedRun()?.id}
+                              data-outcome={r.outcome}
+                              onClick={() => setSelectedRunId(r.id)}
+                            >
+                              <div class="rf-logs-run-row-head">
+                                <span class="rf-logs-run-time">{fmtTime(r.created_at)}</span>
+                                <span class="rf-logs-run-trigger">{r.trigger}</span>
+                                <span style={{ flex: 1 }} />
+                                <span class={`rf-logs-outcome rf-logs-outcome-${r.outcome}`}>
+                                  {outcomeLabel(r.outcome)}
+                                </span>
+                                <span class="rf-logs-run-ms">{r.duration_ms}ms</span>
+                              </div>
+                              <div class="rf-logs-run-text" title={r.user_text}>
+                                {r.user_text.length > 100
+                                  ? r.user_text.slice(0, 100) + "…"
+                                  : r.user_text}
+                              </div>
+                            </button>
+                          )}
+                        </For>
+                      </>
                     )}
                   </For>
                 </Show>
@@ -4899,9 +5145,21 @@ function RefinerLogsModal(props: {
                               <span class="rf-logs-outcome-reason">{run().reason}</span>
                             </Show>
                             <Show when={run().experience_ids.length > 0}>
-                              <span class="rf-logs-outcome-reason">
-                                touched: {run().experience_ids.join(", ")}
-                              </span>
+                              <div class="rf-logs-touched">
+                                <span class="rf-logs-soft">touched:</span>
+                                <For each={run().experience_ids}>
+                                  {(id) => (
+                                    <button
+                                      type="button"
+                                      class="rf-logs-exp-chip"
+                                      title={id}
+                                      onClick={() => props.onPickExperience?.(id)}
+                                    >
+                                      {id.slice(0, 8)}
+                                    </button>
+                                  )}
+                                </For>
+                              </div>
                             </Show>
                           </div>
                         </section>
@@ -4960,9 +5218,15 @@ function RefinerLogsModal(props: {
                                         </Show>
                                         <div>
                                           <h5 class="rf-logs-sec-hd">User prompt</h5>
-                                          <div class="rf-logs-md">
-                                            <Markdown text={call.user_prompt} />
-                                          </div>
+                                          {/* Most refiner user_prompts are
+                                            * directive text + JSON payload.
+                                            * Markdown render mangles the
+                                            * JSON braces / indentation, so
+                                            * we use <pre> for fidelity.
+                                            * Long prompts wrap because
+                                            * .rf-logs-pre has white-space:
+                                            * pre-wrap. */}
+                                          <pre class="rf-logs-pre">{call.user_prompt}</pre>
                                         </div>
                                         <Show when={call.reasoning_text}>
                                           <div>
@@ -4983,9 +5247,11 @@ function RefinerLogsModal(props: {
                                         <Show when={call.structured_output !== undefined}>
                                           <div>
                                             <h5 class="rf-logs-sec-hd">Structured output</h5>
-                                            <pre class="rf-logs-pre">
-                                              {JSON.stringify(call.structured_output, null, 2)}
-                                            </pre>
+                                            <PrettyStructured
+                                              stage={call.stage}
+                                              value={call.structured_output}
+                                              onPickExperience={props.onPickExperience}
+                                            />
                                           </div>
                                         </Show>
                                       </div>
@@ -6985,6 +7251,10 @@ export default function RefinerPage() {
           loading={logsLoading()}
           onClose={() => setShowLogs(false)}
           onReload={() => void reloadLogs()}
+          onPickExperience={(id) => {
+            setShowLogs(false)
+            pickExperienceByID(id)
+          }}
         />
       </Show>
 

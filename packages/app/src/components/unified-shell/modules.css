@@ -411,6 +411,78 @@
   color: var(--rune-warn-text, #b91c1c);
 }
 
+/* Retrieve trace pretty-renderer — replaces the raw JSON dump for
+ * structured_output with a scannable picks table. */
+.rune-shell .rt-logs-table,
+.refiner-page .rt-logs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+.rune-shell .rt-logs-table th,
+.refiner-page .rt-logs-table th {
+  text-align: left;
+  font-weight: 500;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--rune-fg-faint);
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--rune-border-soft, color-mix(in oklch, var(--rune-fg) 12%, transparent));
+}
+.rune-shell .rt-logs-table td,
+.refiner-page .rt-logs-table td {
+  padding: 6px 8px;
+  vertical-align: top;
+  border-bottom: 1px solid var(--rune-border-soft, color-mix(in oklch, var(--rune-fg) 7%, transparent));
+}
+.rune-shell .rt-logs-soft,
+.refiner-page .rt-logs-soft {
+  color: var(--rune-fg-faint);
+}
+.rune-shell .rt-logs-raw,
+.refiner-page .rt-logs-raw {
+  font-size: 11.5px;
+}
+.rune-shell .rt-logs-raw summary,
+.refiner-page .rt-logs-raw summary {
+  cursor: pointer;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--rune-fg-faint);
+  padding: 4px 0;
+  user-select: none;
+}
+.rune-shell .rt-logs-raw[open] summary,
+.refiner-page .rt-logs-raw[open] summary {
+  margin-bottom: 6px;
+}
+
+/* Hour-bucket header in the retrieve rail — sticky so the user
+ * always knows which hour they're looking at while scrolling. */
+.rune-shell .rt-rsess-bucket-hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 10px;
+  margin-top: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--rune-fg-faint);
+  background: var(--rune-bg-surface);
+  border-top: 1px solid var(--rune-border-soft, color-mix(in oklch, var(--rune-fg) 10%, transparent));
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.rune-shell .rt-rsess-bucket-count {
+  font-family: var(--rune-font-mono);
+  font-weight: 400;
+}
+
 /* Recall main column */
 .rune-shell .rt-recall {
   flex: 1;

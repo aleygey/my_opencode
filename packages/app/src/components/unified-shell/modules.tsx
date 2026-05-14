@@ -256,8 +256,34 @@ export function TraceRecall(props: {
             when={props.entries.length > 0}
             fallback={<div class="rt-hit-empty">尚无记录</div>}
           >
-            <For each={props.entries}>
-              {(r) => (
+            {/* Hour-bucket the rail so scanning a 200-recall session
+             *  doesn't feel like a wall. Bucket key = the first two
+             *  chars of `shortTime` (which is "HH:MM" or "HH:MM:SS").
+             *  We re-bucket every render — entries arrive sorted by
+             *  time already so a single pass suffices. */}
+            {(() => {
+              type Bucket = { hour: string; entries: TraceRecallEntry[] }
+              const groups: Bucket[] = []
+              let last: Bucket | undefined
+              for (const r of props.entries) {
+                const stamp = r.shortTime ?? r.time ?? ""
+                const hour = stamp.slice(0, 2)
+                if (!last || last.hour !== hour) {
+                  last = { hour, entries: [] }
+                  groups.push(last)
+                }
+                last.entries.push(r)
+              }
+              return (
+                <For each={groups}>
+                  {(bucket) => (
+                    <>
+                      <div class="rt-rsess-bucket-hd">
+                        <span>{bucket.hour}:00</span>
+                        <span class="rt-rsess-bucket-count">{bucket.entries.length}</span>
+                      </div>
+                      <For each={bucket.entries}>
+                        {(r) => (
                 <div
                   role="button"
                   tabIndex={0}
@@ -344,8 +370,13 @@ export function TraceRecall(props: {
                     </button>
                   </div>
                 </div>
-              )}
-            </For>
+                        )}
+                      </For>
+                    </>
+                  )}
+                </For>
+              )
+            })()}
           </Show>
         </div>
       </aside>
@@ -375,6 +406,80 @@ export function TraceRecall(props: {
  *           is wired) + query excerpt. The user reported that opening
  *           the Logs modal hid which session a recall came from; this
  *           row brings it back so cross-session audits stay anchored. */
+/**
+ * Pretty-renderer for retrieve agent structured output. The LLM
+ * returns a `picks` array of selected seed experiences; the previous
+ * implementation dumped this as raw JSON which scrolled forever and
+ * buried the relevant information (which exp was picked, why).
+ *
+ * Renders a compact table with index / id / reason if we can detect
+ * the picks shape; otherwise falls back to JSON in a <details> so
+ * the user can opt-in to seeing the raw payload without it hijacking
+ * the modal by default.
+ */
+function RetrievePrettyStructured(props: { value: unknown }) {
+  const v = () => props.value as Record<string, unknown> | undefined
+  const isPicksShape = () => {
+    const x = v()
+    if (!x) return false
+    const picks = (x as { picks?: unknown }).picks
+    return Array.isArray(picks)
+  }
+  return (
+    <Show
+      when={v()}
+      fallback={<div class="rt-hit-empty">（无 structured output）</div>}
+    >
+      {(value) => (
+        <Show
+          when={isPicksShape()}
+          fallback={
+            <details class="rt-logs-raw">
+              <summary>原始 JSON</summary>
+              <pre class="rt-logs-pre">{JSON.stringify(value(), null, 2)}</pre>
+            </details>
+          }
+        >
+          {(() => {
+            const picks = (value() as { picks: Array<Record<string, unknown>> }).picks
+            return (
+              <table class="rt-logs-table">
+                <thead>
+                  <tr>
+                    <th style={{ width: "32px" }}>#</th>
+                    <th>experience</th>
+                    <th>reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <For each={picks}>
+                    {(p, i) => (
+                      <tr>
+                        <td class="rune-mono rt-logs-soft">{String(i() + 1).padStart(2, "0")}</td>
+                        <td>
+                          <div>
+                            <span class="rune-mono rt-logs-soft">
+                              {String(p.experience_id ?? p.id ?? "—").slice(0, 8)}
+                            </span>
+                            <Show when={typeof p.title === "string"}>
+                              <span style={{ "margin-left": "8px" }}>{String(p.title)}</span>
+                            </Show>
+                          </div>
+                        </td>
+                        <td class="rt-logs-soft">{String(p.reason ?? "")}</td>
+                      </tr>
+                    )}
+                  </For>
+                </tbody>
+              </table>
+            )
+          })()}
+        </Show>
+      )}
+    </Show>
+  )
+}
+
 function TraceLogsModal(props: {
   entry: TraceRecallEntry
   onClose: () => void
@@ -468,9 +573,13 @@ function TraceLogsModal(props: {
 
             <section class="rt-logs-sec">
               <h3 class="rt-logs-sec-hd">User prompt (recall payload)</h3>
-              <div class="rt-logs-md">
-                <Markdown text={trace()?.userPrompt ?? ""} />
-              </div>
+              {/* Most retrieve user_prompts are a directive followed by
+               * a JSON payload (candidate experiences, user_text). The
+               * old Markdown render mangled the JSON braces / indents,
+               * which is why the user described the log as "messy".
+               * Use <pre> to preserve fidelity; .rt-logs-pre already
+               * wraps long lines. */}
+              <pre class="rt-logs-pre">{trace()?.userPrompt ?? ""}</pre>
             </section>
 
             <Show when={trace()?.reasoningText}>
@@ -494,9 +603,7 @@ function TraceLogsModal(props: {
             <Show when={trace()?.structuredOutput !== undefined}>
               <section class="rt-logs-sec">
                 <h3 class="rt-logs-sec-hd">Structured output (seed selection)</h3>
-                <pre class="rt-logs-pre">
-                  {JSON.stringify(trace()?.structuredOutput, null, 2)}
-                </pre>
+                <RetrievePrettyStructured value={trace()?.structuredOutput} />
               </section>
             </Show>
 
