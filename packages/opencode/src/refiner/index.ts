@@ -3,6 +3,8 @@ import { unlink } from "fs/promises"
 import matter from "gray-matter"
 import z from "zod"
 import { Effect } from "effect"
+import { BusEvent } from "@/bus/bus-event"
+import { Bus } from "@/bus"
 import { generateText, jsonSchema, stepCountIs, streamText, tool, type ModelMessage } from "ai"
 import { Agent } from "@/agent/agent"
 import { Auth } from "@/auth"
@@ -1229,6 +1231,12 @@ async function writeExperience(exp: Experience) {
   const cfg = await settings()
   const filepath = experienceFilepath(cfg.base, exp)
   await writeMatter(filepath, exp as unknown as Record<string, unknown>, renderExperience(exp))
+  // Notify subscribers (the SSE relay picks this up via Bus.subscribeAll
+  // so the refiner page can refresh without polling). We can't cheaply
+  // distinguish create vs update here without an existence probe, so we
+  // always emit "updated" — the frontend refetches by id and treats new
+  // ids as inserts. Fire-and-forget; failures are non-fatal.
+  await Bus.publish(Refiner.Event.ExperienceChanged, { id: exp.id, change: "updated" }).catch(() => undefined)
   return filepath
 }
 
@@ -2631,6 +2639,23 @@ export namespace Refiner {
   export const ObservationSchemaExport = ObservationSchema
   export const RefinerLogEntrySchemaExport = RefinerLogEntrySchema
 
+  /** Bus events fired whenever the experience library mutates. The SSE
+   *  endpoint already proxies the entire bus, so subscribers
+   *  (specifically the refiner-page in the frontend) can listen and
+   *  refresh their local cache without polling. We keep the payload
+   *  intentionally minimal (just the id + kind of change) — listeners
+   *  refetch detail via the existing list / get endpoints. This
+   *  matches the way workflow.* events are shaped. */
+  export const Event = {
+    ExperienceChanged: BusEvent.define(
+      "refiner.experience.changed",
+      z.object({
+        id: z.string(),
+        change: z.enum(["created", "updated", "deleted", "merged", "undone", "observation_attached"]),
+      }),
+    ),
+  }
+
   /** Read the entire refiner activity log. Newest entries are at the
    *  end of the file; the caller may want to reverse for a most-recent-
    *  first display. Returns [] when the log file doesn't exist or is
@@ -3015,6 +3040,238 @@ export namespace Refiner {
     }
   }
 
+  // ---------- Global LLM-based refine ----------
+  //
+  // The deterministic planner above only surfaces structural symptoms
+  // (overlapping titles, dead tags, etc.). The user wants a semantic
+  // pass: send the ENTIRE active library to one LLM call and ask it to
+  // identify true duplicates, mergeable groups, contradictions, and
+  // dead/obsolete entries. Cost is bounded because:
+  //   1. We send a compact projection (id + kind + title + abstract +
+  //      scope + categories) — not the full observation transcripts.
+  //   2. Output is structured (single tool call), no free-form prose.
+  //   3. One call per global-refine click, not per experience.
+  //
+  // The result is a *plan*, not an immediate mutation — the UI shows
+  // each proposed action with a reason, the user confirms, then we
+  // route through the existing merge / delete endpoints (so audit
+  // history / undo still apply).
+
+  const GlobalLLMPlanSchema = z.object({
+    merges: z
+      .array(
+        z.object({
+          ids: z.array(z.string()).min(2).describe("2 个或以上要合并的 experience id"),
+          keep: z.string().describe("合并后保留的主 id（其余会被删除）"),
+          reason: z.string().describe("简体中文一句话说明为什么这些可以合并"),
+        }),
+      )
+      .default([]),
+    deletions: z
+      .array(
+        z.object({
+          id: z.string(),
+          reason: z.string().describe("简体中文一句话说明为什么应删除（过时/重复/低质量/不可复用）"),
+        }),
+      )
+      .default([]),
+    conflicts: z
+      .array(
+        z.object({
+          a_id: z.string(),
+          b_id: z.string(),
+          resolution: z.enum(["keep_a", "keep_b", "merge", "leave"]),
+          reason: z.string().describe("简体中文一句话说明冲突原因与处理建议"),
+        }),
+      )
+      .default([]),
+    keeps_as_is: z
+      .array(z.string())
+      .default([])
+      .describe("无需变动的 experience id 列表（可省略）"),
+    overall_summary: z.string().describe("简体中文 1-2 句总览：本次扫描共发现哪些主要问题"),
+  })
+  type GlobalLLMPlan = z.infer<typeof GlobalLLMPlanSchema>
+
+  export async function globalReRefineLLMPlan(input?: {
+    /** Hard cap on experiences submitted. Older entries (by last_refined_at)
+     *  are dropped first when over the cap. Default 200. */
+    maxExperiences?: number
+    /** Bypass the cap check entirely. Use with caution on huge libraries. */
+    unbounded?: boolean
+  }): Promise<
+    | { ok: false; reason: string }
+    | { ok: true; generated_at: number; experience_count: number; plan: GlobalLLMPlan }
+  > {
+    const maxCap = input?.unbounded ? Number.POSITIVE_INFINITY : (input?.maxExperiences ?? 200)
+    const all = (await listExperiences()).filter((e) => !e.archived)
+    if (all.length === 0) {
+      return { ok: false as const, reason: "no_experiences" }
+    }
+    // Newest-refined first; truncate at the cap. We want the LLM to
+    // focus on the freshest signal — if the library is enormous, the
+    // user can re-run with a higher cap or use the deterministic
+    // planner for the long tail.
+    const sorted = [...all].sort((a, b) => (b.last_refined_at ?? 0) - (a.last_refined_at ?? 0))
+    const submitted = sorted.slice(0, maxCap)
+    const compact = submitted.map((e) => ({
+      id: e.id,
+      kind: e.kind,
+      scope: e.scope,
+      title: e.title,
+      abstract: e.abstract,
+      categories: e.categories ?? [],
+      conflicts_with: e.conflicts_with ?? [],
+      observation_count: e.observations.length,
+      last_refined_at: e.last_refined_at,
+    }))
+
+    const resolved = await resolveRefinerModel()
+    if (!resolved?.model) return { ok: false as const, reason: "no_model" }
+    const language = await svcProviderGetLanguage(resolved.model)
+    if (!language) return { ok: false as const, reason: "no_language_model" }
+    const auth = await svcAuthGet(resolved.model.providerID)
+    const cfg = await svcConfigGet()
+    const isOpenaiOauth = resolved.model.providerID === "openai" && auth?.type === "oauth"
+    const systemPrompt = resolved.agent.prompt
+
+    const directive = [
+      "TASK = global_library_review. 你是经验库的整理员，一次性审视下面 JSON 中给到的全部活跃 experience。",
+      "目标：在不丢失任何信息的前提下，给出一份**整理方案**——这是 plan，不会立刻生效。",
+      "",
+      "请把每条 experience 划到下面 4 类之一：",
+      "  1. merges — 2 条以上语义高度重叠 / 应当合并；指明保留的主 id。",
+      "  2. deletions — 已过时、重复、低质量、纯陈述事实或仅适用一次性上下文。",
+      "  3. conflicts — 互相矛盾的两条；resolution=keep_a/keep_b/merge/leave。",
+      "  4. keeps_as_is — 维持原样。",
+      "",
+      "硬规则：",
+      "  - 信息不可丢失：要 delete 之前确认它的核心内容已经被另一条覆盖（写到 reason 里）。",
+      "  - 不要把不同 scope（user/workspace/project/repo）误判为重复——它们的适用范围不同。",
+      "  - 不同 kind 之间一般不能合并（workflow_rule ≠ know_how ≠ pitfall_or_caveat）。",
+      "  - reason 必须**简体中文**单句，禁止英文 / 占位符。",
+      "  - merges 的 keep id 必须在 ids 列表里。",
+      "",
+      "调用 StructuredOutput 工具输出结构化方案。下面是全部输入：",
+    ].join("\n")
+
+    let plan: GlobalLLMPlan | undefined
+    const schema = ProviderTransform.schema(resolved.model, z.toJSONSchema(GlobalLLMPlanSchema)) as Record<
+      string,
+      unknown
+    >
+    const messages: ModelMessage[] = [
+      ...(isOpenaiOauth || !systemPrompt ? [] : ([{ role: "system", content: systemPrompt }] as ModelMessage[])),
+      {
+        role: "user",
+        content:
+          directive +
+          "\n\n" +
+          JSON.stringify({ experience_count: compact.length, experiences: compact }, null, 2),
+      },
+    ]
+
+    try {
+      const params = {
+        experimental_telemetry: {
+          isEnabled: cfg?.experimental?.openTelemetry,
+          metadata: { userId: cfg?.username ?? "unknown" },
+        },
+        temperature: 0.1,
+        messages,
+        model: language,
+        tools: {
+          StructuredOutput: createStructuredOutputTool({
+            schema,
+            onSuccess(raw) {
+              const parsed = GlobalLLMPlanSchema.safeParse(raw)
+              if (parsed.success) plan = parsed.data
+              else log.warn("globalReRefineLLM output schema failed", { error: parsed.error.message })
+            },
+          }),
+        },
+        providerOptions: ProviderTransform.providerOptions(resolved.model, {
+          instructions: systemPrompt ?? "",
+          store: false,
+        }),
+        stopWhen: stepCountIs(4),
+      } satisfies Parameters<typeof generateText>[0]
+
+      if (isOpenaiOauth) {
+        const result = streamText({ ...params, onError: () => {} })
+        for await (const part of result.fullStream) {
+          if (part.type === "error") throw part.error
+        }
+      } else {
+        await generateText(params)
+      }
+    } catch (error) {
+      log.warn("globalReRefineLLM LLM call failed", { error })
+      return { ok: false as const, reason: "llm_failed" }
+    }
+
+    if (!plan) return { ok: false as const, reason: "no_structured_output" }
+    return {
+      ok: true as const,
+      generated_at: nowMs(),
+      experience_count: submitted.length,
+      plan,
+    }
+  }
+
+  /**
+   * Apply a previously-generated global LLM plan. The user reviews the
+   * plan in the UI, optionally edits it, then calls this to commit.
+   * Operations flow through existing `mergeExperiences` / `deleteExperience`
+   * so refinement_history and audit logs stay coherent and `undoRefinementsSince`
+   * can roll the batch back.
+   */
+  export async function globalReRefineLLMApply(plan: GlobalLLMPlan): Promise<{
+    applied: { merges: number; deletions: number }
+    skipped: Array<{ kind: "merge" | "delete"; ids: string[]; reason: string }>
+  }> {
+    const skipped: Array<{ kind: "merge" | "delete"; ids: string[]; reason: string }> = []
+    let mergesDone = 0
+    let deletionsDone = 0
+    // 1. merges first — so we don't accidentally try to delete an id that
+    // a merge would consume.
+    for (const m of plan.merges ?? []) {
+      if (!m.ids.includes(m.keep)) {
+        skipped.push({ kind: "merge", ids: m.ids, reason: "keep_id_not_in_ids" })
+        continue
+      }
+      try {
+        const result = await mergeExperiences({
+          ids: m.ids,
+          reason: `global_llm_refine: ${m.reason.slice(0, 100)}`,
+        })
+        if ((result as { ok?: boolean }).ok === false) {
+          skipped.push({ kind: "merge", ids: m.ids, reason: "merge_failed" })
+        } else {
+          mergesDone++
+        }
+      } catch (err) {
+        skipped.push({ kind: "merge", ids: m.ids, reason: String(err).slice(0, 100) })
+      }
+    }
+    for (const d of plan.deletions ?? []) {
+      try {
+        const result = await deleteExperience(d.id, {
+          cascadeObservations: true,
+          reason: `global_llm_refine: ${d.reason.slice(0, 100)}`,
+        })
+        if (result.ok) deletionsDone++
+        else skipped.push({ kind: "delete", ids: [d.id], reason: result.error ?? "delete_failed" })
+      } catch (err) {
+        skipped.push({ kind: "delete", ids: [d.id], reason: String(err).slice(0, 100) })
+      }
+    }
+    return {
+      applied: { merges: mergesDone, deletions: deletionsDone },
+      skipped,
+    }
+  }
+
   export async function experienceByID(id: string) {
     return getExperienceByID(id)
   }
@@ -3120,6 +3377,7 @@ export namespace Refiner {
       cascade,
       reason: options?.reason ?? "user_delete",
     })
+    await Bus.publish(Event.ExperienceChanged, { id: target.id, change: "deleted" }).catch(() => undefined)
     return { ok: true as const, observations_removed: observationsRemoved }
   }
 

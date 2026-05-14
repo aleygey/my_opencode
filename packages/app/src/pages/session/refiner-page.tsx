@@ -4274,6 +4274,8 @@ function ReRefineModal(props: {
   onReload: () => void
   onUndoRecent: () => Promise<void> | void
   undoBusy: boolean
+  onLLMRefine: () => Promise<void> | void
+  llmBusy: boolean
   onClose: () => void
 }) {
   // ESC closes — same UX contract as the logs modal.
@@ -4355,6 +4357,16 @@ function ReRefineModal(props: {
               title="撤销最近的整理动作（按时间窗口反向逐条 refine_history）"
             >
               {props.undoBusy ? "回退中…" : "↩ 撤销最近整理"}
+            </button>
+            <button
+              type="button"
+              class="rune-btn"
+              data-size="xs"
+              onClick={() => props.onLLMRefine()}
+              disabled={props.llmBusy}
+              title="一次性把全部活跃 experience 交给 LLM 审视：找重复 / 合并 / 冲突 / 可删除。先出 plan，确认后再 apply。"
+            >
+              {props.llmBusy ? "审视中…" : "🪄 LLM 整理"}
             </button>
             <button
               type="button"
@@ -5797,6 +5809,63 @@ export default function RefinerPage() {
     }
   }
 
+  // ── Global LLM refine: 1 LLM call over the entire active library →
+  // structured plan → user confirms → apply via existing merge/delete
+  // paths. Two-step (plan + apply) so the user can sanity-check before
+  // anything mutates.
+  type LLMPlanShape = {
+    ok: boolean
+    generated_at?: number
+    experience_count?: number
+    reason?: string
+    plan?: {
+      merges: Array<{ ids: string[]; keep: string; reason: string }>
+      deletions: Array<{ id: string; reason: string }>
+      conflicts: Array<{ a_id: string; b_id: string; resolution: string; reason: string }>
+      keeps_as_is: string[]
+      overall_summary: string
+    }
+  }
+  const [llmBusy, setLLMBusy] = createSignal(false)
+  const onLLMRefineRun = async () => {
+    const b = apiBase()
+    if (!b) return
+    setLLMBusy(true)
+    try {
+      const res = await apiRequest<LLMPlanShape>(b, "/experimental/refiner/global-rerefine/llm/plan", {
+        method: "POST",
+        json: {},
+      })
+      if (!res.ok || !res.plan) {
+        flash(`LLM 审视失败：${res.reason ?? "unknown"}`)
+        return
+      }
+      const summary = `${res.plan.overall_summary}\n\n· 合并 ${res.plan.merges.length} 组 · 删除 ${res.plan.deletions.length} 条 · 冲突 ${res.plan.conflicts.length} 对`
+      const confirmed = window.confirm(`LLM 提出的整理方案：\n\n${summary}\n\n点 OK 应用，点 Cancel 放弃。`)
+      if (!confirmed) {
+        flash("已取消 LLM 整理")
+        return
+      }
+      const applyRes = await apiRequest<{
+        applied: { merges: number; deletions: number }
+        skipped: Array<{ kind: string; ids: string[]; reason: string }>
+      }>(b, "/experimental/refiner/global-rerefine/llm/apply", {
+        method: "POST",
+        json: res.plan,
+      })
+      flash(
+        `已应用：合并 ${applyRes.applied.merges} 组 / 删除 ${applyRes.applied.deletions} 条 · 跳过 ${applyRes.skipped.length}`,
+      )
+      refreshAll()
+      await reloadReRefine()
+    } catch (err) {
+      console.warn("global LLM refine failed", err)
+      flash("LLM 整理失败：详见 console")
+    } finally {
+      setLLMBusy(false)
+    }
+  }
+
   // Each resource is wrapped in `stableFetcher` so polling refetches don't
   // produce new object references when the server returned an identical
   // payload — that would otherwise re-key every <For> row and re-run every
@@ -5901,6 +5970,28 @@ export default function RefinerPage() {
     if (viewMode() === "graph") void refetchChainGraph()
   }
   const poll = setInterval(tickPoll, POLL_INTERVAL_MS)
+  // Live push: the server fires `refiner.experience.changed` on Bus
+  // whenever an experience is written / deleted (see Refiner.Event in
+  // packages/opencode/src/refiner/index.ts). The SDK re-emits every
+  // bus event by its type string, so a per-event subscription here
+  // refreshes the page the moment the user does anything that mutates
+  // the library — no polling latency. We cast the event key because
+  // the SDK type union is generated and our event lives outside of
+  // OpenAPI's structured route surface; the runtime emitter accepts
+  // any string key.
+  const refinerEventUnsub = sdk.event.on(
+    "refiner.experience.changed" as never,
+    () => {
+      // Don't yank the page out from under an open edit modal — the same
+      // guard tickPoll uses. We'll refetch when the modal closes.
+      if (action()) return
+      void refetch()
+      void refetchTaxonomy()
+      void refetchUsageStats()
+      if (viewMode() === "graph") void refetchChainGraph()
+    },
+  )
+  onCleanup(() => refinerEventUnsub())
   // Resume immediately when the user returns to the tab so they don't have to
   // wait an entire interval to see fresh data after coming back.
   const onVisibility = () => {
@@ -6943,6 +7034,8 @@ export default function RefinerPage() {
           onReload={() => void reloadReRefine()}
           onUndoRecent={() => onUndoRecentRefine()}
           undoBusy={undoBusy()}
+          onLLMRefine={() => onLLMRefineRun()}
+          llmBusy={llmBusy()}
           onClose={() => setShowReRefine(false)}
         />
       </Show>

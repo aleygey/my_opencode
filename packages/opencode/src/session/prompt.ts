@@ -1315,6 +1315,14 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         const slog = elog.with({ sessionID })
         let structured: unknown | undefined
         let step = 0
+        // Track which user message we retrieved against last. When a new
+        // user message arrives mid-loop (user typed while the agent was
+        // still in a tool-call chain), `lastUser` flips to the new id
+        // but the step counter keeps marching, so the next retrieve
+        // wouldn't fire until step % 6 == 0. We reset the cadence here
+        // so the freshly-arrived user text gets exp-injected on the
+        // very next reasoning step instead of waiting up to 5 steps.
+        let lastRetrievedUserID: string | undefined
         const session = yield* sessions.get(sessionID)
 
         while (true) {
@@ -1488,16 +1496,21 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             // system prompt. The Retrieve service swallows all errors and
             // returns a benign default, so Effect.promise is safe here.
             //
-            // Two trigger points:
+            // Three trigger points:
             //   1. Step 1 of a user turn — the standard cold-start injection.
             //   2. Every Nth tool-call iteration after that (REINJECT_EVERY)
             //      — long reasoning chains drift away from the originally
             //      retrieved guidance. The user observed slaves "going off
             //      script" mid-task and asked for a periodic re-injection.
-            //      We cap the cadence (default every 6 steps) so we don't
-            //      pay the retrieve LLM cost on every iteration.
+            //   3. A new user message arrived mid-loop (the step counter
+            //      kept marching but `lastUser` now points at a different
+            //      message id) — fire a fresh retrieve so the newly
+            //      typed instruction triggers its own exp injection
+            //      instead of waiting up to N-1 more steps.
             const REINJECT_EVERY = 6
-            const shouldRetrieve = step === 1 || (step > 1 && step % REINJECT_EVERY === 0)
+            const newUserArrived = lastUser.id !== lastRetrievedUserID && lastRetrievedUserID !== undefined
+            const shouldRetrieve =
+              step === 1 || newUserArrived || (step > 1 && step % REINJECT_EVERY === 0)
             if (shouldRetrieve) {
               const userText = lastUserMsg?.parts
                 .filter((p): p is MessageV2.TextPart => p.type === "text" && !p.ignored && !p.synthetic)
@@ -1515,6 +1528,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               if (retrieved.system_text) {
                 system.push(retrieved.system_text)
               }
+              lastRetrievedUserID = lastUser.id
             }
             const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)

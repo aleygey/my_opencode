@@ -1008,6 +1008,85 @@ export const ExperimentalRoutes = lazy(() =>
       },
     )
     .post(
+      "/refiner/global-rerefine/llm/plan",
+      describeRoute({
+        summary: "Build a global LLM-based re-refine plan",
+        description:
+          "Send the entire active experience library (compact projection) to a single LLM call asking it to identify merges / deletions / conflicts / keeps. Returns a structured plan — no mutations yet. The UI displays the plan and the user calls /llm/apply to commit. One LLM call per click; output is always structured.",
+        operationId: "experimental.refiner.globalReRefineLLMPlan",
+        responses: {
+          200: {
+            description: "LLM-generated re-refine plan",
+            content: { "application/json": { schema: resolver(z.record(z.string(), z.unknown())) } },
+          },
+        },
+      }),
+      validator(
+        "json",
+        z.object({
+          max_experiences: z.number().int().positive().optional(),
+          unbounded: z.boolean().optional(),
+        }),
+      ),
+      async (c) => {
+        const body = c.req.valid("json")
+        return c.json(
+          await Refiner.globalReRefineLLMPlan({
+            maxExperiences: body.max_experiences,
+            unbounded: body.unbounded,
+          }),
+        )
+      },
+    )
+    .post(
+      "/refiner/global-rerefine/llm/apply",
+      describeRoute({
+        summary: "Apply a previously-generated LLM refine plan",
+        description:
+          "Commit the merges and deletions from a /llm/plan response. Goes through the existing mergeExperiences and deleteExperience paths so refinement_history and audit logs remain coherent — the time-windowed undo button can roll the whole batch back.",
+        operationId: "experimental.refiner.globalReRefineLLMApply",
+        responses: {
+          200: {
+            description: "Application result",
+            content: { "application/json": { schema: resolver(z.record(z.string(), z.unknown())) } },
+          },
+        },
+      }),
+      validator(
+        "json",
+        z.object({
+          merges: z
+            .array(z.object({ ids: z.array(z.string()), keep: z.string(), reason: z.string() }))
+            .optional(),
+          deletions: z.array(z.object({ id: z.string(), reason: z.string() })).optional(),
+          conflicts: z
+            .array(
+              z.object({
+                a_id: z.string(),
+                b_id: z.string(),
+                resolution: z.enum(["keep_a", "keep_b", "merge", "leave"]),
+                reason: z.string(),
+              }),
+            )
+            .optional(),
+          keeps_as_is: z.array(z.string()).optional(),
+          overall_summary: z.string().optional(),
+        }),
+      ),
+      async (c) => {
+        const body = c.req.valid("json")
+        return c.json(
+          await Refiner.globalReRefineLLMApply({
+            merges: body.merges ?? [],
+            deletions: body.deletions ?? [],
+            conflicts: body.conflicts ?? [],
+            keeps_as_is: body.keeps_as_is ?? [],
+            overall_summary: body.overall_summary ?? "",
+          }),
+        )
+      },
+    )
+    .post(
       "/refiner/observe-workflow/:workflow_id",
       describeRoute({
         summary: "Sediment a completed workflow into the experience library",
