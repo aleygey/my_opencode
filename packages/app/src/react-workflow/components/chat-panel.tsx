@@ -1,5 +1,5 @@
 /** @jsxImportSource react */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowUp, Bot, Terminal, User, Wrench, ChevronDown, ChevronRight, ChevronUp, Check,
   FolderOpen, Cpu, Cog, CheckCircle2, XCircle, Loader2, Eye, MessageCircle,
@@ -307,7 +307,7 @@ export function FormattedContent({ text }: { text: string }) {
  * box, no JSON dump for the input — input is rendered inline as a
  * one-liner so the user sees the actual *intent* of the call, not
  * its schema. */
-export function ToolCallCard({ tool, content, onDetail }: { tool: ToolCall; content: string; onDetail?: (sessionId: string) => void }) {
+export const ToolCallCard = memo(function ToolCallCard({ tool, content, onDetail }: { tool: ToolCall; content: string; onDetail?: (sessionId: string) => void }) {
   const [outOpen, setOutOpen] = useState(false)
   const display = useMemo(() => formatToolContent(tool.name, content), [tool.name, content])
   const oneLiner = useMemo(() => toolOneLiner(tool.name, tool.input), [tool.name, tool.input])
@@ -360,7 +360,7 @@ export function ToolCallCard({ tool, content, onDetail }: { tool: ToolCall; cont
       )}
     </div>
   )
-}
+})
 
 /* ── Parse thinking content for human-readable display ── */
 function formatThinkingContent(raw: string): string {
@@ -386,7 +386,13 @@ function formatThinkingContent(raw: string): string {
   return raw
 }
 
-export function ThinkingCard(props: { content: string; status: 'running' | 'completed'; timestamp: string }) {
+// `memo` wrap: chat-panel re-renders on every new message tick, and every
+// re-render previously rebuilt the entire conversation tree (each tool /
+// thinking / reasoning card with it). The user reported tool cards
+// "flashing" on every new message — that's React doing a no-op re-render
+// of the card with identical props. `memo` short-circuits the re-render
+// when props are shallow-equal. Same fix applied to every card below.
+export const ThinkingCard = memo(function ThinkingCard(props: { content: string; status: 'running' | 'completed'; timestamp: string }) {
   const done = props.status === 'completed'
   const display = useMemo(() => formatThinkingContent(props.content), [props.content])
 
@@ -416,7 +422,7 @@ export function ThinkingCard(props: { content: string; status: 'running' | 'comp
       <div className="wf-tool-call-output wf-thinking-content whitespace-pre-wrap break-all">{display}</div>
     </div>
   )
-}
+})
 
 /* ── Reasoning row ──
  *
@@ -431,7 +437,7 @@ export function ThinkingCard(props: { content: string; status: 'running' | 'comp
  * thin coloured bar that says "this is the model's chain-of-
  * thought" at a glance. No italic — italic was hurting CJK
  * readability. */
-function ReasoningCard({ text, time }: { text: string; time?: { start: number; end?: number } }) {
+const ReasoningCard = memo(function ReasoningCard({ text, time }: { text: string; time?: { start: number; end?: number } }) {
   const duration = time?.end && time?.start ? `${((time.end - time.start) / 1000).toFixed(1)}s` : undefined
   const [open, setOpen] = useState(true)
   return (
@@ -462,10 +468,10 @@ function ReasoningCard({ text, time }: { text: string; time?: { start: number; e
       )}
     </div>
   )
-}
+})
 
 /* ── File card ── */
-function FileCard({ mime, filename, url }: { mime: string; filename?: string; url: string }) {
+const FileCard = memo(function FileCard({ mime, filename, url }: { mime: string; filename?: string; url: string }) {
   const isImage = mime.startsWith('image/')
   return (
     <div className="wf-tool-call wf-tool-call--completed">
@@ -481,10 +487,10 @@ function FileCard({ mime, filename, url }: { mime: string; filename?: string; ur
       {isImage && <div className="p-2"><img src={url} alt={filename} className="max-w-full rounded" style={{ maxHeight: 200 }} /></div>}
     </div>
   )
-}
+})
 
 /* ── Patch card ── */
-function PatchCard({ files }: { files: string[] }) {
+const PatchCard = memo(function PatchCard({ files }: { files: string[] }) {
   return (
     <div className="wf-tool-call wf-tool-call--completed">
       <div className="wf-tool-call-header">
@@ -501,10 +507,10 @@ function PatchCard({ files }: { files: string[] }) {
       </div>
     </div>
   )
-}
+})
 
 /* ── Retry card ── */
-function RetryCard({ attempt, error }: { attempt: number; error: string }) {
+const RetryCard = memo(function RetryCard({ attempt, error }: { attempt: number; error: string }) {
   return (
     <div className="wf-tool-call wf-tool-call--failed">
       <div className="wf-tool-call-header">
@@ -518,10 +524,10 @@ function RetryCard({ attempt, error }: { attempt: number; error: string }) {
       </div>
     </div>
   )
-}
+})
 
 /* ── Step finish card ── */
-function StepFinishCard({ reason, cost, tokens }: { reason: string; cost: number; tokens: { input: number; output: number } }) {
+const StepFinishCard = memo(function StepFinishCard({ reason, cost, tokens }: { reason: string; cost: number; tokens: { input: number; output: number } }) {
   return (
     <div className="wf-tool-call wf-tool-call--completed">
       <div className="wf-tool-call-header">
@@ -537,7 +543,7 @@ function StepFinishCard({ reason, cost, tokens }: { reason: string; cost: number
       </div>
     </div>
   )
-}
+})
 
 /* ── Collapsed tool strip ──
  *
@@ -556,7 +562,7 @@ function StepFinishCard({ reason, cost, tokens }: { reason: string; cost: number
  * its formatted input (command, file, …) and a preview of the actual
  * output (server return / bash stdout / etc.) — that's the "保留观察
  * 的入口" the user asked for. */
-function ToolStrip({ items, onDetail }: { items: Msg[]; onDetail?: (sessionId: string) => void }) {
+const ToolStrip = memo(function ToolStrip({ items, onDetail }: { items: Msg[]; onDetail?: (sessionId: string) => void }) {
   const [open, setOpen] = useState(false)
   const laneRef = useRef<HTMLDivElement>(null)
   const completed = items.filter((m) => m.toolCall?.status === "completed").length
@@ -641,7 +647,7 @@ function ToolStrip({ items, onDetail }: { items: Msg[]; onDetail?: (sessionId: s
       )}
     </div>
   )
-}
+})
 
 /* ── Group consecutive completed tool calls ── */
 type GroupedItem =
@@ -682,6 +688,15 @@ function shortenPath(path: string): string {
 }
 
 const MSG_PAGE_SIZE = 50
+
+// Pre-computed, referentially stable inline-style objects for the
+// staggered slide-up entrance animation. The first dozen rows fade in
+// in sequence; older rows get `undefined` (handled at the call site)
+// so React skips style reconciliation entirely on those nodes.
+const rowAnimDelayStyles: ReadonlyArray<React.CSSProperties> = Array.from(
+  { length: 12 },
+  (_, i) => ({ animationDelay: `${i * 30}ms` }),
+)
 
 export function ChatPanel(props: Props) {
   const [msg, setMsg] = useState('')
@@ -1194,10 +1209,21 @@ export function ChatPanel(props: Props) {
               </button>
             )}
             {groups.map((group, i) => {
+          // Cap the entrance-animation stagger to the first dozen rows.
+          // After that, returning `undefined` keeps the style prop
+          // referentially stable so React skips the style-diff work on
+          // every keystroke / scroll re-render.
+          const delayStyle = i < 12 ? rowAnimDelayStyles[i] : undefined
           // ── Tool strip (collapsed marquee) — left ──
           if (group.type === 'tool-group') {
+            // Anchor the key on the first message ID instead of the
+            // positional index — otherwise inserting a single new
+            // message above shifts every group's key and forces React
+            // to re-mount the ToolStrip subtree (and lose its
+            // open/scroll state).
+            const tgKey = group.items[0]?.id ?? `tg-${i}`
             return (
-              <div key={`tg-${i}`} className="wf-msg-row wf-msg-row--left wf-slide-up" style={{ animationDelay: `${i * 30}ms` }}>
+              <div key={tgKey} className="wf-msg-row wf-msg-row--left wf-slide-up" style={delayStyle}>
                 <div className="wf-msg-left-content">
                   <ToolStrip items={group.items} onDetail={props.onTaskDetail} />
                 </div>
@@ -1209,7 +1235,7 @@ export function ChatPanel(props: Props) {
           // ── Question dialog — left ──
           if (item.question) {
             return (
-              <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={{ animationDelay: `${i * 30}ms` }}>
+              <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={delayStyle}>
                 <div className="wf-msg-left-content">
                   <QuestionDialog
                     request={item.question}
@@ -1224,7 +1250,7 @@ export function ChatPanel(props: Props) {
           // ── Permission dialog — left ──
           if (item.permission) {
             return (
-              <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={{ animationDelay: `${i * 30}ms` }}>
+              <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={delayStyle}>
                 <div className="wf-msg-left-content">
                   <PermissionDialog
                     request={item.permission}
@@ -1245,7 +1271,7 @@ export function ChatPanel(props: Props) {
           if (item.plan) {
             if (props.renderPlanAsChip) {
               return (
-                <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={{ animationDelay: `${i * 30}ms` }}>
+                <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={delayStyle}>
                   <div className="wf-msg-left-content">
                     <button
                       className="wf-plan-chip"
@@ -1264,7 +1290,7 @@ export function ChatPanel(props: Props) {
               )
             }
             return (
-              <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={{ animationDelay: `${i * 30}ms` }}>
+              <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={delayStyle}>
                 <div className="wf-msg-left-content">
                   <PlanCard
                     plan={item.plan}
@@ -1279,7 +1305,7 @@ export function ChatPanel(props: Props) {
           // ── Reasoning — left ──
           if (item.reasoning) {
             return (
-              <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={{ animationDelay: `${i * 30}ms` }}>
+              <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={delayStyle}>
                 <div className="wf-msg-left-content">
                   <ReasoningCard text={item.reasoning.text} time={item.reasoning.time} />
                 </div>
@@ -1290,7 +1316,7 @@ export function ChatPanel(props: Props) {
           // ── File — left ──
           if (item.file) {
             return (
-              <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={{ animationDelay: `${i * 30}ms` }}>
+              <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={delayStyle}>
                 <div className="wf-msg-left-content">
                   <FileCard mime={item.file.mime} filename={item.file.filename} url={item.file.url} />
                 </div>
@@ -1301,7 +1327,7 @@ export function ChatPanel(props: Props) {
           // ── Patch (code changes) — left ──
           if (item.patch) {
             return (
-              <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={{ animationDelay: `${i * 30}ms` }}>
+              <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={delayStyle}>
                 <div className="wf-msg-left-content">
                   <PatchCard files={item.patch.files} />
                 </div>
@@ -1312,7 +1338,7 @@ export function ChatPanel(props: Props) {
           // ── Retry — left ──
           if (item.retry) {
             return (
-              <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={{ animationDelay: `${i * 30}ms` }}>
+              <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={delayStyle}>
                 <div className="wf-msg-left-content">
                   <RetryCard attempt={item.retry.attempt} error={item.retry.error} />
                 </div>
@@ -1323,7 +1349,7 @@ export function ChatPanel(props: Props) {
           // ── Step finish — left ──
           if (item.stepFinish) {
             return (
-              <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={{ animationDelay: `${i * 30}ms` }}>
+              <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={delayStyle}>
                 <div className="wf-msg-left-content">
                   <StepFinishCard reason={item.stepFinish.reason} cost={item.stepFinish.cost} tokens={item.stepFinish.tokens} />
                 </div>
@@ -1334,7 +1360,7 @@ export function ChatPanel(props: Props) {
           // ── Agent switch — left (minimal) ──
           if (item.agent) {
             return (
-              <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={{ animationDelay: `${i * 30}ms` }}>
+              <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={delayStyle}>
                 <div className="wf-msg-left-content">
                   <div className="flex items-center gap-2 px-2 py-1 text-[11px] text-[var(--wf-dim)]">
                     <Bot className="h-3 w-3" strokeWidth={2} />
@@ -1348,7 +1374,7 @@ export function ChatPanel(props: Props) {
           // ── Subtask — left ──
           if (item.subtask) {
             return (
-              <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={{ animationDelay: `${i * 30}ms` }}>
+              <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={delayStyle}>
                 <div className="wf-msg-left-content">
                   <div className="wf-tool-call wf-tool-call--running wf-tool-call--task">
                     <div className="wf-tool-call-header">
@@ -1372,7 +1398,7 @@ export function ChatPanel(props: Props) {
           // ── Thinking — left ──
           if (item.role === 'assistant' && item.thinking) {
             return (
-              <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={{ animationDelay: `${i * 30}ms` }}>
+              <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={delayStyle}>
                 <div className="wf-msg-left-content">
                   <ThinkingCard content={item.content} status={item.thinking.status} timestamp={item.timestamp} />
                 </div>
@@ -1383,7 +1409,7 @@ export function ChatPanel(props: Props) {
           // ── Tool call — left ──
           if (item.role === 'tool' && item.toolCall) {
             return (
-              <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={{ animationDelay: `${i * 30}ms` }}>
+              <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={delayStyle}>
                 <div className="wf-msg-left-content">
                   <ToolCallCard tool={item.toolCall} content={item.content} onDetail={props.onTaskDetail} />
                 </div>
@@ -1394,7 +1420,7 @@ export function ChatPanel(props: Props) {
           // ── User message — right ──
           if (item.role === 'user') {
             return (
-              <div key={item.id} className="wf-msg-row wf-msg-row--right wf-slide-up" style={{ animationDelay: `${i * 30}ms` }}>
+              <div key={item.id} className="wf-msg-row wf-msg-row--right wf-slide-up" style={delayStyle}>
                 <div className="wf-msg-meta wf-msg-meta--right">
                   <span className="wf-msg-time">{item.timestamp}</span>
                   <span className="wf-msg-name">You</span>
@@ -1411,7 +1437,7 @@ export function ChatPanel(props: Props) {
           // ── Assistant / system — left ──
           const isSystem = item.role === 'system'
           return (
-            <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={{ animationDelay: `${i * 30}ms` }}>
+            <div key={item.id} className="wf-msg-row wf-msg-row--left wf-slide-up" style={delayStyle}>
               <div className="wf-msg-avatar" style={{ background: roleStyle[item.role].iconBg }}>
                 {(() => { const Icon = icons[item.role]; return <Icon className="h-3.5 w-3.5" strokeWidth={1.8} style={{ color: roleStyle[item.role].iconColor }} /> })()}
               </div>
