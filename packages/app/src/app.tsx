@@ -73,15 +73,18 @@ const HomeRoute = lazy(() => import("@/pages/home"))
 const loadSession = () => import("@/pages/session")
 const loadRefinerPage = () => import("@/pages/session/refiner-page")
 const loadRetrievePage = () => import("@/pages/session/retrieve-page")
+const loadAutomationPage = () => import("@/pages/session/automation-page")
 const Session = lazy(loadSession)
 const RefinerPage = lazy(loadRefinerPage)
 const RetrievePage = lazy(loadRetrievePage)
+const AutomationPage = lazy(loadAutomationPage)
 const Loading = () => <div class="size-full" />
 
 if (typeof location === "object" && /\/session(?:\/|$)/.test(location.pathname)) {
   void loadSession()
   if (/\/refiner(?:\/|$)/.test(location.pathname)) void loadRefinerPage()
   if (/\/retrieve(?:\/|$)/.test(location.pathname)) void loadRetrievePage()
+  if (/\/automation(?:\/|$)/.test(location.pathname)) void loadAutomationPage()
 }
 
 /**
@@ -106,6 +109,7 @@ const SessionShellRoute = (props: ParentProps) => (
 const SessionRoute = () => <Session />
 const RefinerRoute = () => <RefinerPage />
 const RetrieveRoute = () => <RetrievePage />
+const AutomationRoute = () => <AutomationPage />
 
 /** Renders the UnifiedShell with chrome props sourced from the shell-bridge.
  *  The bridge holds a signal updated by each child page; the shell reads
@@ -119,6 +123,9 @@ function SessionShellMount(props: ParentProps) {
     const p = location.pathname
     if (p.endsWith("/refiner")) return "knowledge"
     if (p.endsWith("/retrieve")) return "trace"
+    // Automation page sits under the workflow module — it manages the
+    // scheduled tasks that will run as new workflows. Keeping it in the
+    // workflow rail group avoids inventing a new top-level rail.
     return "workflow"
   })
   const chrome = bridge.chrome
@@ -1099,6 +1106,7 @@ export function AppInterface(props: {
                       <Route path="/" component={SessionRoute} />
                       <Route path="/refiner" component={RefinerRoute} />
                       <Route path="/retrieve" component={RetrieveRoute} />
+                      <Route path="/automation" component={AutomationRoute} />
                     </Route>
                   </Route>
                 </Dynamic>
@@ -1129,6 +1137,7 @@ export function WorkflowInterface(props: {
                       <Route path="/" component={SessionRoute} />
                       <Route path="/refiner" component={RefinerRoute} />
                       <Route path="/retrieve" component={RetrieveRoute} />
+                      <Route path="/automation" component={AutomationRoute} />
                     </Route>
                   </Route>
                   <Route path="/*all" component={WorkflowScreen} />
