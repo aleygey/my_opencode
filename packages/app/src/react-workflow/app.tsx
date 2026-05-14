@@ -165,6 +165,10 @@ export type WorkflowAppProps = {
   onSession: (node?: string) => void
   onRefiner?: (node?: string) => void
   onRetrieve?: (node?: string) => void
+  /** Open the Automation (scheduled-task) sidecar page. Routed via the
+   *  parent so the workflow shell can use SPA-history-preserving
+   *  navigation rather than a full page load. */
+  onAutomation?: (node?: string) => void
   onTaskSelect?: (task: string) => void
   onModel: (nodeIDs?: string[]) => void
   onModelChange?: (model: string) => void
@@ -579,6 +583,7 @@ export function WorkflowApp(props: WorkflowAppProps) {
           onModelClick={props.onModel}
           onRefinerClick={() => props.onRefiner?.(node?.id)}
           onRetrieveClick={() => props.onRetrieve?.(node?.id)}
+          onAutomationClick={() => props.onAutomation?.(node?.id)}
           onRunClick={() => props.onRun(node?.id)}
           onRestartClick={() => props.onRestart(node?.id)}
           onStopClick={() => props.onStop(node?.id)}

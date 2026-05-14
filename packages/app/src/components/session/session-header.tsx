@@ -238,8 +238,6 @@ export function SessionHeader() {
   const onRefinerPage = createMemo(() => !!refinerHref() && location.pathname === refinerHref())
   const retrieveHref = createMemo(() => (params.id ? `/${params.dir}/session/${params.id}/retrieve` : undefined))
   const onRetrievePage = createMemo(() => !!retrieveHref() && location.pathname === retrieveHref())
-  const automationHref = createMemo(() => (params.id ? `/${params.dir}/session/${params.id}/automation` : undefined))
-  const onAutomationPage = createMemo(() => !!automationHref() && location.pathname === automationHref())
 
   const selectApp = (app: OpenApp) => {
     if (!options().some((item) => item.id === app)) return
@@ -457,19 +455,6 @@ export function SessionHeader() {
                         onClick={() => navigate(href())}
                       >
                         Retrieve
-                      </Button>
-                    </Tooltip>
-                  )}
-                </Show>
-                <Show when={automationHref()}>
-                  {(href) => (
-                    <Tooltip placement="bottom" value="定时任务（cron / 间隔）">
-                      <Button
-                        variant={onAutomationPage() ? "secondary" : "ghost"}
-                        class="titlebar-icon h-6 px-2 text-[11px] font-medium"
-                        onClick={() => navigate(href())}
-                      >
-                        定时任务
                       </Button>
                     </Tooltip>
                   )}

@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import { useCallback, useEffect, useState } from 'react'
-import { Layers3, Moon, Settings2, Square, Sun, Play, Pause, RotateCcw, Zap, Gauge } from 'lucide-react'
+import { Layers3, Moon, Settings2, Square, Sun, Play, Pause, RotateCcw, Zap, Gauge, CalendarClock } from 'lucide-react'
 import { Spin } from './spin'
 import type { TokenStats } from '../app'
 
@@ -110,6 +110,10 @@ interface TopBarProps {
   onModelClick?: () => void
   onRefinerClick?: () => void
   onRetrieveClick?: () => void
+  /** Opens the Automation page (scheduled-task CRUD). Wired the same way
+   *  as Refiner/Retrieve so all three "sidecar" pages live next to each
+   *  other in the top-bar. */
+  onAutomationClick?: () => void
   onRunClick?: () => void
   onRestartClick?: () => void
   onStopClick?: () => void
@@ -136,6 +140,7 @@ export function TopBar({
   onModelClick,
   onRefinerClick,
   onRetrieveClick,
+  onAutomationClick,
   onRunClick,
   onRestartClick,
   onStopClick,
@@ -310,6 +315,13 @@ export function TopBar({
           <button onClick={onRetrieveClick} className="wf-topbar-text-btn">
             <Zap className="h-3.5 w-3.5" strokeWidth={1.6} />
             <span>Retrieve</span>
+          </button>
+        )}
+
+        {onAutomationClick && (
+          <button onClick={onAutomationClick} className="wf-topbar-text-btn" title="定时任务（cron / 间隔）">
+            <CalendarClock className="h-3.5 w-3.5" strokeWidth={1.6} />
+            <span>定时任务</span>
           </button>
         )}
 

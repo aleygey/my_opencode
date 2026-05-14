@@ -2094,6 +2094,14 @@ export function WorkflowRuntimePanel(props: {
     navigate(`/${dir}/session/${id}/retrieve`)
   }
 
+  const openAutomation = (node?: string) => {
+    const id = sessionID(node)
+    const dir = sdk.directory ? base64Encode(sdk.directory) : params.dir
+    if (!id || !dir) return
+    // SPA navigation — same back-button preservation rationale as openRefiner.
+    navigate(`/${dir}/session/${id}/automation`)
+  }
+
   const send = (
     text: string,
     node?: string,
@@ -2761,6 +2769,7 @@ export function WorkflowRuntimePanel(props: {
         onSession: openSession,
         onRefiner: openRefiner,
         onRetrieve: openRetrieve,
+        onAutomation: openAutomation,
         onTaskSelect: props.onTaskSelect,
         onModel: pickModel,
         onModelChange: changeModel,
