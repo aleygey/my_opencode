@@ -1,10 +1,167 @@
 /** @jsxImportSource react */
-import { useState } from "react"
-import { FileCode2, Plus, Minus, Check } from "lucide-react"
+import { useMemo, useState } from "react"
+import { FileCode2, Plus, Minus, Check, ChevronRight, ChevronDown, Folder, FolderOpen } from "lucide-react"
 import type { ToolPlugin, PluginContext } from "./types"
 import type { Detail } from "../app"
 
 type Change = NonNullable<Detail["codeChanges"]>[number]
+
+// Hierarchical file tree built from a flat list of file paths. Each node is
+// either a directory (with children) or a file (leaf with a `change`
+// reference). Used by the Code Changes panel to render diffs grouped by
+// their directory layout — the user reported that a flat tab strip
+// becomes unreadable on multi-git workspaces where many files share base
+// names across nested sub-packages.
+type TreeNode =
+  | { kind: "dir"; name: string; path: string; children: TreeNode[] }
+  | { kind: "file"; name: string; path: string; change: Change; changeIndex: number }
+
+type DirNode = { kind: "dir"; name: string; path: string; children: TreeNode[] }
+type FileNode = { kind: "file"; name: string; path: string; change: Change; changeIndex: number }
+
+function buildFileTree(changes: Change[]): DirNode {
+  const root: DirNode = { kind: "dir", name: "", path: "", children: [] }
+  changes.forEach((change, idx) => {
+    const parts = change.file.split("/").filter(Boolean)
+    if (parts.length === 0) return
+    let cursor: DirNode = root
+    for (let i = 0; i < parts.length; i++) {
+      const seg = parts[i]
+      const isLast = i === parts.length - 1
+      const segPath = parts.slice(0, i + 1).join("/")
+      if (isLast) {
+        cursor.children.push({ kind: "file", name: seg, path: segPath, change, changeIndex: idx })
+        continue
+      }
+      const existing = cursor.children.find((c): c is DirNode => c.kind === "dir" && c.name === seg)
+      if (existing) {
+        cursor = existing
+      } else {
+        const next: DirNode = { kind: "dir", name: seg, path: segPath, children: [] }
+        cursor.children.push(next)
+        cursor = next
+      }
+    }
+  })
+  // Collapse single-child dir chains so deep paths (`packages/opencode/src/foo`)
+  // read as a single row instead of four nested levels. Keeps the tree
+  // visually flat where the hierarchy doesn't carry meaning.
+  const collapse = (node: TreeNode): TreeNode => {
+    if (node.kind !== "dir") return node
+    let current: DirNode = {
+      ...node,
+      children: node.children.map(collapse),
+    }
+    while (
+      current.children.length === 1 &&
+      current.children[0].kind === "dir"
+    ) {
+      const only = current.children[0] as DirNode
+      current = {
+        kind: "dir",
+        name: current.name ? `${current.name}/${only.name}` : only.name,
+        path: only.path,
+        children: only.children,
+      }
+    }
+    return current
+  }
+  const collapsed = collapse(root)
+  return collapsed.kind === "dir" ? collapsed : root
+}
+
+function FileTreeRow({
+  node,
+  depth,
+  activeIndex,
+  onPick,
+  collapsedDirs,
+  toggleDir,
+}: {
+  node: TreeNode
+  depth: number
+  activeIndex: number
+  onPick: (idx: number) => void
+  collapsedDirs: Set<string>
+  toggleDir: (p: string) => void
+}) {
+  const indent = { paddingLeft: `${depth * 12 + 6}px` }
+  if (node.kind === "dir") {
+    if (!node.name) {
+      return (
+        <>
+          {node.children.map((c) => (
+            <FileTreeRow
+              key={`${c.kind}:${c.path}`}
+              node={c}
+              depth={depth}
+              activeIndex={activeIndex}
+              onPick={onPick}
+              collapsedDirs={collapsedDirs}
+              toggleDir={toggleDir}
+            />
+          ))}
+        </>
+      )
+    }
+    const collapsed = collapsedDirs.has(node.path)
+    return (
+      <>
+        <button
+          type="button"
+          className="wf-detail-file-tree-row"
+          style={indent}
+          onClick={() => toggleDir(node.path)}
+          title={node.path}
+        >
+          {collapsed ? (
+            <ChevronRight className="h-3 w-3 flex-shrink-0 text-[var(--wf-dim)]" strokeWidth={2} />
+          ) : (
+            <ChevronDown className="h-3 w-3 flex-shrink-0 text-[var(--wf-dim)]" strokeWidth={2} />
+          )}
+          {collapsed ? (
+            <Folder className="h-3 w-3 flex-shrink-0 text-[var(--wf-dim)]" strokeWidth={1.8} />
+          ) : (
+            <FolderOpen className="h-3 w-3 flex-shrink-0 text-[var(--wf-dim)]" strokeWidth={1.8} />
+          )}
+          <span className="truncate text-[11px] text-[var(--wf-ink-soft)]">{node.name}</span>
+        </button>
+        {!collapsed &&
+          node.children.map((c) => (
+            <FileTreeRow
+              key={`${c.kind}:${c.path}`}
+              node={c}
+              depth={depth + 1}
+              activeIndex={activeIndex}
+              onPick={onPick}
+              collapsedDirs={collapsedDirs}
+              toggleDir={toggleDir}
+            />
+          ))}
+      </>
+    )
+  }
+  const active = node.changeIndex === activeIndex
+  return (
+    <button
+      type="button"
+      className={`wf-detail-file-tree-row ${active ? "wf-detail-file-tree-row--active" : ""}`}
+      style={indent}
+      onClick={() => onPick(node.changeIndex)}
+      title={node.path}
+    >
+      <span className="w-3 flex-shrink-0" />
+      <FileCode2 className="h-3 w-3 flex-shrink-0 text-[var(--wf-dim)]" strokeWidth={1.8} />
+      <span className="truncate text-[11px]">{node.name}</span>
+      <span className="ml-auto pl-2 text-[10px] text-[var(--wf-ok)] tabular-nums">
+        +{node.change.additions}
+      </span>
+      {node.change.deletions > 0 && (
+        <span className="text-[10px] text-rose-300 tabular-nums">−{node.change.deletions}</span>
+      )}
+    </button>
+  )
+}
 
 // Parse a unified diff patch (as emitted by git) into per-line rows. Each row
 // carries its sign (+/-/ ), synthetic before/after line numbers, and a mode
@@ -49,10 +206,20 @@ function diffRows(item?: Change) {
 
 function DiffTool({ nodeId, nodeStatus, detail }: PluginContext<Detail | null>) {
   const [tab, setTab] = useState(0)
+  const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set())
   const files = detail?.codeChanges ?? []
   const active = files[tab] ?? files[0]
   const changes = diffRows(active)
   const run = nodeStatus === "running"
+
+  const tree = useMemo(() => buildFileTree(files), [files])
+  const toggleDir = (p: string) =>
+    setCollapsedDirs((prev) => {
+      const next = new Set(prev)
+      if (next.has(p)) next.delete(p)
+      else next.add(p)
+      return next
+    })
 
   return (
     <div className="wf-detail-code">
@@ -68,44 +235,18 @@ function DiffTool({ nodeId, nodeStatus, detail }: PluginContext<Detail | null>) 
             </span>
           )}
         </div>
-        <div className="mt-3 flex flex-wrap gap-2">
+        <div className="wf-detail-file-tree">
           {files.length > 0 ? (
-            files.map((item, idx) => {
-              // Per the user's "上面的文件没有对应的目录" — show the
-              // PARENT directory next to the filename so tabs scan as
-              // "src/foo · bar.ts" instead of just "bar.ts" (which
-              // collides whenever two paths end with the same name).
-              const parts = item.file.split("/")
-              const filename = parts.at(-1) ?? item.file
-              // Take the last 2 segments of the parent dir — enough to
-              // disambiguate without exploding tab width on very deep
-              // paths like `packages/opencode/src/foo/bar/...`.
-              const parentSegments = parts.slice(0, -1)
-              const parentShort =
-                parentSegments.length <= 2
-                  ? parentSegments.join("/")
-                  : `…/${parentSegments.slice(-2).join("/")}`
-              return (
-                <button
-                  key={item.file}
-                  className={`wf-detail-file-tab ${idx === tab ? "wf-detail-file-tab--active" : ""}`}
-                  onClick={() => setTab(idx)}
-                  title={item.file}
-                >
-                  <FileCode2 className="h-3 w-3" strokeWidth={1.8} />
-                  {parentShort && (
-                    <span className="text-[10px] text-[var(--wf-dim)]">{parentShort}/</span>
-                  )}
-                  <span>{filename}</span>
-                  <span className="text-[var(--wf-ok)]">+{item.additions}</span>
-                </button>
-              )
-            })
+            <FileTreeRow
+              node={tree}
+              depth={0}
+              activeIndex={tab}
+              onPick={setTab}
+              collapsedDirs={collapsedDirs}
+              toggleDir={toggleDir}
+            />
           ) : (
-            <div className="wf-detail-file-tab wf-detail-file-tab--active">
-              <FileCode2 className="h-3 w-3" strokeWidth={1.8} />
-              No changes yet
-            </div>
+            <div className="px-3 py-2 text-[11px] text-[var(--wf-dim)]">No changes yet</div>
           )}
         </div>
       </div>

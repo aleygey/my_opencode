@@ -3304,6 +3304,47 @@
   box-shadow: var(--wf-shadow-xs);
 }
 
+/* File tree (replaces flat horizontal tabs when a node touched files in
+ * multiple directories). Each row is a button so the tree behaves like a
+ * keyboardable selector — directory rows toggle expand/collapse, file
+ * rows switch the diff panel below. */
+.workflow-make .wf-detail-file-tree {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--wf-line);
+  border-radius: 6px;
+  background: var(--wf-bg);
+  padding: 3px 0;
+}
+.workflow-make .wf-detail-file-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 2px 8px 2px 6px;
+  border: 0;
+  background: transparent;
+  color: var(--wf-ink-soft);
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  border-radius: 4px;
+  min-height: 22px;
+  transition: background 120ms ease;
+}
+.workflow-make .wf-detail-file-tree-row:hover {
+  background: var(--wf-chip);
+}
+.workflow-make .wf-detail-file-tree-row--active {
+  background: var(--wf-chip-strong, var(--wf-chip));
+  color: var(--wf-ink);
+  font-weight: 500;
+}
+
 /* ── Diff view ── */
 
 /* Diff container — VSCode-inspired editor feel */

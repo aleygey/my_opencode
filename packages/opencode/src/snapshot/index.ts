@@ -179,6 +179,150 @@ export const layer: Layer.Layer<
         const remove = (file: string) => fs.remove(file).pipe(Effect.catch(() => Effect.void))
         const locked = <A, E, R>(fx: Effect.Effect<A, E, R>) => lock(state.gitdir).withPermits(1)(fx)
 
+        // ── Nested-git handling (multi-git workspaces) ──────────────────
+        //
+        // When the user's worktree contains nested `.git` directories
+        // (e.g. a build workspace at the parent level + a separate source
+        // repo at the child level), shadow git treats each nested .git as
+        // a gitlink (mode 160000 submodule) and never recurses into the
+        // child directory's files. Result: edits inside the child repo
+        // never appear in the snapshot diff and the "Code change" page
+        // looks empty.
+        //
+        // We work around this by:
+        //   1. Walking the worktree to find every nested `.git` directory
+        //      (excluding the top-level one if present).
+        //   2. Persisting the planned-renames list to a marker file in
+        //      the shadow gitdir BEFORE renaming (so a crash mid-rename
+        //      can be recovered on next boot).
+        //   3. Renaming each `<dir>/.git` → `<dir>/.git__snapshot_hidden__`
+        //      so shadow git sees a plain directory and recurses normally.
+        //   4. Running the stage / diff inside Effect.ensuring so the
+        //      restore always runs, including on exception.
+        //   5. Removing the marker after a clean restore.
+        //
+        // Startup recovery (see `recoverPendingRenames` below) reads the
+        // marker on every `track()` call — if a previous process died
+        // between forward-rename and restore, the boot scan finds the
+        // marker and renames each `.git__snapshot_hidden__` back to
+        // `.git` BEFORE the new run can race on the same paths.
+        const NESTED_GIT_HIDDEN = ".git__snapshot_hidden__"
+
+        const renameAtomic = (from: string, to: string) =>
+          Effect.tryPromise({
+            try: async () => {
+              const fsp = await import("node:fs/promises")
+              await fsp.rename(from, to)
+            },
+            catch: (err) => new Error(`rename ${from} -> ${to}: ${err}`),
+          })
+
+        const findNestedGitDirs = Effect.fnUntraced(function* () {
+          const found: string[] = []
+          // Skip common large dirs that won't host nested .gits AND skip
+          // any leftover hidden markers from a half-restored prior run
+          // (those are handled by recoverPendingRenames, not by us).
+          const SKIP_NAMES = new Set([
+            "node_modules",
+            ".git",
+            ".pnpm",
+            ".yarn",
+            "dist",
+            "build",
+            "target",
+            "out",
+            NESTED_GIT_HIDDEN,
+          ])
+          // Cap recursion depth so a deep monorepo doesn't blow the stack.
+          // Real-world multi-git layouts rarely go beyond 3 levels.
+          const MAX_DEPTH = 4
+          const visit = (relDir: string, depth: number): Effect.Effect<void> =>
+            Effect.gen(function* () {
+              if (depth > MAX_DEPTH) return
+              const absDir = relDir ? path.join(state.worktree, relDir) : state.worktree
+              const entries = yield* fs
+                .readDirectoryEntries(absDir)
+                .pipe(Effect.catch(() => Effect.succeed([])))
+              for (const ent of entries) {
+                // Nested `.git` directory — record it (skip the outer
+                // worktree's own .git at the top level since that one
+                // belongs to the user's actual repo, not a sub-package).
+                if (ent.name === ".git") {
+                  if (depth === 0) continue
+                  if (ent.type === "directory") found.push(path.join(absDir, ".git"))
+                  continue
+                }
+                if (SKIP_NAMES.has(ent.name)) continue
+                if (ent.type === "directory") {
+                  yield* visit(relDir ? path.join(relDir, ent.name) : ent.name, depth + 1)
+                }
+              }
+            })
+          yield* visit("", 0)
+          return found
+        })
+
+        // Boot-time recovery — scan for a leftover marker from a previous
+        // run that died mid-rename. Always restore .git__snapshot_hidden__
+        // back to .git before allowing the new run to touch the worktree,
+        // so the user never finds themselves with an unusable nested repo.
+        const recoverPendingRenames = Effect.fnUntraced(function* () {
+          const markerPath = path.join(state.gitdir, "snapshot_pending_renames.json")
+          if (!(yield* exists(markerPath))) return
+          const text = yield* read(markerPath)
+          let renames: Array<{ from: string; to: string }> = []
+          try {
+            renames = JSON.parse(text)
+          } catch {
+            log.warn("nested-git pending-renames marker is malformed; removing", { markerPath })
+            yield* remove(markerPath)
+            return
+          }
+          let restored = 0
+          for (const r of renames) {
+            if (yield* exists(r.to)) {
+              const result = yield* renameAtomic(r.to, r.from).pipe(
+                Effect.match({
+                  onSuccess: () => true,
+                  onFailure: () => false,
+                }),
+              )
+              if (result) restored++
+            }
+          }
+          yield* remove(markerPath)
+          if (restored > 0) {
+            log.info("recovered nested .git renames after prior crash", { restored, planned: renames.length })
+          }
+        })
+
+        const withHiddenNestedGit = <A, E, R>(fx: Effect.Effect<A, E, R>) =>
+          Effect.gen(function* () {
+            const nested = yield* findNestedGitDirs()
+            if (nested.length === 0) return yield* fx
+            const markerPath = path.join(state.gitdir, "snapshot_pending_renames.json")
+            const renames = nested.map((dir) => ({
+              from: dir,
+              to: path.join(path.dirname(dir), NESTED_GIT_HIDDEN),
+            }))
+            yield* fs.ensureDir(state.gitdir).pipe(Effect.orDie)
+            yield* fs
+              .writeFileString(markerPath, JSON.stringify(renames))
+              .pipe(Effect.orDie)
+            for (const r of renames) {
+              yield* renameAtomic(r.from, r.to).pipe(Effect.catch(() => Effect.void))
+            }
+            return yield* Effect.ensuring(
+              fx,
+              Effect.gen(function* () {
+                for (const r of renames) {
+                  yield* renameAtomic(r.to, r.from).pipe(Effect.catch(() => Effect.void))
+                }
+                yield* remove(markerPath)
+              }),
+            )
+          })
+
         const enabled = Effect.fnUntraced(function* () {
           if (state.vcs !== "git") return false
           return (yield* config.get()).snapshot !== false
@@ -207,28 +351,20 @@ export const layer: Layer.Layer<
           yield* fs.writeFileString(target, text ? `${text}\n` : "").pipe(Effect.orDie)
         })
 
-        // KNOWN LIMITATION (#8 — multi-git workspaces):
-        //
-        // The shadow git here treats nested `.git` directories inside the
-        // worktree as gitlinks (mode 160000 submodule pointers), so file
-        // changes UNDERNEATH a nested git repo never show up in the
-        // snapshot diff — only the nested repo's HEAD pointer would
-        // change, and even that only when the user commits in the nested
-        // repo. Symptom: "code change page is blank" when the user's
-        // edit lives inside a sub-package that has its own .git (build
-        // workspace at parent level, source repo at child level).
-        //
-        // Fixing this safely requires temporarily renaming nested .git
-        // dirs before `git add --all` and restoring after (atomic, with
-        // crash-recovery for "process died mid-rename"). That work is
-        // tracked as a follow-up; the rename approach has enough failure
-        // modes (orphaned .git on crash, cross-FS rename failures) that
-        // shipping it half-finished would be worse than the current
-        // silent gap. Workaround until fix lands: commit changes in the
-        // nested repo and snapshot will then pick up the HEAD-pointer
-        // diff for the gitlink.
+        // Multi-git workspaces (#8): the worktree may contain nested
+        // `.git` dirs (build workspace + sub-package source repo, common
+        // in firmware projects). Shadow git would otherwise treat each
+        // nested .git as a gitlink and skip the files inside. Run the
+        // diff + stage pipeline wrapped in `withHiddenNestedGit` so the
+        // nested `.git` dirs are temporarily renamed away, shadow git
+        // recurses normally, and they're restored on exit (with marker-
+        // based crash recovery on next boot — see `recoverPendingRenames`).
         const add = Effect.fnUntraced(function* () {
           yield* sync()
+          return yield* withHiddenNestedGit(addUnsafe())
+        })
+
+        const addUnsafe = Effect.fnUntraced(function* () {
           const [diff, other] = yield* Effect.all(
             [
               git([...quote, ...args(["diff-files", "--name-only", "-z", "--", "."])], {
@@ -326,6 +462,12 @@ export const layer: Layer.Layer<
                 yield* git(["--git-dir", state.gitdir, "config", "core.fsmonitor", "false"])
                 log.info("initialized")
               }
+              // First thing after acquiring the lock: scan for a marker
+              // left behind by a prior process that died mid-rename of
+              // nested .git dirs. If found, restore each .git__snapshot_
+              // hidden__ back to .git so the user's nested repos are
+              // usable BEFORE we touch the worktree again.
+              yield* recoverPendingRenames()
               yield* add()
               const result = yield* git(args(["write-tree"]), { cwd: state.directory })
               const hash = result.text.trim()

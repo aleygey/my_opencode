@@ -1892,6 +1892,49 @@ export function WorkflowRuntimePanel(props: {
 
   const unroutedNodes = createMemo(() => nodes().filter((node) => !modelReady(node)))
 
+  // Proactive auto-routing — populate `node.model` on every freshly-created
+  // node with whatever the master session's model is at that moment.
+  // Background:
+  //
+  // The user reported that changing one slave's model in the inspector pill
+  // appeared to change ALL agents (including master). Root cause: nodes
+  // created via INSERT_NODE without an explicit `model` are persisted with
+  // `node.model = null`. The inspector then renders such nodes via the
+  // fallback (= master session's local.model). When the user opens the
+  // picker on slave X, `pickModel` briefly clears `local.model` then sets
+  // it to the picked value — during that window every inheriting slave's
+  // fallback display flips, and the substrip RuneModelPicker (which also
+  // reads local.model) shows the picked model too. Visually "all change
+  // together", even though only slave X actually gets a PATCH.
+  //
+  // Fix: as soon as a node lands without an explicit model, PATCH it with
+  // local.model.current(). Now every node has its OWN explicit
+  // node.model; the inspector reads node.model directly (not fallback);
+  // changing master via substrip has zero cascade; inspector pill for one
+  // slave touches only that node.
+  //
+  // `routedThisSession` keeps a per-mount memory of node IDs we already
+  // auto-routed so we don't PATCH the same node twice (e.g., on every
+  // snapshot poll). User-explicit overrides via the inspector pill set
+  // node.model directly so the modelReady() check below short-circuits.
+  const routedThisSession = new Set<string>()
+  createEffect(() => {
+    const targets = unroutedNodes()
+      .map((n) => n.id)
+      .filter((id) => !routedThisSession.has(id))
+    if (targets.length === 0) return
+    const current = local.model.current()
+    if (!current) return
+    for (const id of targets) routedThisSession.add(id)
+    void routeNodesToCurrentModel(targets).catch((err) => {
+      // Rollback the marker so the next snapshot tick can retry — the PATCH
+      // probably failed because the route service was momentarily down, not
+      // because the node is unreachable.
+      for (const id of targets) routedThisSession.delete(id)
+      console.warn("auto-route on node creation failed", err)
+    })
+  })
+
   // Target nodeIDs that should receive the model the user picks from the native dialog.
   // Set when the user clicks a specific agent's model pill, consumed after local.model changes.
   let pendingRouteTargets: string[] | null = null
